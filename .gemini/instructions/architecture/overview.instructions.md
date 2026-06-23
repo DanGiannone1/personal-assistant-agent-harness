@@ -18,7 +18,7 @@ Azure OpenAI
 ## Key Design Decisions
 
 - **Orchestrator never runs the SDK.** It proxies SSE from the session container's `/chat/stream` to the frontend line-by-line with no buffering.
-- **One container per user in production** via ACA Dynamic Sessions pool. Locally, a single shared container serves all sessions — `/reset` is called on each new session to simulate isolation.
+- **One container per user in production** via an ACA Sandbox (`Microsoft.App/SandboxGroups`, microVM-isolated; public preview — the newer ACA *Sandboxes* primitive, not the older Dynamic Sessions pool). Locally, a single shared container serves all sessions — `/reset` is called on each new session to simulate isolation.
 - **Sessions tracked in-memory only.** No database. Lost on orchestrator restart; frontend restores via `GET /sessions/{id}` which probes the container pool.
 - **AG-UI protocol** for SSE events (from the `ag_ui` package). Session container emits typed events; frontend `Chat.tsx` reducer dispatches them.
 - **Auth forwarding:** Orchestrator fetches a Cognitive Services token and forwards it to the session container via `X-Cogservices-Token` header. Session containers use this token (or `DefaultAzureCredential` locally) to call Azure OpenAI.

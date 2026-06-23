@@ -35,6 +35,16 @@ Azure OpenAI (gpt-4.1)   + Azure AI Search (RAG only)
 - Per-session state + files live in a workspace JSON store (`.flowdb.json`), **no database**.
 - Authoritative architecture reference: `.claude/commands/architecture/*`. This reskin changes **entities, screens, theme** — not topology.
 
+### Production runtime & storage (target — not built in this POC)
+
+The per-user sandbox in production is an **Azure Container Apps Sandbox** (`Microsoft.App/SandboxGroups`, public preview) — a per-user **microVM**, hardware-isolated from the host/platform/other sandboxes, started from an OCI image in <1s, **no cost when idle**, with **snapshot-based suspend/resume** that preserves the sandbox's memory + disk state across a session pause. (This is the newer ACA *Sandboxes* primitive, **not** the older ACA *Dynamic Sessions* pool.)
+
+Storage split at that point:
+- **Structured CRUD entities** (tasks, events) → a managed database (**Azure Cosmos DB**) as the queryable system of record; `/app/state` reads from it and the agent's tools mutate it (the same verifiable-execution invariant carries over — the agent mutates the exact store the UI renders from).
+- **Documents / artifacts** → the sandbox working set (persisted via snapshot suspend/resume), with durable long-term copies in **Blob/ADLS** for anything that must outlive the sandbox.
+
+This section is forward-looking. The POC deliberately uses the local per-session workspace folder (above); none of the production storage is wired here.
+
 ---
 
 ## 3. Surfaces (5 nav destinations)
