@@ -32,7 +32,8 @@ Session container (FastAPI):8080  [session-container/server.py, agent.py]  — r
 Azure OpenAI (gpt-4.1)   + Azure AI Search (RAG only)
 ```
 
-- Per-session state + files live in a workspace JSON store (`.flowdb.json`), **no database**.
+- **Per-session app state (tasks/events/currentRoute/routes) lives in Azure Cosmos DB** — one document per session, keyed by session id, AAD-only (`DefaultAzureCredential`; no key). The agent's tools mutate it and `/app/state` reads from it, so the verifiable-execution invariant holds against Cosmos.
+- **Documents/files live in the per-session workspace folder** (→ ACA Sandbox in production). Uploads and agent-drafted artifacts stay on the filesystem, separate from the structured store.
 - Authoritative architecture reference: `.claude/commands/architecture/*`. This reskin changes **entities, screens, theme** — not topology.
 
 ### Production runtime & storage (target — not built in this POC)
@@ -43,7 +44,7 @@ Storage split at that point:
 - **Structured CRUD entities** (tasks, events) → a managed database (**Azure Cosmos DB**) as the queryable system of record; `/app/state` reads from it and the agent's tools mutate it (the same verifiable-execution invariant carries over — the agent mutates the exact store the UI renders from).
 - **Documents / artifacts** → the sandbox working set (persisted via snapshot suspend/resume), with durable long-term copies in **Blob/ADLS** for anything that must outlive the sandbox.
 
-This section is forward-looking. The POC deliberately uses the local per-session workspace folder (above); none of the production storage is wired here.
+Status: **Cosmos is now wired** for app state (above). The ACA Sandbox runtime and durable Blob/ADLS document storage remain forward-looking; documents currently live in the local per-session workspace folder.
 
 ---
 

@@ -328,8 +328,9 @@ async def list_files(request: Request) -> dict:
     for entry in sorted(workspace.iterdir()):
         if not entry.is_file():
             continue
-        # Never surface internal dotfiles (the .flowdb.json state store, the upload
-        # manifest) as user artifacts — they are not files the user created or sees.
+        # Never surface internal dotfiles (e.g. the upload manifest) as user
+        # artifacts — they are not files the user created or sees. (App state now
+        # lives in Cosmos, not a workspace file.)
         if entry.name.startswith("."):
             continue
         stat = entry.stat()

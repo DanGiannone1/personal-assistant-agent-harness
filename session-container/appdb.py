@@ -1,9 +1,10 @@
 """Mock Flow application data store for the POC.
 
-State lives in a single JSON doc (`.flowdb.json`) inside the per-session workspace
-folder — intentionally NO database. The agent's tools read and mutate this store and
-the frontend renders it verbatim via the `/app/state` endpoint, so "the agent says it
-did something" and "the record actually exists" are the same fact.
+The app state (currentRoute/tasks/events/routes) lives in **Azure Cosmos DB** as ONE
+document per session, keyed by session id; documents/files stay in the per-session
+workspace folder. The agent's tools read and mutate this store and the frontend renders
+it verbatim via the `/app/state` endpoint, so "the agent says it did something" and
+"the record actually exists" are the same fact.
 
 Flow is a small personal-productivity app. Two record types live here:
 a *Task* (a to-do with a status, priority, group bucket, optional due date, and a list
@@ -14,15 +15,49 @@ are surfaced separately. There is no user/account hierarchy — it's one person'
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_FILENAME = ".flowdb.json"
+from azure.cosmos import CosmosClient
+from azure.cosmos import exceptions as cosmos_exceptions
+from azure.identity import DefaultAzureCredential
+
 _LOCK = threading.Lock()
+
+# The per-session app state (currentRoute/tasks/events/routes) is stored as ONE Cosmos
+# document keyed by session id. Documents/files stay in the workspace folder. AAD-only
+# (no account key): DefaultAzureCredential — az login locally, managed identity in ACA.
+_STATE_KEYS = ("currentRoute", "tasks", "events", "routes")
+_container_singleton = None
+
+
+def _container():
+    """Lazily build (and cache) the Cosmos container client. Fail loud if unconfigured."""
+    global _container_singleton
+    if _container_singleton is not None:
+        return _container_singleton
+    with _LOCK:
+        if _container_singleton is not None:
+            return _container_singleton
+        endpoint = os.getenv("COSMOS_ENDPOINT")
+        if not endpoint:
+            raise RuntimeError(
+                "COSMOS_ENDPOINT is not set — Cosmos is required for app state; "
+                "refusing to silently fall back to a local file."
+            )
+        database = os.getenv("COSMOS_DATABASE", "flow")
+        container = os.getenv("COSMOS_CONTAINER", "appstate")
+        client = CosmosClient(endpoint, credential=DefaultAzureCredential())
+        _container_singleton = client.get_database_client(database).get_container_client(container)
+        return _container_singleton
+
+
+def _session_id(workspace: str) -> str:
+    # The session container lays out one workspace folder per session: WORKSPACE/<session_id>.
+    return Path(workspace).name
 
 # Task lifecycle. A "Done" task is considered complete / not overdue.
 TASK_STATUSES = ["To do", "In progress", "Blocked", "Done"]
@@ -38,121 +73,10 @@ def _seed() -> dict:
     """A fresh seeded Flow dataset — a small set of tasks and calendar events."""
     return {
         "currentRoute": "/home",
-        "tasks": [
-            {
-                "id": "t-1",
-                "title": "Draft Q3 planning doc",
-                "status": "In progress",
-                "priority": "High",
-                "group": "Work",
-                "dueDate": "2026-06-25",
-                "subtasks": [
-                    {"text": "Outline goals", "done": True},
-                    {"text": "Pull last quarter's metrics", "done": False},
-                    {"text": "Draft summary section", "done": False},
-                ],
-                "notes": "Share with the team before the Friday review.",
-                "createdAt": "2026-06-18T09:00:00+00:00",
-            },
-            {
-                "id": "t-2",
-                "title": "Reply to onboarding survey",
-                "status": "To do",
-                "priority": "Medium",
-                "group": "Work",
-                "dueDate": "2026-06-20",
-                "subtasks": [],
-                "notes": "",
-                "createdAt": "2026-06-15T14:30:00+00:00",
-            },
-            {
-                "id": "t-3",
-                "title": "Renew gym membership",
-                "status": "To do",
-                "priority": "Low",
-                "group": "Personal",
-                "dueDate": "2026-06-30",
-                "subtasks": [],
-                "notes": "",
-                "createdAt": "2026-06-12T08:00:00+00:00",
-            },
-            {
-                "id": "t-4",
-                "title": "Prepare slides for design review",
-                "status": "Blocked",
-                "priority": "High",
-                "group": "Work",
-                "dueDate": "2026-06-24",
-                "subtasks": [
-                    {"text": "Get final mockups from design", "done": False},
-                ],
-                "notes": "Waiting on the updated mockups.",
-                "createdAt": "2026-06-16T11:00:00+00:00",
-            },
-            {
-                "id": "t-5",
-                "title": "Book dentist appointment",
-                "status": "Done",
-                "priority": "Low",
-                "group": "Personal",
-                "dueDate": "2026-06-19",
-                "subtasks": [],
-                "notes": "",
-                "createdAt": "2026-06-10T17:00:00+00:00",
-            },
-            {
-                "id": "t-6",
-                "title": "Review Q2 budget spreadsheet",
-                "status": "To do",
-                "priority": "Medium",
-                "group": "Finance",
-                "dueDate": "2026-07-02",
-                "subtasks": [
-                    {"text": "Check travel line items", "done": False},
-                    {"text": "Flag overruns", "done": False},
-                ],
-                "notes": "",
-                "createdAt": "2026-06-17T10:15:00+00:00",
-            },
-        ],
-        "events": [
-            {
-                "id": "e-1",
-                "title": "Team standup",
-                "date": "2026-06-23",
-                "start": "09:30",
-                "end": "09:45",
-                "type": "Meeting",
-                "notes": "Daily sync.",
-            },
-            {
-                "id": "e-2",
-                "title": "1:1 with manager",
-                "date": "2026-06-23",
-                "start": "14:00",
-                "end": "14:30",
-                "type": "Meeting",
-                "notes": "",
-            },
-            {
-                "id": "e-3",
-                "title": "Design review",
-                "date": "2026-06-24",
-                "start": "11:00",
-                "end": "12:00",
-                "type": "Meeting",
-                "notes": "Walk through the updated mockups.",
-            },
-            {
-                "id": "e-4",
-                "title": "Focus block: Q3 planning",
-                "date": "2026-06-25",
-                "start": "15:00",
-                "end": "17:00",
-                "type": "Focus",
-                "notes": "Heads-down on the planning doc.",
-            },
-        ],
+        # New sessions start empty — tasks and events are created by the user
+        # (manual UI) or the agent, then persisted to Cosmos.
+        "tasks": [],
+        "events": [],
         # Catalog of navigable pages. `keywords` help the navigate tool resolve
         # free-text destinations deterministically without a separate LLM routing pass.
         # NOTE: the AI Workbench (/assistant) is a frontend-only route and is intentionally
@@ -166,47 +90,38 @@ def _seed() -> dict:
     }
 
 
-def _db_path(workspace: str) -> Path:
-    return Path(workspace) / DB_FILENAME
+def _doc_to_state(doc: dict) -> dict:
+    """Strip Cosmos system fields (_rid/_etag/_ts/id/sessionId) → just the app-state shape."""
+    return {k: doc.get(k) for k in _STATE_KEYS}
 
 
 def ensure_seeded(workspace: str) -> dict:
-    """Create the DB file with seed data if it does not exist; return the DB."""
-    path = _db_path(workspace)
-    with _LOCK:
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = _seed()
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            return data
-        return json.loads(path.read_text(encoding="utf-8"))
+    """Return the session's state from Cosmos, creating a seeded doc if absent."""
+    sid = _session_id(workspace)
+    container = _container()
+    try:
+        return _doc_to_state(container.read_item(item=sid, partition_key=sid))
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        data = _seed()
+        container.create_item({"id": sid, "sessionId": sid, **data})
+        return data
 
 
 def load(workspace: str) -> dict:
-    """Load the DB, seeding first if absent."""
-    path = _db_path(workspace)
-    if not path.exists():
-        return ensure_seeded(workspace)
-    with _LOCK:
-        raw = path.read_text(encoding="utf-8")
+    """Load the session's state document from Cosmos, seeding first if absent."""
+    sid = _session_id(workspace)
+    container = _container()
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        # Fail loud: a corrupt store must not be papered over with a fresh seed
-        # (that would silently destroy the user's workspace).
-        raise RuntimeError(f"Corrupt workspace store at {path}: {exc}") from exc
+        return _doc_to_state(container.read_item(item=sid, partition_key=sid))
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return ensure_seeded(workspace)
 
 
 def save(workspace: str, data: dict) -> None:
-    path = _db_path(workspace)
-    payload = json.dumps(data, indent=2)
-    with _LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: serialize to a temp file in the same dir, then os.replace
-        # so a kill/teardown mid-write can never leave a half-written store.
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, path)
+    """Upsert the session's full state document to Cosmos (last-write-wins per session)."""
+    sid = _session_id(workspace)
+    container = _container()
+    container.upsert_item({"id": sid, "sessionId": sid, **{k: data.get(k) for k in _STATE_KEYS}})
 
 
 # ── Derived helpers ─────────────────────────────────────────────────────────
