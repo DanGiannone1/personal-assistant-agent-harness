@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import type { AppFile, AppState, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
 import { getFileContent, getLibraryContent,
-  createTask, updateTask, deleteTask, addSubtask, toggleSubtask,
+  createTask, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask,
   createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule } from "@/lib/api";
 import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
@@ -100,6 +100,16 @@ export default function WorkbenchApp({
 
   return (
     <div className="tw-app" data-testid="workbench-app">
+      {/* Workspace-scoped a11y/polish overrides (kept here, not in the contended globals.css):
+          darker muted text for AA contrast, a visible keyboard focus ring, and minor layout fixes.
+          Scoped to .tw-app so the co-pilot dock keeps its own styling. */}
+      <style>{`
+        .tw-app { --text-muted: #6b6e7b; --color-text-muted: #6b6e7b; }
+        .tw-app .tw-stat-label { min-height: 0; }
+        .tw-app .tw-breadcrumb { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tw-app :focus-visible { outline: 2px solid var(--brand-primary, #0073ea); outline-offset: 2px; border-radius: 6px; }
+        .tw-app .tw-rowlink:focus-visible { outline-offset: -2px; }
+      `}</style>
       {/* App header */}
       <div className={`tw-appbar ${pulse ? "tw-appbar-pulse" : ""}`}>
         <div className="tw-appbar-brand">
@@ -148,8 +158,8 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   let trail = "Home";
   if (viewRoute.startsWith("/todo/")) {
     const t = appState.tasks.find((x) => x.id === viewRoute.split("/").pop());
-    trail = `To-Do  ›  ${t?.title ?? ""}`;
-  } else if (viewRoute === "/todo") trail = "To-Do";
+    trail = `Tasks › ${t?.title ?? ""}`;
+  } else if (viewRoute === "/todo") trail = "Tasks";
   else if (viewRoute === "/calendar") trail = "Calendar";
   else if (viewRoute === "/documents") trail = "Documents";
   else if (viewRoute === "/reminders") trail = "Reminders";
@@ -170,8 +180,6 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const tasks = appState.tasks ?? [];
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
-  // Fire-and-refresh helper for row-level deletes (no per-row hooks needed).
-  const mutate = (fn: () => Promise<unknown>) => { void (async () => { await fn(); await onRefresh(); })(); };
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────
   if (viewRoute.startsWith("/todo/")) {
@@ -191,8 +199,8 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
         </div>
 
         <div className="tw-stats" style={{ marginTop: 18 }}>
-          <Stat label="Group" value={t.group || "—"} />
-          <Stat label="Due" value={t.dueDate || "—"} />
+          <Stat label="Group" value={t.group || "General"} />
+          <Stat label="Due" value={t.dueDate ? dayLabel(t.dueDate.slice(0, 10), today) : "—"} />
           <Stat label="Subtasks" value={`${done}/${subtasks.length}`} />
         </div>
 
@@ -203,7 +211,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
           </section>
         )}
 
-        <TaskDetailEditor task={t} sessionId={sessionId} onRefresh={onRefresh} onNavigate={onNavigate} />
+        <TaskDetailEditor task={t} sessionId={sessionId} onRefresh={onRefresh} onNavigate={onNavigate} groups={Array.from(new Set(tasks.map((x) => x.group).filter((g): g is string => !!g)))} />
         <SubtaskEditor task={t} sessionId={sessionId} onRefresh={onRefresh} />
       </div>
     );
@@ -212,24 +220,23 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   // ── To-Do (/todo) — tasks grouped by bucket ───────────────────────────────
   if (viewRoute === "/todo") {
     const overdueCount = tasks.filter((t) => isOverdue(t, today)).length;
-    const groups = Array.from(new Set(tasks.map((t) => t.group || "Ungrouped")));
+    const groups = Array.from(new Set(tasks.map((t) => t.group || "General")));
     return (
       <div className="tw-screen" data-testid="todo-screen">
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <h1 className="tw-h1">To-Do</h1>
-          <AddTaskBar sessionId={sessionId} onRefresh={onRefresh} />
-        </div>
-        <p className="tw-subtle">Your tasks, grouped by bucket.</p>
+        <h1 className="tw-h1">Tasks</h1>
+        <p className="tw-subtle">Your tasks, grouped.</p>
         <div className="tw-stats">
           <Stat label="Tasks" value={tasks.length} />
           <Stat label="Open" value={tasks.filter((t) => t.status !== "Done").length} />
+          <Stat label="Due today" value={tasks.filter((t) => t.status !== "Done" && (t.dueDate || "").slice(0, 10) === today).length} />
           <Stat label="Overdue" value={overdueCount} />
         </div>
+        <AddTaskBar sessionId={sessionId} onRefresh={onRefresh} groups={groups} />
         {tasks.length === 0 ? (
-          <section className="tw-section"><div className="tw-empty-sm">No tasks yet — use “Add task” above, or ask the assistant.</div></section>
+          <section className="tw-section"><div className="tw-empty-sm">No tasks yet. Add one above, or ask the assistant.</div></section>
         ) : (
           groups.map((group) => {
-            const rows = tasks.filter((t) => (t.group || "Ungrouped") === group);
+            const rows = tasks.filter((t) => (t.group || "General") === group);
             return (
               <section className="tw-section" key={group} data-testid={`todo-group-${group}`}>
                 <h2 className="tw-h2">{group} <span className="tw-count">{rows.length}</span></h2>
@@ -242,12 +249,12 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                       const overdue = isOverdue(t, today);
                       return (
                         <tr key={t.id} data-testid={`task-row-${t.id}`} className={`tw-rowlink ${isNew(t.id) ? "tw-row-new" : ""}`} onClick={() => onNavigate(`/todo/${t.id}`)}>
-                          <td className="tw-td-title">{t.title}{isNew(t.id) && <span className="tw-new">New</span>}</td>
+                          <td className="tw-td-title"><button type="button" style={rowTitleBtn} onClick={(e) => { e.stopPropagation(); onNavigate(`/todo/${t.id}`); }}>{t.title}</button>{isNew(t.id) && <span className="tw-new">New</span>}</td>
                           <td><StatusBadge status={t.status} /></td>
                           <td><PriorityBadge priority={t.priority} /></td>
-                          <td className={`tw-td-mono ${overdue ? "tw-due-overdue" : ""}`} title={overdue ? "Overdue" : undefined}>{t.dueDate || "—"}</td>
+                          <td className={overdue ? "tw-due-overdue" : ""}>{t.dueDate ? dayLabel(t.dueDate.slice(0, 10), today) : "—"}{overdue && <span style={{ fontSize: 11, fontWeight: 600 }}> · overdue</span>}</td>
                           <td className="tw-td-mono">{done}/{subtasks.length}</td>
-                          <td onClick={(e) => e.stopPropagation()}><RowDelete onConfirm={() => mutate(() => deleteTask(sessionId!, t.id))} testid={`task-delete-${t.id}`} /></td>
+                          <td onClick={(e) => e.stopPropagation()}><RowDelete onDelete={() => deleteTask(sessionId!, t.id)} onRefresh={onRefresh} testid={`task-delete-${t.id}`} label={t.title} /></td>
                         </tr>
                       );
                     })}
@@ -271,18 +278,16 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     }
     for (const t of tasks) {
       if (!t.dueDate || t.status === "Done") continue;
-      items.push({ kind: "task", id: t.id, date: t.dueDate.slice(0, 10), sort: "zz", title: t.title, meta: `Task due · ${t.group || "Ungrouped"}` });
+      items.push({ kind: "task", id: t.id, date: t.dueDate.slice(0, 10), sort: "zz", title: t.title, meta: `Task due · ${t.group || "General"}` });
     }
     const days = Array.from(new Set(items.map((i) => i.date))).sort();
     return (
       <div className="tw-screen" data-testid="calendar-screen">
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <h1 className="tw-h1">Calendar</h1>
-          <AddEventBar sessionId={sessionId} onRefresh={onRefresh} />
-        </div>
+        <h1 className="tw-h1">Calendar</h1>
         <p className="tw-subtle">Events and task deadlines, by day.</p>
+        <AddEventBar sessionId={sessionId} onRefresh={onRefresh} />
         {items.length === 0 ? (
-          <section className="tw-section"><div className="tw-empty-sm">Nothing scheduled. Ask the assistant to add an event.</div></section>
+          <section className="tw-section"><div className="tw-empty-sm">Nothing scheduled yet. Add an event above, or ask the assistant.</div></section>
         ) : (
           days.map((day) => {
             const dayItems = items.filter((i) => i.date === day).sort((a, b) => (a.sort < b.sort ? -1 : 1));
@@ -298,6 +303,9 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                       className={`tw-docitem ${i.kind === "task" ? "tw-rowlink" : ""}`}
                       data-testid={`agenda-${i.kind}-${i.id}`}
                       onClick={i.kind === "task" ? () => onNavigate(`/todo/${i.id}`) : undefined}
+                      onKeyDown={i.kind === "task" ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onNavigate(`/todo/${i.id}`); } } : undefined}
+                      role={i.kind === "task" ? "button" : undefined}
+                      tabIndex={i.kind === "task" ? 0 : undefined}
                       style={i.kind === "task" ? undefined : { cursor: "default" }}
                     >
                       {i.kind === "event" ? <Clock size={15} /> : <CheckSquareDot />}
@@ -305,7 +313,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                         <span className="tw-td-title">{i.title}</span>
                         <span className="tw-td-sub">{i.meta}</span>
                       </span>
-                      {i.kind === "event" && <span style={{ marginLeft: "auto" }}><RowDelete onConfirm={() => mutate(() => deleteEvent(sessionId!, i.id))} testid={`event-delete-${i.id}`} /></span>}
+                      {i.kind === "event" && <span style={{ marginLeft: "auto" }}><RowDelete onDelete={() => deleteEvent(sessionId!, i.id)} onRefresh={onRefresh} testid={`event-delete-${i.id}`} label={i.title} /></span>}
                     </div>
                   ))}
                 </div>
@@ -350,17 +358,15 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "—");
     return (
       <div className="tw-screen" data-testid="reminders-screen">
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <h1 className="tw-h1">Reminders</h1>
-          <AddReminderBar sessionId={sessionId} onRefresh={onRefresh} />
-        </div>
-        <p className="tw-subtle">Scheduled prompts that run on a cadence and email you the result.</p>
+        <h1 className="tw-h1">Reminders</h1>
+        <p className="tw-subtle">Recurring check-ins the assistant runs for you and emails the result.</p>
+        <AddReminderBar sessionId={sessionId} onRefresh={onRefresh} />
         {schedules.length === 0 ? (
-          <section className="tw-section"><div className="tw-empty-sm">No reminders yet — use “Add reminder” above, or ask the assistant.</div></section>
+          <section className="tw-section"><div className="tw-empty-sm">No reminders yet. Add one above, or ask the assistant.</div></section>
         ) : (
           <section className="tw-section">
             <table className="tw-table" data-testid="reminders-table">
-              <thead><tr><th>Reminder</th><th>Cadence</th><th>Next run</th><th>Last run</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Reminder</th><th>Repeats</th><th>Next run</th><th>Last run</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {schedules.map((s) => (
                   <tr key={s.id} data-testid={`reminder-row-${s.id}`} className={isNew(s.id) ? "tw-row-new" : ""}>
@@ -395,7 +401,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   return (
     <div className="tw-screen" data-testid="home-screen">
       <h1 className="tw-h1">Home</h1>
-      <p className="tw-subtle">Today&apos;s agenda — {dayLabel(today, today)}.</p>
+      <p className="tw-subtle">Today&apos;s agenda — {absDate(today)}.</p>
       <div className="tw-stats">
         <Stat label="Tasks" value={tasks.length} />
         <Stat label="Open" value={openTasks.length} />
@@ -411,10 +417,10 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
             <tbody>
               {overdue.map((t) => (
                 <tr key={t.id} className="tw-rowlink" data-testid={`overdue-row-${t.id}`} onClick={() => onNavigate(`/todo/${t.id}`)}>
-                  <td className="tw-td-title">{t.title}</td>
-                  <td>{t.group || "—"}</td>
+                  <td className="tw-td-title"><button type="button" style={rowTitleBtn} onClick={(e) => { e.stopPropagation(); onNavigate(`/todo/${t.id}`); }}>{t.title}</button></td>
+                  <td>{t.group || "General"}</td>
                   <td><StatusBadge status={t.status} /></td>
-                  <td className="tw-td-mono">{t.dueDate}</td>
+                  <td className="tw-due-overdue">{t.dueDate ? dayLabel(t.dueDate.slice(0, 10), today) : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -430,8 +436,8 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
             <tbody>
               {dueToday.map((t) => (
                 <tr key={t.id} className="tw-rowlink" onClick={() => onNavigate(`/todo/${t.id}`)}>
-                  <td className="tw-td-title">{t.title}</td>
-                  <td>{t.group || "—"}</td>
+                  <td className="tw-td-title"><button type="button" style={rowTitleBtn} onClick={(e) => { e.stopPropagation(); onNavigate(`/todo/${t.id}`); }}>{t.title}</button></td>
+                  <td>{t.group || "General"}</td>
                   <td><StatusBadge status={t.status} /></td>
                   <td><PriorityBadge priority={t.priority} /></td>
                 </tr>
@@ -485,6 +491,14 @@ function dayLabel(iso: string, today: string): string {
   return `${_WD[d.getUTCDay()]}, ${_MO[m - 1]} ${day}`;
 }
 
+// Absolute "Wed, Jun 25" label (no Today/Tomorrow relativity) — deterministic like dayLabel.
+function absDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  const [, m, day] = iso.split("-").map(Number);
+  return `${_WD[d.getUTCDay()]}, ${_MO[m - 1]} ${day}`;
+}
+
+
 function Stat({ label, value }: { label: string; value: number | string }) {
   return <div className="tw-stat"><div className="tw-stat-value">{value}</div><div className="tw-stat-label">{label}</div></div>;
 }
@@ -494,6 +508,10 @@ const docActionBtn: React.CSSProperties = {
   padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border-subtle, #e5e7eb)",
   background: "var(--surface-1, #fff)", color: "var(--text-secondary, #444)", cursor: "pointer", whiteSpace: "nowrap",
 };
+// A row's title rendered as a real <button> so it's keyboard-focusable and announced as one
+// control — the accessible navigation target. The <tr> keeps a mouse-only onClick for convenience
+// but is NOT given role=button (which would invalidate its <td> cells and nest the delete button).
+const rowTitleBtn: React.CSSProperties = { background: "none", border: "none", padding: 0, margin: 0, font: "inherit", color: "inherit", cursor: "pointer", textAlign: "left", width: "100%" };
 const docRow: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const docMainBtn: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit" };
 
@@ -516,7 +534,7 @@ function LibraryGroup({ docs, onOpen, onRemove }: { docs: LibraryDoc[]; onOpen: 
                 <span className="truncate">{d.filename}</span>
                 {d.source === "reference" && <span className="tw-td-sub">reference</span>}
               </button>
-              <button type="button" style={docActionBtn} title="Remove from Library" data-testid={`lib-remove-${d.filename}`}
+              <button type="button" style={docActionBtn} aria-label={`Remove ${d.filename} from Library`} title="Remove from Library" data-testid={`lib-remove-${d.filename}`}
                 disabled={busy === d.filename}
                 onClick={async () => { setBusy(d.filename); try { await onRemove(d.filename); } finally { setBusy(null); } }}>
                 <Trash2 size={13} />
@@ -588,66 +606,143 @@ function DocViewer({ doc, onBack }: { doc: { filename: string; content: string; 
 }
 
 // ── Manual CRUD controls (AI-free — hit the orchestrator, then refresh) ───────
-const fieldStyle: React.CSSProperties = {
-  fontSize: 12, padding: "5px 8px", borderRadius: 7,
-  border: "1px solid var(--border-subtle, #e5e7eb)", background: "var(--surface-1, #fff)", color: "inherit",
+// Custom down-chevron so native <select> matches the app's design language instead of the OS widget.
+const CHEVRON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23676879' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E";
+const inputStyle: React.CSSProperties = {
+  fontSize: 13, padding: "7px 9px", borderRadius: 8, color: "inherit", minWidth: 0,
+  border: "1px solid var(--border-subtle, #e5e7eb)", background: "var(--surface-1, #fff)",
 };
+const selectStyle: React.CSSProperties = {
+  ...inputStyle, appearance: "none", WebkitAppearance: "none", MozAppearance: "none", cursor: "pointer",
+  paddingRight: 26, backgroundImage: `url("${CHEVRON}")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 8px center",
+};
+const primaryBtn: React.CSSProperties = { ...docActionBtn, background: "var(--brand-primary, #0073ea)", color: "#fff", border: "1px solid var(--brand-primary, #0073ea)" };
+const primaryBtnOff: React.CSSProperties = { ...docActionBtn, background: "var(--surface-2, #eef0f4)", color: "var(--text-muted, #9699a6)", border: "1px solid var(--border-subtle, #e5e7eb)", cursor: "not-allowed" };
+const dangerBtn: React.CSSProperties = { ...docActionBtn, background: "#d6333c", color: "#fff", border: "1px solid #d6333c" };
+const formCard: React.CSSProperties = {
+  width: "100%", marginTop: 10, marginBottom: 4, padding: 14, borderRadius: 12,
+  border: "1px solid var(--border-subtle, #e5e7eb)", background: "var(--surface-2, #f7f8fa)",
+  display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end",
+};
+const fieldLabelStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-secondary, #676879)" };
 const formRow: React.CSSProperties = { display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" };
+
+// A labelled form field — the wrapping <label> gives the control an accessible name (a11y).
+// `grow` lets the field absorb horizontal slack so a full-width form card doesn't strand a gutter.
+function Field({ label, children, grow }: { label: string; children: React.ReactNode; grow?: boolean }) {
+  return <label style={grow ? { ...fieldLabelStyle, flex: "1 1 220px" } : fieldLabelStyle}>{label}{children}</label>;
+}
+
+// Inline, role=alert error surfaced when a manual mutation fails (fail loud — never swallow).
+function FormErr({ msg }: { msg: string | null }) {
+  if (!msg) return null;
+  return <div role="alert" style={{ flexBasis: "100%", marginTop: 2, fontSize: 12, color: "#c0344d", display: "flex", alignItems: "center", gap: 6 }}><AlertTriangle size={13} strokeWidth={2.5} /> {msg}</div>;
+}
 
 function useMut(onRefresh: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const run = (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    void (async () => { try { await fn(); await onRefresh(); } finally { setBusy(false); } })();
+    setBusy(true); setErr(null);
+    void (async () => {
+      try { await fn(); await onRefresh(); }
+      catch (e) { setErr(friendlyError(e, "Something went wrong. Please try again.")); }
+      finally { setBusy(false); }
+    })();
   };
-  return { busy, run };
+  return { busy, err, run };
 }
 
-function AddTaskBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+function AddTaskBar({ sessionId, onRefresh, groups }: { sessionId: string | null; onRefresh: () => Promise<void>; groups: string[] }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState("Medium");
   const [group, setGroup] = useState("General");
   const [due, setDue] = useState("");
-  const { busy, run } = useMut(onRefresh);
-  if (!open) return <button type="button" style={{ ...docActionBtn, marginLeft: 10 }} data-testid="add-task-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add task</button>;
+  const { busy, err, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-task-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add task</button>;
   const submit = () => { if (!sessionId || !title.trim()) return; run(async () => { await createTask(sessionId, { title: title.trim(), priority, group: group.trim() || "General", dueDate: due }); setTitle(""); setDue(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
   return (
-    <span style={{ ...formRow, marginLeft: 10 }} data-testid="add-task-form">
-      <input autoFocus placeholder="Task title" value={title} style={{ ...fieldStyle, minWidth: 170 }} data-testid="task-title-input" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
-      <select value={priority} style={fieldStyle} data-testid="task-priority-select" onChange={(e) => setPriority(e.target.value)}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select>
-      <input placeholder="Group" value={group} style={{ ...fieldStyle, width: 90 }} onChange={(e) => setGroup(e.target.value)} />
-      <input type="date" value={due} style={fieldStyle} data-testid="task-due-input" onChange={(e) => setDue(e.target.value)} />
-      <button type="button" style={{ ...docActionBtn, opacity: title.trim() ? 1 : 0.5 }} disabled={busy || !title.trim()} data-testid="task-save-btn" onClick={submit}>{busy ? "…" : "Save"}</button>
-      <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
-    </span>
+    <div style={formCard} data-testid="add-task-form" onKeyDown={onKey}>
+      <Field label="Title" grow><input autoFocus aria-label="Task title" placeholder="e.g. Draft the Q3 plan" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="task-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+      <Field label="Priority"><select aria-label="Priority" value={priority} style={selectStyle} data-testid="task-priority-select" onChange={(e) => setPriority(e.target.value)}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select></Field>
+      <Field label="Group">
+        <input aria-label="Group" list="task-group-options" placeholder="General" value={group} style={{ ...inputStyle, width: 130 }} onChange={(e) => setGroup(e.target.value)} />
+        <datalist id="task-group-options">{groups.map((g) => <option key={g} value={g} />)}</datalist>
+      </Field>
+      <Field label="Due date" grow><input type="date" aria-label="Due date" value={due} style={{ ...inputStyle, width: "100%" }} data-testid="task-due-input" onChange={(e) => setDue(e.target.value)} /></Field>
+      <span style={{ display: "inline-flex", gap: 6 }}>
+        <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="task-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
+        <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+      </span>
+      <FormErr msg={err} />
+    </div>
   );
 }
 
-function RowDelete({ onConfirm, testid }: { onConfirm: () => void; testid: string }) {
-  return <button type="button" style={{ ...docActionBtn, padding: "3px 7px" }} title="Delete" data-testid={testid}
-    onClick={(e) => { e.stopPropagation(); onConfirm(); }}><Trash2 size={13} /></button>;
+// Destructive deletes require a deliberate two-step confirm (arm → confirm) so a stray
+// click can't silently destroy a record; the mutation surfaces failures rather than swallowing them.
+function RowDelete({ onDelete, onRefresh, testid, label }: { onDelete: () => Promise<unknown>; onRefresh: () => Promise<void>; testid: string; label: string }) {
+  const [armed, setArmed] = useState(false);
+  const { busy, err, run } = useMut(onRefresh);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (armed) confirmRef.current?.focus(); }, [armed]);
+  if (armed) {
+    return (
+      <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+        <button ref={confirmRef} type="button" style={{ ...dangerBtn, padding: "3px 8px" }} aria-label={`Confirm delete ${label}`} data-testid={`${testid}-confirm`} disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(onDelete); }}>{busy ? "…" : "Confirm"}</button>
+        <button type="button" style={{ ...docActionBtn, padding: "3px 7px" }} aria-label="Cancel delete" disabled={busy}
+          onClick={(e) => { e.stopPropagation(); setArmed(false); }}>✕</button>
+        {err && <span role="alert" title={err} style={{ fontSize: 11, color: "#c0344d", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{err}</span>}
+      </span>
+    );
+  }
+  return <button type="button" style={{ ...docActionBtn, padding: "3px 7px" }} aria-label={`Delete ${label}`} title={`Delete ${label}`} data-testid={testid}
+    onClick={(e) => { e.stopPropagation(); setArmed(true); }}><Trash2 size={13} /></button>;
 }
 
-function TaskDetailEditor({ task, sessionId, onRefresh, onNavigate }: { task: Task; sessionId: string | null; onRefresh: () => Promise<void>; onNavigate: (r: string) => void }) {
-  const { busy, run } = useMut(onRefresh);
-  const patch = (body: Partial<{ status: string; priority: string; dueDate: string }>) => { if (sessionId) run(() => updateTask(sessionId, task.id, body)); };
+function TaskDetailEditor({ task, sessionId, onRefresh, onNavigate, groups }: { task: Task; sessionId: string | null; onRefresh: () => Promise<void>; onNavigate: (r: string) => void; groups: string[] }) {
+  const { busy, err, run } = useMut(onRefresh);
+  const [saved, setSaved] = useState(false);
+  const [armed, setArmed] = useState(false);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  // Auto-save on change (no Save button); show a Saving…/Saved indicator instead of freezing the pane.
+  const patch = (body: Partial<{ status: string; priority: string; dueDate: string; title: string; group: string }>) => { if (sessionId) { setSaved(false); run(async () => { await updateTask(sessionId, task.id, body); setSaved(true); }); } };
+  // Transient "Saved ✓" — clear it a couple seconds after a save settles.
+  useEffect(() => { if (!saved) return; const id = setTimeout(() => setSaved(false), 2200); return () => clearTimeout(id); }, [saved]);
+  // Move focus to Confirm when the delete is armed (consistent with RowDelete/ReminderActions).
+  useEffect(() => { if (armed) confirmRef.current?.focus(); }, [armed]);
   return (
     <section className="tw-section" data-testid="task-edit">
-      <h2 className="tw-h2">Edit</h2>
-      <div style={{ ...formRow, gap: 10 }}>
-        <label style={{ fontSize: 12, color: "var(--text-secondary,#555)" }}>Status{" "}
-          <select value={task.status} style={fieldStyle} data-testid="edit-status" disabled={busy} onChange={(e) => patch({ status: e.target.value })}>{["To do", "In progress", "Blocked", "Done"].map((s) => <option key={s}>{s}</option>)}</select>
-        </label>
-        <label style={{ fontSize: 12, color: "var(--text-secondary,#555)" }}>Priority{" "}
-          <select value={task.priority} style={fieldStyle} data-testid="edit-priority" disabled={busy} onChange={(e) => patch({ priority: e.target.value })}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select>
-        </label>
-        <label style={{ fontSize: 12, color: "var(--text-secondary,#555)" }}>Due{" "}
-          <input type="date" value={task.dueDate || ""} style={fieldStyle} data-testid="edit-due" disabled={busy} onChange={(e) => patch({ dueDate: e.target.value })} />
-        </label>
-        <button type="button" style={{ ...docActionBtn, marginLeft: "auto" }} data-testid="delete-task-btn" disabled={busy}
-          onClick={() => { if (sessionId) run(async () => { await deleteTask(sessionId, task.id); onNavigate("/todo"); }); }}><Trash2 size={13} /> Delete task</button>
+      <h2 className="tw-h2">Edit{" "}
+        <span aria-live="polite" style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary,#676879)" }}>
+          {busy ? "Saving…" : saved ? "Saved ✓" : ""}
+        </span>
+      </h2>
+      <div style={{ ...formRow, gap: 14, alignItems: "flex-end" }}>
+        <Field label="Title" grow><input aria-label="Task title" defaultValue={task.title} style={{ ...inputStyle, width: "100%", minWidth: 220 }} data-testid="edit-title"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== task.title) patch({ title: v }); }} /></Field>
+        <Field label="Group"><input aria-label="Group" list="edit-group-options" defaultValue={task.group || ""} style={{ ...inputStyle, width: 150 }} data-testid="edit-group"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v !== (task.group || "")) patch({ group: v || "General" }); }} />
+          <datalist id="edit-group-options">{groups.map((g) => <option key={g} value={g} />)}</datalist></Field>
+        <Field label="Status"><select value={task.status} style={selectStyle} data-testid="edit-status" onChange={(e) => patch({ status: e.target.value })}>{["To do", "In progress", "Blocked", "Done"].map((s) => <option key={s}>{s}</option>)}</select></Field>
+        <Field label="Priority"><select value={task.priority} style={selectStyle} data-testid="edit-priority" onChange={(e) => patch({ priority: e.target.value })}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select></Field>
+        <Field label="Due date"><input type="date" value={task.dueDate || ""} style={inputStyle} data-testid="edit-due" onChange={(e) => { if (e.target.value !== (task.dueDate || "")) patch({ dueDate: e.target.value }); }} /></Field>
+        {armed ? (
+          <span style={{ marginLeft: "auto", display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <button ref={confirmRef} type="button" style={dangerBtn} data-testid="delete-task-confirm" disabled={busy}
+              onClick={() => { if (sessionId) run(async () => { await deleteTask(sessionId, task.id); onNavigate("/todo"); }); }}><Trash2 size={13} /> Confirm delete</button>
+            <button type="button" style={docActionBtn} disabled={busy} onClick={() => setArmed(false)}>Cancel</button>
+          </span>
+        ) : (
+          <button type="button" style={{ ...docActionBtn, marginLeft: "auto" }} data-testid="delete-task-btn" onClick={() => setArmed(true)}><Trash2 size={13} /> Delete task</button>
+        )}
       </div>
+      <FormErr msg={err} />
     </section>
   );
 }
@@ -655,26 +750,35 @@ function TaskDetailEditor({ task, sessionId, onRefresh, onNavigate }: { task: Ta
 function SubtaskEditor({ task, sessionId, onRefresh }: { task: Task; sessionId: string | null; onRefresh: () => Promise<void> }) {
   const subtasks = task.subtasks ?? [];
   const [text, setText] = useState("");
-  const { busy, run } = useMut(onRefresh);
+  const { busy, err, run } = useMut(onRefresh);
   const add = () => { if (sessionId && text.trim()) run(async () => { await addSubtask(sessionId, task.id, text.trim()); setText(""); }); };
   return (
     <section className="tw-section">
       <h2 className="tw-h2">Subtasks <span className="tw-count">{subtasks.length}</span></h2>
       {subtasks.length > 0 && (
         <div className="tw-doclist" data-testid="task-subtasks">
-          {subtasks.map((c, i) => (
-            <div key={i} className="tw-docitem" data-testid={`subtask-${i}`} style={{ cursor: "pointer" }}
-              onClick={() => { if (sessionId && !busy) run(() => toggleSubtask(sessionId, task.id, i, !c.done)); }} role="checkbox" aria-checked={c.done}>
-              {c.done ? <CheckCircle2 size={15} className="text-green-500" /> : <Circle size={15} />}
-              <span className={c.done ? "line-through opacity-60" : ""}>{c.text}</span>
-            </div>
-          ))}
+          {subtasks.map((c, i) => {
+            const toggle = () => { if (sessionId && !busy) run(() => toggleSubtask(sessionId, task.id, i, !c.done)); };
+            return (
+              <div key={i} className="tw-docitem" style={{ gap: 8 }}>
+                <button type="button" role="checkbox" aria-checked={c.done} data-testid={`subtask-${i}`} disabled={busy}
+                  style={{ background: "none", border: "none", padding: 0, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", color: "inherit", flex: 1, minWidth: 0, textAlign: "left" }}
+                  onClick={toggle}>
+                  {c.done ? <CheckCircle2 size={15} className="text-green-500" /> : <Circle size={15} />}
+                  <span className={c.done ? "line-through opacity-60" : ""}>{c.text}</span>
+                </button>
+                <button type="button" style={{ ...docActionBtn, padding: "2px 6px" }} aria-label={`Delete subtask: ${c.text}`} title="Delete subtask" data-testid={`subtask-delete-${i}`} disabled={busy}
+                  onClick={() => { if (sessionId && !busy) run(() => deleteSubtask(sessionId, task.id, i)); }}><Trash2 size={12} /></button>
+              </div>
+            );
+          })}
         </div>
       )}
       <span style={{ ...formRow, marginTop: 8 }}>
-        <input placeholder="Add a subtask…" value={text} style={{ ...fieldStyle, minWidth: 200 }} data-testid="subtask-input" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
-        <button type="button" style={{ ...docActionBtn, opacity: text.trim() ? 1 : 0.5 }} disabled={busy || !text.trim()} data-testid="subtask-add-btn" onClick={add}><Plus size={13} /> Add</button>
+        <input aria-label="New subtask" placeholder="Add a subtask…" value={text} style={{ ...inputStyle, minWidth: 200 }} data-testid="subtask-input" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <button type="button" style={text.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !text.trim()} data-testid="subtask-add-btn" onClick={add}><Plus size={13} /> Add</button>
       </span>
+      <FormErr msg={err} />
     </section>
   );
 }
@@ -685,19 +789,25 @@ function AddEventBar({ sessionId, onRefresh }: { sessionId: string | null; onRef
   const [date, setDate] = useState("");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
-  const { busy, run } = useMut(onRefresh);
-  if (!open) return <button type="button" style={{ ...docActionBtn, marginLeft: 10 }} data-testid="add-event-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add event</button>;
-  const ok = title.trim() && date;
+  const { busy, err, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-event-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add event</button>;
+  const timeBad = !!(start && end && end <= start);
+  const ok = !!(title.trim() && date && !timeBad);
   const submit = () => { if (!sessionId || !ok) return; run(async () => { await createEvent(sessionId, { title: title.trim(), date, start, end }); setTitle(""); setDate(""); setStart(""); setEnd(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
   return (
-    <span style={{ ...formRow, marginLeft: 10 }} data-testid="add-event-form">
-      <input autoFocus placeholder="Event title" value={title} style={{ ...fieldStyle, minWidth: 160 }} data-testid="event-title-input" onChange={(e) => setTitle(e.target.value)} />
-      <input type="date" value={date} style={fieldStyle} data-testid="event-date-input" onChange={(e) => setDate(e.target.value)} />
-      <input type="time" value={start} style={fieldStyle} data-testid="event-start-input" onChange={(e) => setStart(e.target.value)} />
-      <input type="time" value={end} style={fieldStyle} onChange={(e) => setEnd(e.target.value)} />
-      <button type="button" style={{ ...docActionBtn, opacity: ok ? 1 : 0.5 }} disabled={busy || !ok} data-testid="event-save-btn" onClick={submit}>{busy ? "…" : "Save"}</button>
-      <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
-    </span>
+    <div style={formCard} data-testid="add-event-form" onKeyDown={onKey}>
+      <Field label="Title" grow><input autoFocus aria-label="Event title" placeholder="e.g. Northstar sync" value={title} style={{ ...inputStyle, width: "100%", minWidth: 180 }} data-testid="event-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+      <Field label="Date"><input type="date" aria-label="Event date" value={date} style={inputStyle} data-testid="event-date-input" onChange={(e) => setDate(e.target.value)} /></Field>
+      <Field label="Start"><input type="time" aria-label="Start time" value={start} style={inputStyle} data-testid="event-start-input" onChange={(e) => setStart(e.target.value)} /></Field>
+      <Field label="End"><input type="time" aria-label="End time" value={end} style={inputStyle} data-testid="event-end-input" onChange={(e) => setEnd(e.target.value)} /></Field>
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <button type="button" style={ok && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !ok} data-testid="event-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
+        <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+        {timeBad && <span style={{ fontSize: 11, color: "var(--text-secondary,#676879)" }}>End must be after start.</span>}
+      </span>
+      <FormErr msg={err} />
+    </div>
   );
 }
 
@@ -710,45 +820,61 @@ function AddReminderBar({ sessionId, onRefresh }: { sessionId: string | null; on
   const [time, setTime] = useState("08:00");
   const [days, setDays] = useState<number[]>([]);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const { busy, run } = useMut(onRefresh);
-  if (!open) return <button type="button" style={{ ...docActionBtn, marginLeft: 10 }} data-testid="add-reminder-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add reminder</button>;
-  const ok = title.trim() && prompt.trim() && time && (frequency === "daily" || days.length > 0);
+  const { busy, err, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-reminder-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add reminder</button>;
+  const needsDay = frequency === "weekly" && days.length === 0;
+  const ok = !!(title.trim() && prompt.trim() && time && !needsDay);
   const submit = () => { if (!sessionId || !ok) return; run(async () => { await createSchedule(sessionId, { title: title.trim(), prompt: prompt.trim(), frequency, time, timezone: tz, daysOfWeek: frequency === "weekly" ? days : [] }); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter" && e.target instanceof HTMLInputElement) submit(); else if (e.key === "Escape") setOpen(false); };
   return (
-    <div style={{ ...formRow, marginTop: 12, alignItems: "flex-start" }} data-testid="add-reminder-form">
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <input autoFocus placeholder="Reminder name" value={title} style={{ ...fieldStyle, minWidth: 240 }} data-testid="reminder-title-input" onChange={(e) => setTitle(e.target.value)} />
-        <input placeholder="What should it do? (e.g. summarize what's due this week)" value={prompt} style={{ ...fieldStyle, minWidth: 320 }} data-testid="reminder-prompt-input" onChange={(e) => setPrompt(e.target.value)} />
-        <span style={formRow}>
-          <select value={frequency} style={fieldStyle} data-testid="reminder-frequency-select" onChange={(e) => setFrequency(e.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
-          <input type="time" value={time} style={fieldStyle} data-testid="reminder-time-input" onChange={(e) => setTime(e.target.value)} />
-          <span style={{ fontSize: 11, color: "var(--text-secondary,#666)" }}>{tz}</span>
-        </span>
-        {frequency === "weekly" && (
-          <span style={formRow} data-testid="reminder-days">
-            {DAY_NAMES_UI.map((d, i) => (
-              <button key={d} type="button" style={{ ...fieldStyle, padding: "3px 7px", background: days.includes(i) ? "var(--brand-primary,#2563eb)" : "var(--surface-1,#fff)", color: days.includes(i) ? "#fff" : "inherit" }}
-                onClick={() => setDays((cur) => cur.includes(i) ? cur.filter((x) => x !== i) : [...cur, i])}>{d}</button>
-            ))}
-          </span>
-        )}
-        <span style={formRow}>
-          <button type="button" style={{ ...docActionBtn, opacity: ok ? 1 : 0.5 }} disabled={busy || !ok} data-testid="reminder-save-btn" onClick={submit}>{busy ? "…" : "Save reminder"}</button>
-          <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
-        </span>
+    <div style={{ ...formCard, alignItems: "flex-start", flexDirection: "column", gap: 10 }} data-testid="add-reminder-form" onKeyDown={onKey}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end", width: "100%" }}>
+        <Field label="Name"><input autoFocus aria-label="Reminder name" placeholder="e.g. Weekly digest" value={title} style={{ ...inputStyle, minWidth: 220 }} data-testid="reminder-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+        <Field label="What should it do?" grow><input aria-label="What should it do?" placeholder="e.g. summarize what's due this week" value={prompt} style={{ ...inputStyle, width: "100%", minWidth: 240 }} data-testid="reminder-prompt-input" onChange={(e) => setPrompt(e.target.value)} /></Field>
+        <Field label="Repeats"><select aria-label="Repeats" value={frequency} style={selectStyle} data-testid="reminder-frequency-select" onChange={(e) => setFrequency(e.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></Field>
+        <Field label={`Time (${tz})`}><input type="time" aria-label="Time" value={time} style={inputStyle} data-testid="reminder-time-input" onChange={(e) => setTime(e.target.value)} /></Field>
       </div>
+      {frequency === "weekly" && (
+        <span style={formRow} data-testid="reminder-days" role="group" aria-label="Days of week">
+          {DAY_NAMES_UI.map((d, i) => {
+            const on = days.includes(i);
+            return (
+              <button key={d} type="button" aria-pressed={on} style={{ ...inputStyle, padding: "5px 9px", cursor: "pointer", fontWeight: 600, background: on ? "var(--brand-primary,#0073ea)" : "var(--surface-1,#fff)", color: on ? "#fff" : "inherit", border: on ? "1px solid var(--brand-primary,#0073ea)" : inputStyle.border }}
+                onClick={() => setDays((cur) => cur.includes(i) ? cur.filter((x) => x !== i) : [...cur, i])}>{d}</button>
+            );
+          })}
+        </span>
+      )}
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <button type="button" style={ok && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !ok} data-testid="reminder-save-btn" onClick={submit}>{busy ? "Saving…" : "Save reminder"}</button>
+        <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+        {needsDay && <span style={{ fontSize: 11, color: "var(--text-secondary,#676879)" }}>Pick at least one day.</span>}
+      </span>
+      <FormErr msg={err} />
     </div>
   );
 }
 
 function ReminderActions({ schedule, sessionId, onRefresh }: { schedule: Schedule; sessionId: string | null; onRefresh: () => Promise<void> }) {
-  const { busy, run } = useMut(onRefresh);
+  const { busy, err, run } = useMut(onRefresh);
+  const [armed, setArmed] = useState(false);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (armed) confirmRef.current?.focus(); }, [armed]);
   return (
     <span style={{ ...formRow, gap: 6 }}>
-      <button type="button" style={docActionBtn} data-testid={`reminder-toggle-${schedule.id}`} disabled={busy}
+      <button type="button" style={docActionBtn} aria-label={schedule.enabled ? `Pause ${schedule.title}` : `Resume ${schedule.title}`} data-testid={`reminder-toggle-${schedule.id}`} disabled={busy}
         onClick={() => { if (sessionId) run(() => updateSchedule(sessionId, schedule.id, { enabled: !schedule.enabled })); }}>{schedule.enabled ? "Pause" : "Resume"}</button>
-      <button type="button" style={docActionBtn} title="Delete" data-testid={`reminder-delete-${schedule.id}`} disabled={busy}
-        onClick={() => { if (sessionId) run(() => deleteSchedule(sessionId, schedule.id)); }}><Trash2 size={13} /></button>
+      {armed ? (
+        <>
+          <button ref={confirmRef} type="button" style={{ ...dangerBtn, padding: "4px 9px" }} aria-label={`Confirm delete ${schedule.title}`} data-testid={`reminder-delete-${schedule.id}-confirm`} disabled={busy}
+            onClick={() => { if (sessionId) run(() => deleteSchedule(sessionId, schedule.id)); }}>{busy ? "…" : "Confirm"}</button>
+          <button type="button" style={docActionBtn} aria-label="Cancel delete" disabled={busy} onClick={() => setArmed(false)}>✕</button>
+        </>
+      ) : (
+        <button type="button" style={docActionBtn} aria-label={`Delete ${schedule.title}`} title="Delete" data-testid={`reminder-delete-${schedule.id}`} disabled={busy}
+          onClick={() => setArmed(true)}><Trash2 size={13} /></button>
+      )}
+      {err && <span role="alert" title={err} style={{ fontSize: 11, color: "#c0344d", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{err}</span>}
     </span>
   );
 }

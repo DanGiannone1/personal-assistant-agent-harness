@@ -568,6 +568,20 @@ async def toggle_subtask(session_id: str, task_id: str, index: int, req: Subtask
     return {"status": "ok"}
 
 
+@app.delete("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
+async def delete_subtask(session_id: str, task_id: str, index: int) -> dict:
+    await _require_session(session_id)
+
+    def _mut(data):
+        t = appdb.find_task(data, task_id)
+        subs = (t or {}).get("subtasks") or []
+        if t is None or index < 0 or index >= len(subs):
+            raise _NotFound()
+        subs.pop(index)
+    await _mutate(_mut)
+    return {"status": "deleted"}
+
+
 class EventCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
     date: str = Field(..., min_length=1, max_length=10)   # YYYY-MM-DD

@@ -264,9 +264,9 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (!appState) return "Home";
   if (route.startsWith("/todo/")) {
     const t = appState.tasks.find((x) => x.id === route.split("/").pop());
-    return t ? `the "${t.title}" task` : "To-Do";
+    return t ? `the "${t.title}" task` : "Tasks";
   }
-  if (route === "/todo") return "To-Do";
+  if (route === "/todo") return "Tasks";
   if (route === "/calendar") return "Calendar";
   if (route === "/documents") return "Documents";
   return "Home";

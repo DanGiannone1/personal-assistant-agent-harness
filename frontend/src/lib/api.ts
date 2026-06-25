@@ -184,6 +184,8 @@ export const deleteTask = (sid: string, id: string) => jsonReq("DELETE", `/sessi
 export const addSubtask = (sid: string, id: string, text: string) => jsonReq("POST", `/sessions/${sid}/tasks/${id}/subtasks`, { text });
 export const toggleSubtask = (sid: string, id: string, index: number, done: boolean) =>
   jsonReq("PATCH", `/sessions/${sid}/tasks/${id}/subtasks/${index}`, { done });
+export const deleteSubtask = (sid: string, id: string, index: number) =>
+  jsonReq("DELETE", `/sessions/${sid}/tasks/${id}/subtasks/${index}`);
 
 export const createEvent = (sid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
   jsonReq("POST", `/sessions/${sid}/events`, body);

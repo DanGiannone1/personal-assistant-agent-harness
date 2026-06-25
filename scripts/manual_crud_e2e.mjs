@@ -50,9 +50,24 @@ st = await state(sid); t = (st.tasks || []).find(x => x.id === t.id);
 check("subtask added + toggled done via UI", t && (t.subtasks || [])[0]?.done === true, JSON.stringify(t?.subtasks));
 await shot(page, "02-task-detail-edited");
 
-await page.click("[data-testid=delete-task-btn]"); await page.waitForTimeout(1200);
+// Edit title + group via the detail editor (Enter commits on blur)
+await page.fill("[data-testid=edit-title]", `${TAG} task RENAMED`);
+await page.press("[data-testid=edit-title]", "Enter"); await page.waitForTimeout(1000);
+await page.fill("[data-testid=edit-group]", "Personal");
+await page.press("[data-testid=edit-group]", "Enter"); await page.waitForTimeout(1000);
+st = await state(sid); t = (st.tasks || []).find(x => x.id === t.id);
+check("title + group edited via UI", t && t.title === `${TAG} task RENAMED` && t.group === "Personal", `${t?.title} / ${t?.group}`);
+
+// Delete the subtask via its per-row ✕
+await page.click("[data-testid=subtask-delete-0]"); await page.waitForTimeout(1000);
+st = await state(sid); t = (st.tasks || []).find(x => x.id === t.id);
+check("subtask deleted via UI", t && (t.subtasks || []).length === 0, JSON.stringify(t?.subtasks));
+
+await page.click("[data-testid=delete-task-btn]");           // arm
+await page.click("[data-testid=delete-task-confirm]");       // confirm
+await page.waitForTimeout(1200);
 st = await state(sid);
-check("task deleted via UI", !(st.tasks || []).some(x => x.id === t.id));
+check("task deleted via UI (two-step confirm)", !(st.tasks || []).some(x => x.id === t.id));
 
 // ─── EVENTS ───
 console.log("\n[Events] add → delete (no AI)");
@@ -65,9 +80,11 @@ await page.click("[data-testid=event-save-btn]"); await page.waitForTimeout(1200
 st = await state(sid); let e = (st.events || []).find(x => x.title === `${TAG} event`);
 check("event created via UI", !!e, e ? `${e.date} ${e.start}` : "none");
 await shot(page, "03-event-created");
-await page.click(`[data-testid=event-delete-${e.id}]`); await page.waitForTimeout(1200);
+await page.click(`[data-testid=event-delete-${e.id}]`);           // arm
+await page.click(`[data-testid=event-delete-${e.id}-confirm]`);   // confirm
+await page.waitForTimeout(1200);
 st = await state(sid);
-check("event deleted via UI", !(st.events || []).some(x => x.id === e.id));
+check("event deleted via UI (two-step confirm)", !(st.events || []).some(x => x.id === e.id));
 
 // ─── REMINDERS ───
 console.log("\n[Reminders] add → pause → delete (no AI)");
@@ -83,9 +100,11 @@ await shot(page, "04-reminder-created");
 await page.click(`[data-testid=reminder-toggle-${s.id}]`); await page.waitForTimeout(1000);
 st = await state(sid); s = (st.schedules || []).find(x => x.id === s.id);
 check("reminder paused via UI", s && s.enabled === false, `enabled=${s?.enabled}`);
-await page.click(`[data-testid=reminder-delete-${s.id}]`); await page.waitForTimeout(1200);
+await page.click(`[data-testid=reminder-delete-${s.id}]`);           // arm
+await page.click(`[data-testid=reminder-delete-${s.id}-confirm]`);   // confirm
+await page.waitForTimeout(1200);
 st = await state(sid);
-check("reminder deleted via UI", !(st.schedules || []).some(x => x.id === s.id));
+check("reminder deleted via UI (two-step confirm)", !(st.schedules || []).some(x => x.id === s.id));
 
 await browser.close();
 const passed = results.filter(r => r.c).length;
