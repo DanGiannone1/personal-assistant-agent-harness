@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   FileText, CheckCircle2, Circle, ArrowLeft, Home as HomeIcon, AlertTriangle, Calendar as CalendarIcon, Clock,
-  BookMarked, Trash2, Upload,
+  BookMarked, Trash2, Upload, Plus,
 } from "lucide-react";
 import type { AppFile, AppState, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
-import { getFileContent, getLibraryContent } from "@/lib/api";
+import { getFileContent, getLibraryContent,
+  createTask, updateTask, deleteTask, addSubtask, toggleSubtask,
+  createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule } from "@/lib/api";
 import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
 import CsvTable from "../CsvTable";
@@ -25,6 +27,7 @@ interface WorkbenchAppProps {
   onSaveToLibrary: (filename: string) => Promise<void>;
   onRemoveFromLibrary: (filename: string) => Promise<void>;
   onUpload: (file: File) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }
 
 // A task is overdue iff its due date is past today and it isn't Done — computed
@@ -59,7 +62,7 @@ function OverdueBadge() {
 
 export default function WorkbenchApp({
   appState, loading, viewRoute, onNavigate, sessionId, uploadedFiles, generatedFiles, newRecordIds, agentWorking,
-  onSaveToLibrary, onRemoveFromLibrary, onUpload,
+  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh,
 }: WorkbenchAppProps) {
   const [doc, setDoc] = useState<{ filename: string; content: string; mime?: string; loading: boolean; error: string | null } | null>(null);
   const [pulse, setPulse] = useState(false);
@@ -130,6 +133,8 @@ export default function WorkbenchApp({
               onSaveToLibrary={onSaveToLibrary}
               onRemoveFromLibrary={onRemoveFromLibrary}
               onUpload={onUpload}
+              sessionId={sessionId}
+              onRefresh={onRefresh}
             />
           )}
         </div>
@@ -151,12 +156,13 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   return <div className="tw-breadcrumb" data-testid="breadcrumb">{trail}</div>;
 }
 
-function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generatedFiles, newRecordIds, onOpenDoc, onSaveToLibrary, onRemoveFromLibrary, onUpload }: {
+function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generatedFiles, newRecordIds, onOpenDoc, onSaveToLibrary, onRemoveFromLibrary, onUpload, sessionId, onRefresh }: {
   appState: AppState | null; viewRoute: string; onNavigate: (r: string) => void;
   uploadedFiles: AppFile[]; generatedFiles: AppFile[]; newRecordIds: string[];
   onOpenDoc: (f: string, fromLibrary?: boolean) => void;
   onSaveToLibrary: (f: string) => Promise<void>; onRemoveFromLibrary: (f: string) => Promise<void>;
   onUpload: (file: File) => Promise<void>;
+  sessionId: string | null; onRefresh: () => Promise<void>;
 }) {
   if (!appState) return <div className="tw-empty">No data.</div>;
   const isNew = (id: string) => newRecordIds.includes(id);
@@ -164,6 +170,8 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const tasks = appState.tasks ?? [];
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
+  // Fire-and-refresh helper for row-level deletes (no per-row hooks needed).
+  const mutate = (fn: () => Promise<unknown>) => { void (async () => { await fn(); await onRefresh(); })(); };
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────
   if (viewRoute.startsWith("/todo/")) {
@@ -195,21 +203,8 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
           </section>
         )}
 
-        <section className="tw-section">
-          <h2 className="tw-h2">Subtasks <span className="tw-count">{subtasks.length}</span></h2>
-          {subtasks.length === 0 ? (
-            <div className="tw-empty-card"><Circle size={16} /> No subtasks yet. Ask the assistant to add a step.</div>
-          ) : (
-            <div className="tw-doclist" data-testid="task-subtasks">
-              {subtasks.map((c, i) => (
-                <div key={i} className="tw-docitem" data-testid={`subtask-${i}`} style={{ cursor: "default" }}>
-                  {c.done ? <CheckCircle2 size={15} className="text-green-500" /> : <Circle size={15} />}
-                  <span className={c.done ? "line-through opacity-60" : ""}>{c.text}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        <TaskDetailEditor task={t} sessionId={sessionId} onRefresh={onRefresh} onNavigate={onNavigate} />
+        <SubtaskEditor task={t} sessionId={sessionId} onRefresh={onRefresh} />
       </div>
     );
   }
@@ -220,7 +215,10 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     const groups = Array.from(new Set(tasks.map((t) => t.group || "Ungrouped")));
     return (
       <div className="tw-screen" data-testid="todo-screen">
-        <h1 className="tw-h1">To-Do</h1>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <h1 className="tw-h1">To-Do</h1>
+          <AddTaskBar sessionId={sessionId} onRefresh={onRefresh} />
+        </div>
         <p className="tw-subtle">Your tasks, grouped by bucket.</p>
         <div className="tw-stats">
           <Stat label="Tasks" value={tasks.length} />
@@ -228,7 +226,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
           <Stat label="Overdue" value={overdueCount} />
         </div>
         {tasks.length === 0 ? (
-          <section className="tw-section"><div className="tw-empty-sm">No tasks yet. Ask the assistant to create one.</div></section>
+          <section className="tw-section"><div className="tw-empty-sm">No tasks yet — use “Add task” above, or ask the assistant.</div></section>
         ) : (
           groups.map((group) => {
             const rows = tasks.filter((t) => (t.group || "Ungrouped") === group);
@@ -236,7 +234,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
               <section className="tw-section" key={group} data-testid={`todo-group-${group}`}>
                 <h2 className="tw-h2">{group} <span className="tw-count">{rows.length}</span></h2>
                 <table className="tw-table" data-testid="tasks-table">
-                  <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Due</th><th>Subtasks</th></tr></thead>
+                  <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Due</th><th>Subtasks</th><th></th></tr></thead>
                   <tbody>
                     {rows.map((t) => {
                       const subtasks = t.subtasks ?? [];
@@ -249,6 +247,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                           <td><PriorityBadge priority={t.priority} /></td>
                           <td className={`tw-td-mono ${overdue ? "tw-due-overdue" : ""}`} title={overdue ? "Overdue" : undefined}>{t.dueDate || "—"}</td>
                           <td className="tw-td-mono">{done}/{subtasks.length}</td>
+                          <td onClick={(e) => e.stopPropagation()}><RowDelete onConfirm={() => mutate(() => deleteTask(sessionId!, t.id))} testid={`task-delete-${t.id}`} /></td>
                         </tr>
                       );
                     })}
@@ -277,7 +276,10 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     const days = Array.from(new Set(items.map((i) => i.date))).sort();
     return (
       <div className="tw-screen" data-testid="calendar-screen">
-        <h1 className="tw-h1">Calendar</h1>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <h1 className="tw-h1">Calendar</h1>
+          <AddEventBar sessionId={sessionId} onRefresh={onRefresh} />
+        </div>
         <p className="tw-subtle">Events and task deadlines, by day.</p>
         {items.length === 0 ? (
           <section className="tw-section"><div className="tw-empty-sm">Nothing scheduled. Ask the assistant to add an event.</div></section>
@@ -303,6 +305,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                         <span className="tw-td-title">{i.title}</span>
                         <span className="tw-td-sub">{i.meta}</span>
                       </span>
+                      {i.kind === "event" && <span style={{ marginLeft: "auto" }}><RowDelete onConfirm={() => mutate(() => deleteEvent(sessionId!, i.id))} testid={`event-delete-${i.id}`} /></span>}
                     </div>
                   ))}
                 </div>
@@ -347,14 +350,17 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "—");
     return (
       <div className="tw-screen" data-testid="reminders-screen">
-        <h1 className="tw-h1">Reminders</h1>
-        <p className="tw-subtle">Scheduled prompts the assistant runs and emails to you.</p>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <h1 className="tw-h1">Reminders</h1>
+          <AddReminderBar sessionId={sessionId} onRefresh={onRefresh} />
+        </div>
+        <p className="tw-subtle">Scheduled prompts that run on a cadence and email you the result.</p>
         {schedules.length === 0 ? (
-          <section className="tw-section"><div className="tw-empty-sm">No reminders yet. Ask the assistant — e.g. &ldquo;email me a daily summary of what&rsquo;s due this week&rdquo;.</div></section>
+          <section className="tw-section"><div className="tw-empty-sm">No reminders yet — use “Add reminder” above, or ask the assistant.</div></section>
         ) : (
           <section className="tw-section">
             <table className="tw-table" data-testid="reminders-table">
-              <thead><tr><th>Reminder</th><th>Cadence</th><th>Next run</th><th>Last run</th><th>Status</th></tr></thead>
+              <thead><tr><th>Reminder</th><th>Cadence</th><th>Next run</th><th>Last run</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {schedules.map((s) => (
                   <tr key={s.id} data-testid={`reminder-row-${s.id}`} className={isNew(s.id) ? "tw-row-new" : ""}>
@@ -366,6 +372,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                     <td className="tw-td-mono">{when(s.nextRunAt)}</td>
                     <td className="tw-td-mono">{s.lastRunAt ? when(s.lastRunAt) : "—"}</td>
                     <td>{!s.enabled ? "Paused" : (s.lastStatus ?? "Scheduled")}</td>
+                    <td><ReminderActions schedule={s} sessionId={sessionId} onRefresh={onRefresh} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -577,5 +584,171 @@ function DocViewer({ doc, onBack }: { doc: { filename: string; content: string; 
         isCsv ? <CsvTable content={doc.content} /> :
         <div className="tw-doc"><MarkdownRenderer content={doc.content} /></div>}
     </div>
+  );
+}
+
+// ── Manual CRUD controls (AI-free — hit the orchestrator, then refresh) ───────
+const fieldStyle: React.CSSProperties = {
+  fontSize: 12, padding: "5px 8px", borderRadius: 7,
+  border: "1px solid var(--border-subtle, #e5e7eb)", background: "var(--surface-1, #fff)", color: "inherit",
+};
+const formRow: React.CSSProperties = { display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" };
+
+function useMut(onRefresh: () => Promise<void>) {
+  const [busy, setBusy] = useState(false);
+  const run = (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    void (async () => { try { await fn(); await onRefresh(); } finally { setBusy(false); } })();
+  };
+  return { busy, run };
+}
+
+function AddTaskBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [priority, setPriority] = useState("Medium");
+  const [group, setGroup] = useState("General");
+  const [due, setDue] = useState("");
+  const { busy, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginLeft: 10 }} data-testid="add-task-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add task</button>;
+  const submit = () => { if (!sessionId || !title.trim()) return; run(async () => { await createTask(sessionId, { title: title.trim(), priority, group: group.trim() || "General", dueDate: due }); setTitle(""); setDue(""); setOpen(false); }); };
+  return (
+    <span style={{ ...formRow, marginLeft: 10 }} data-testid="add-task-form">
+      <input autoFocus placeholder="Task title" value={title} style={{ ...fieldStyle, minWidth: 170 }} data-testid="task-title-input" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+      <select value={priority} style={fieldStyle} data-testid="task-priority-select" onChange={(e) => setPriority(e.target.value)}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select>
+      <input placeholder="Group" value={group} style={{ ...fieldStyle, width: 90 }} onChange={(e) => setGroup(e.target.value)} />
+      <input type="date" value={due} style={fieldStyle} data-testid="task-due-input" onChange={(e) => setDue(e.target.value)} />
+      <button type="button" style={{ ...docActionBtn, opacity: title.trim() ? 1 : 0.5 }} disabled={busy || !title.trim()} data-testid="task-save-btn" onClick={submit}>{busy ? "…" : "Save"}</button>
+      <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+    </span>
+  );
+}
+
+function RowDelete({ onConfirm, testid }: { onConfirm: () => void; testid: string }) {
+  return <button type="button" style={{ ...docActionBtn, padding: "3px 7px" }} title="Delete" data-testid={testid}
+    onClick={(e) => { e.stopPropagation(); onConfirm(); }}><Trash2 size={13} /></button>;
+}
+
+function TaskDetailEditor({ task, sessionId, onRefresh, onNavigate }: { task: Task; sessionId: string | null; onRefresh: () => Promise<void>; onNavigate: (r: string) => void }) {
+  const { busy, run } = useMut(onRefresh);
+  const patch = (body: Partial<{ status: string; priority: string; dueDate: string }>) => { if (sessionId) run(() => updateTask(sessionId, task.id, body)); };
+  return (
+    <section className="tw-section" data-testid="task-edit">
+      <h2 className="tw-h2">Edit</h2>
+      <div style={{ ...formRow, gap: 10 }}>
+        <label style={{ fontSize: 12, color: "var(--text-secondary,#555)" }}>Status{" "}
+          <select value={task.status} style={fieldStyle} data-testid="edit-status" disabled={busy} onChange={(e) => patch({ status: e.target.value })}>{["To do", "In progress", "Blocked", "Done"].map((s) => <option key={s}>{s}</option>)}</select>
+        </label>
+        <label style={{ fontSize: 12, color: "var(--text-secondary,#555)" }}>Priority{" "}
+          <select value={task.priority} style={fieldStyle} data-testid="edit-priority" disabled={busy} onChange={(e) => patch({ priority: e.target.value })}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select>
+        </label>
+        <label style={{ fontSize: 12, color: "var(--text-secondary,#555)" }}>Due{" "}
+          <input type="date" value={task.dueDate || ""} style={fieldStyle} data-testid="edit-due" disabled={busy} onChange={(e) => patch({ dueDate: e.target.value })} />
+        </label>
+        <button type="button" style={{ ...docActionBtn, marginLeft: "auto" }} data-testid="delete-task-btn" disabled={busy}
+          onClick={() => { if (sessionId) run(async () => { await deleteTask(sessionId, task.id); onNavigate("/todo"); }); }}><Trash2 size={13} /> Delete task</button>
+      </div>
+    </section>
+  );
+}
+
+function SubtaskEditor({ task, sessionId, onRefresh }: { task: Task; sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const subtasks = task.subtasks ?? [];
+  const [text, setText] = useState("");
+  const { busy, run } = useMut(onRefresh);
+  const add = () => { if (sessionId && text.trim()) run(async () => { await addSubtask(sessionId, task.id, text.trim()); setText(""); }); };
+  return (
+    <section className="tw-section">
+      <h2 className="tw-h2">Subtasks <span className="tw-count">{subtasks.length}</span></h2>
+      {subtasks.length > 0 && (
+        <div className="tw-doclist" data-testid="task-subtasks">
+          {subtasks.map((c, i) => (
+            <div key={i} className="tw-docitem" data-testid={`subtask-${i}`} style={{ cursor: "pointer" }}
+              onClick={() => { if (sessionId && !busy) run(() => toggleSubtask(sessionId, task.id, i, !c.done)); }} role="checkbox" aria-checked={c.done}>
+              {c.done ? <CheckCircle2 size={15} className="text-green-500" /> : <Circle size={15} />}
+              <span className={c.done ? "line-through opacity-60" : ""}>{c.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <span style={{ ...formRow, marginTop: 8 }}>
+        <input placeholder="Add a subtask…" value={text} style={{ ...fieldStyle, minWidth: 200 }} data-testid="subtask-input" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <button type="button" style={{ ...docActionBtn, opacity: text.trim() ? 1 : 0.5 }} disabled={busy || !text.trim()} data-testid="subtask-add-btn" onClick={add}><Plus size={13} /> Add</button>
+      </span>
+    </section>
+  );
+}
+
+function AddEventBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState("");
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const { busy, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginLeft: 10 }} data-testid="add-event-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add event</button>;
+  const ok = title.trim() && date;
+  const submit = () => { if (!sessionId || !ok) return; run(async () => { await createEvent(sessionId, { title: title.trim(), date, start, end }); setTitle(""); setDate(""); setStart(""); setEnd(""); setOpen(false); }); };
+  return (
+    <span style={{ ...formRow, marginLeft: 10 }} data-testid="add-event-form">
+      <input autoFocus placeholder="Event title" value={title} style={{ ...fieldStyle, minWidth: 160 }} data-testid="event-title-input" onChange={(e) => setTitle(e.target.value)} />
+      <input type="date" value={date} style={fieldStyle} data-testid="event-date-input" onChange={(e) => setDate(e.target.value)} />
+      <input type="time" value={start} style={fieldStyle} data-testid="event-start-input" onChange={(e) => setStart(e.target.value)} />
+      <input type="time" value={end} style={fieldStyle} onChange={(e) => setEnd(e.target.value)} />
+      <button type="button" style={{ ...docActionBtn, opacity: ok ? 1 : 0.5 }} disabled={busy || !ok} data-testid="event-save-btn" onClick={submit}>{busy ? "…" : "Save"}</button>
+      <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+    </span>
+  );
+}
+
+const DAY_NAMES_UI = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+function AddReminderBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [frequency, setFrequency] = useState("daily");
+  const [time, setTime] = useState("08:00");
+  const [days, setDays] = useState<number[]>([]);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const { busy, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginLeft: 10 }} data-testid="add-reminder-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add reminder</button>;
+  const ok = title.trim() && prompt.trim() && time && (frequency === "daily" || days.length > 0);
+  const submit = () => { if (!sessionId || !ok) return; run(async () => { await createSchedule(sessionId, { title: title.trim(), prompt: prompt.trim(), frequency, time, timezone: tz, daysOfWeek: frequency === "weekly" ? days : [] }); setOpen(false); }); };
+  return (
+    <div style={{ ...formRow, marginTop: 12, alignItems: "flex-start" }} data-testid="add-reminder-form">
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <input autoFocus placeholder="Reminder name" value={title} style={{ ...fieldStyle, minWidth: 240 }} data-testid="reminder-title-input" onChange={(e) => setTitle(e.target.value)} />
+        <input placeholder="What should it do? (e.g. summarize what's due this week)" value={prompt} style={{ ...fieldStyle, minWidth: 320 }} data-testid="reminder-prompt-input" onChange={(e) => setPrompt(e.target.value)} />
+        <span style={formRow}>
+          <select value={frequency} style={fieldStyle} data-testid="reminder-frequency-select" onChange={(e) => setFrequency(e.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
+          <input type="time" value={time} style={fieldStyle} data-testid="reminder-time-input" onChange={(e) => setTime(e.target.value)} />
+          <span style={{ fontSize: 11, color: "var(--text-secondary,#666)" }}>{tz}</span>
+        </span>
+        {frequency === "weekly" && (
+          <span style={formRow} data-testid="reminder-days">
+            {DAY_NAMES_UI.map((d, i) => (
+              <button key={d} type="button" style={{ ...fieldStyle, padding: "3px 7px", background: days.includes(i) ? "var(--brand-primary,#2563eb)" : "var(--surface-1,#fff)", color: days.includes(i) ? "#fff" : "inherit" }}
+                onClick={() => setDays((cur) => cur.includes(i) ? cur.filter((x) => x !== i) : [...cur, i])}>{d}</button>
+            ))}
+          </span>
+        )}
+        <span style={formRow}>
+          <button type="button" style={{ ...docActionBtn, opacity: ok ? 1 : 0.5 }} disabled={busy || !ok} data-testid="reminder-save-btn" onClick={submit}>{busy ? "…" : "Save reminder"}</button>
+          <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ReminderActions({ schedule, sessionId, onRefresh }: { schedule: Schedule; sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const { busy, run } = useMut(onRefresh);
+  return (
+    <span style={{ ...formRow, gap: 6 }}>
+      <button type="button" style={docActionBtn} data-testid={`reminder-toggle-${schedule.id}`} disabled={busy}
+        onClick={() => { if (sessionId) run(() => updateSchedule(sessionId, schedule.id, { enabled: !schedule.enabled })); }}>{schedule.enabled ? "Pause" : "Resume"}</button>
+      <button type="button" style={docActionBtn} title="Delete" data-testid={`reminder-delete-${schedule.id}`} disabled={busy}
+        onClick={() => { if (sessionId) run(() => deleteSchedule(sessionId, schedule.id)); }}><Trash2 size={13} /></button>
+    </span>
   );
 }

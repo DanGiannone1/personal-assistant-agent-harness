@@ -484,6 +484,12 @@ export function useAgentSession() {
     await Promise.all([refreshAppState(state.sessionId), refreshFiles(state.sessionId)]);
   }, [state.sessionId, refreshAppState, refreshFiles]);
 
+  // Re-pull app state after a manual CRUD mutation (tasks/events/reminders), so the UI
+  // reflects the same owner doc the agent mutates.
+  const refresh = useCallback(async () => {
+    if (state.sessionId) await refreshAppState(state.sessionId);
+  }, [state.sessionId, refreshAppState]);
+
   const handleStop = useCallback(() => {
     if (streamingRef.current) {  // synchronous — not the render-captured state
       cancelledRef.current = true;  // ignore any buffered events from the cancelled turn
@@ -505,6 +511,6 @@ export function useAgentSession() {
   return {
     state, statusMessage, isChatUploading, chatUploadName,
     handleSend, handleStop, handleChatUpload, doNewChat, startSession, navigateView,
-    uploadDocument, saveToLibrary, removeFromLibrary,
+    uploadDocument, saveToLibrary, removeFromLibrary, refresh,
   };
 }
