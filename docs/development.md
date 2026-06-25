@@ -97,9 +97,8 @@ did.
 
 ## Testing
 
-Per [`CLAUDE.md`](../CLAUDE.md), the only valid test is **Playwright driving the real frontend as a
-user**, with screenshots examined and reconciled against the traces above — not API-only checks or
-"it compiles." The repo-local discipline is in the `localhost-ui-validation` skill.
+The only meaningful test is **Playwright driving the real frontend as a user**, with screenshots
+examined and reconciled against the traces above — not API-only checks or "it compiles."
 
 The core journey runner walks the core capabilities (navigation, task/event CRUD, document draft,
 RAG), screenshots each step, and reconciles the rendered UI against `/app/state`:
