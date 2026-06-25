@@ -228,11 +228,6 @@ logs/
 # uv local cache
 .uv-cache/
 
-# Claude Code local settings (keep commands and agents shared)
-.claude/*
-!.claude/commands/
-!.claude/agents/
-
 # Temporary test scripts and output
 azure-verify.mjs
 capture-angles.mjs
