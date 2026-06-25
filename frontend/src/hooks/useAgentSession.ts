@@ -1,7 +1,7 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
 import { AGUIEvent, AppFile, AppState, ChatMessage, MessagePart, ToolOutcome } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
-import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile } from "@/lib/api";
+import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary } from "@/lib/api";
 import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
 
@@ -465,6 +465,25 @@ export function useAgentSession() {
     }
   }, [state.sessionId, refreshFiles]);
 
+  // Manual upload from the Documents screen (no AI) — reuses the chat-upload path.
+  const uploadDocument = useCallback(async (file: File) => {
+    await handleChatUpload(file);
+  }, [handleChatUpload]);
+
+  // Promote a session file into the persistent Library, then refresh state + files so it
+  // moves from "This session" to "Library". Manual (works without the AI).
+  const saveToLibrary = useCallback(async (filename: string) => {
+    if (!state.sessionId) return;
+    await apiSaveToLibrary(state.sessionId, filename);
+    await Promise.all([refreshAppState(state.sessionId), refreshFiles(state.sessionId)]);
+  }, [state.sessionId, refreshAppState, refreshFiles]);
+
+  const removeFromLibrary = useCallback(async (filename: string) => {
+    if (!state.sessionId) return;
+    await apiDeleteFromLibrary(state.sessionId, filename);
+    await refreshAppState(state.sessionId);
+  }, [state.sessionId, refreshAppState]);
+
   const handleStop = useCallback(() => {
     if (streamingRef.current) {  // synchronous — not the render-captured state
       cancelledRef.current = true;  // ignore any buffered events from the cancelled turn
@@ -486,5 +505,6 @@ export function useAgentSession() {
   return {
     state, statusMessage, isChatUploading, chatUploadName,
     handleSend, handleStop, handleChatUpload, doNewChat, startSession, navigateView,
+    uploadDocument, saveToLibrary, removeFromLibrary,
   };
 }

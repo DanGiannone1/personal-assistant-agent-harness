@@ -11,7 +11,7 @@ import { useSession } from "./SessionProvider";
 // rides along as a collapsible docked co-pilot. Collapsed, the app gets the whole canvas
 // and the assistant becomes an unobtrusive launcher pill.
 export default function HostApp() {
-  const { state, navigateView, isChatUploading } = useSession();
+  const { state, navigateView, isChatUploading, saveToLibrary, removeFromLibrary, uploadDocument } = useSession();
   const [dockOpen, setDockOpen] = useState(true);
 
   // Responsive: below ~1100px the side-by-side rail crushes the host content, so the dock
@@ -52,6 +52,9 @@ export default function HostApp() {
             generatedFiles={generatedFiles}
             newRecordIds={state.newRecordIds}
             agentWorking={agentWorking}
+            onSaveToLibrary={saveToLibrary}
+            onRemoveFromLibrary={removeFromLibrary}
+            onUpload={uploadDocument}
           />
         </div>
 

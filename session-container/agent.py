@@ -49,6 +49,7 @@ from copilot.session_events import (
 )
 
 import appdb
+import library
 
 load_dotenv()
 
@@ -107,15 +108,21 @@ How you work:
   cancel. The app runs the saved prompt on the cadence and emails whatever it produces.
 - For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
   context — never judge dates yourself.
+- Documents come in two tiers. **Session files** are this session's uploads + drafts —
+  temporary, read them *directly* with `list_documents` then `read_workspace_file`. The
+  **Library** is the user's *persistent* knowledge base — searched with `search_documents`
+  (RAG) and persisted across all sessions.
 - To write or revise a document (a brief, notes, a summary), use `write_file` — it appears
-  in Documents and opens in the artifact canvas, where the user can edit it. To read an
-  existing document first, use `list_documents` then `read_workspace_file`.
-- For "what did I decide about X", "find … in my notes", "search the docs/library", or any
-  question that needs grounding across the document library, use `search_documents` — it
-  returns the most relevant passages with their source filenames. Answer **only** from the
+  in Documents as a session file and opens in the artifact canvas.
+- To make a session file permanent and searchable, use `save_to_library` (e.g. "save this
+  to my library/knowledge base"); `list_library` shows what's in it. A session file is NOT
+  in the Library until saved.
+- For "what did I decide about X", "search my library", or any question that needs grounding
+  across the persistent knowledge base, use `search_documents` — answer **only** from the
   returned passages and cite the source filename(s). If it returns NO_RESULTS, say nothing
-  matched; if it returns SEARCH_NOT_CONFIGURED or SEARCH_FAILED, tell the user document
-  search is unavailable — never make up an answer.
+  matched; if SEARCH_NOT_CONFIGURED/SEARCH_FAILED, tell the user search is unavailable —
+  never make up an answer. To *compare* an uploaded session file against the Library, read
+  the session file (`read_workspace_file`) AND `search_documents`, then contrast them.
 
 The user's current view may be provided as context (e.g. "[Current view: To-Do]"). Use it
 to resolve "here" / "this". The current date is provided as "[Today: …]".
@@ -247,59 +254,7 @@ def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
         return False
 
 
-_SEARCH_INDEX_NAME = "flow-documents-index"
-_SEARCH_SEMANTIC_CONFIG = "flow-semantic"
-_SEARCH_API_VERSION = "2024-07-01"
-
-
-def _search_documents_query(query: str, top: int = 4) -> str:
-    """Run a full-text + semantic-ranker query against the Flow document index.
-
-    Returns a formatted "PASSAGES" block (each passage with its source filename) on
-    success, or a leading status marker on every non-success path so the agent and the
-    UI trace stay honest:
-      - SEARCH_NOT_CONFIGURED — env vars missing (RAG has a hard Azure dependency)
-      - SEARCH_FAILED         — Search unreachable or returned an error
-      - NO_RESULTS            — the index had nothing relevant
-    Never fabricates or silently returns an empty answer.
-    """
-    import httpx
-
-    endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-    key = os.getenv("AZURE_SEARCH_KEY")
-    if not endpoint or not key:
-        return (
-            "SEARCH_NOT_CONFIGURED: document search is unavailable because Azure AI Search "
-            "is not configured (missing AZURE_SEARCH_ENDPOINT / AZURE_SEARCH_KEY)."
-        )
-    url = endpoint.rstrip("/") + f"/indexes/{_SEARCH_INDEX_NAME}/docs/search"
-    body = {
-        "search": query,
-        "top": top,
-        "select": "filename,title,chunk",
-        "queryType": "semantic",
-        "semanticConfiguration": _SEARCH_SEMANTIC_CONFIG,
-    }
-    try:
-        resp = httpx.post(
-            url,
-            params={"api-version": _SEARCH_API_VERSION},
-            headers={"api-key": key, "Content-Type": "application/json"},
-            json=body,
-            timeout=20,
-        )
-    except httpx.HTTPError as exc:
-        return f"SEARCH_FAILED: could not reach Azure AI Search ({exc})."
-    if resp.status_code != 200:
-        return f"SEARCH_FAILED: Azure AI Search returned {resp.status_code}: {resp.text[:200]}"
-    results = resp.json().get("value", [])
-    if not results:
-        return f"NO_RESULTS: nothing in the document library matched '{query}'."
-    lines = [f"PASSAGES for '{query}' ({len(results)} from the document library):"]
-    for r in results:
-        snippet = " ".join((r.get("chunk") or "").split())
-        lines.append(f"- source: {r.get('filename')}\n  {snippet}")
-    return "\n".join(lines)
+# Document Library search (RAG) lives in library.py — see search_documents tool below.
 
 
 def _normalize_workspace_text(text: str) -> str:
@@ -391,7 +346,15 @@ class DeleteEventParams(BaseModel):
 
 
 class SearchDocumentsParams(BaseModel):
-    query: str = Field(description="What to look for in the document library, in natural language, e.g. 'what did we decide about the budget' or 'kickoff goals'")
+    query: str = Field(description="What to look for in the Library, in natural language, e.g. 'what did we decide about the budget' or 'standard NDA term'")
+
+
+class SaveToLibraryParams(BaseModel):
+    filename: str = Field(description="The session file to save into the persistent Library (e.g. 'acme-standard-nda.md'). Use the filename shown in Documents.")
+
+
+class ListLibraryParams(BaseModel):
+    pass
 
 
 class CreateScheduleParams(BaseModel):
@@ -714,12 +677,54 @@ def _build_flow_tools(working_dir: str) -> list:
         resolved.write_text(params.content, encoding="utf-8")
         return f"WROTE {resolved.name} ({resolved.stat().st_size} bytes)."
 
-    @define_tool(name="search_documents", description="Semantic search over the indexed document library (meeting notes, briefs, references). Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my notes', or 'search the docs'.")
+    @define_tool(name="search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")
     def search_documents(params: SearchDocumentsParams) -> str:
         query = params.query.strip()
         if not query:
             return "QUERY_REQUIRED: provide what to search for."
-        return _search_documents_query(query)
+        return library.search(query)
+
+    @define_tool(name="save_to_library", description="Save a session file (an upload or a doc you drafted) into the PERSISTENT Library so it's searchable across all future sessions. Use when the user says 'save this to my library/knowledge base', 'keep this permanently', etc. Session files are otherwise temporary and gone when the session ends.")
+    def save_to_library(params: SaveToLibraryParams) -> str:
+        filename = params.filename.strip()
+        if not filename:
+            return "FILENAME_REQUIRED: which session file should I save?"
+        target = (workspace_root / filename).resolve()
+        if not _path_within_workspace(workspace_root, target) or not target.is_file():
+            return f"NOT_FOUND: no session file named '{filename}'. Use list_documents to see what's available."
+        text = target.read_text(encoding="utf-8", errors="replace")
+        title = library.title_from_filename(filename)
+        try:
+            n_chunks = library.index_document(filename, title, text, source="upload")
+        except RuntimeError as exc:
+            return f"LIBRARY_FAILED: {exc}"
+        def _mut(data):
+            existing = appdb.find_library_doc(data, filename)
+            now = appdb._now_iso()
+            if existing:
+                existing["savedAt"] = now
+                existing["title"] = title
+            else:
+                data["library"].append({
+                    "id": appdb.new_id("lib", data["library"]),
+                    "filename": filename, "title": title, "savedAt": now, "source": "upload",
+                })
+            data["currentRoute"] = "/documents"
+            return (
+                f"SAVED '{filename}' to the Library ({n_chunks} chunks indexed). "
+                "It's now persistent and searchable across all future sessions."
+            )
+        return _update(_mut)
+
+    @define_tool(name="list_library", description="List the documents in the persistent Library (the searchable knowledge base).")
+    def list_library(params: ListLibraryParams) -> str:
+        docs = _load()["library"]
+        if not docs:
+            return "The Library is empty. Upload a document and save it to the Library."
+        lines = [f"{len(docs)} document(s) in the Library:"]
+        for d in docs:
+            lines.append(f"- {d['filename']} ({d.get('source') or 'doc'}, saved {(d.get('savedAt') or '')[:10]})")
+        return "\n".join(lines)
 
     @define_tool(name="create_schedule", description="Create a scheduled reminder: a saved instruction the app runs automatically on a daily or weekly cadence and emails the result to the user. Use for 'email me a daily summary', 'remind me every Monday', etc.")
     def create_schedule(params: CreateScheduleParams) -> str:
@@ -813,7 +818,7 @@ def _build_flow_tools(working_dir: str) -> list:
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,
-        search_documents,
+        search_documents, save_to_library, list_library,
         create_schedule, list_schedules, delete_schedule,
     ]
 

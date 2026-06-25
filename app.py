@@ -6,8 +6,18 @@ Proxies all AI interactions to isolated session containers via SessionManager.
 import asyncio
 import logging
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# Reuse the session-container's appdb (owner Cosmos doc) and library (Search-index KB) so
+# the orchestrator can serve manual Library actions without duplicating that logic.
+_SC = Path(__file__).resolve().parent / "session-container"
+if str(_SC) not in sys.path:
+    sys.path.insert(0, str(_SC))
+import appdb  # noqa: E402
+import library  # noqa: E402
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -324,6 +334,86 @@ async def get_file_content(session_id: str, filename: str) -> dict:
                 detail = "Request failed"
             raise HTTPException(status_code=exc.response.status_code, detail=detail)
         raise
+
+
+# ── Library (persistent KB) — manual Save to Library, delete, and view ────────
+# These are owner-global operations (the Library spans sessions); the session id is just
+# the calling context. Promotion = index the file's text into Search + record it in the
+# owner Cosmos doc's library[]. Kept in the orchestrator so the manual UI button works
+# without the AI (the agent has equivalent tools).
+class SaveToLibraryRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=400)
+
+
+@app.post("/sessions/{session_id}/library", status_code=201)
+async def save_to_library(session_id: str, req: SaveToLibraryRequest) -> dict:
+    try:
+        await session_manager.validate_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    filename = os.path.basename(req.filename)
+    try:
+        fc = await session_manager.get_file_content(session_id, filename)
+    except Exception as exc:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"No session file named '{filename}'")
+        raise
+    text = fc.get("content", "")
+    title = library.title_from_filename(filename)
+    try:
+        n_chunks = await asyncio.to_thread(library.index_document, filename, title, text, "upload")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    def _mut(data):
+        existing = appdb.find_library_doc(data, filename)
+        now = appdb._now_iso()
+        if existing:
+            existing["savedAt"] = now
+            existing["title"] = title
+        else:
+            data["library"].append({
+                "id": appdb.new_id("lib", data["library"]),
+                "filename": filename, "title": title, "savedAt": now, "source": "upload",
+            })
+    await asyncio.to_thread(appdb.update, _mut)
+    return {"filename": filename, "chunks": n_chunks, "status": "saved"}
+
+
+@app.delete("/sessions/{session_id}/library/{filename}", status_code=204)
+async def delete_from_library(session_id: str, filename: str):
+    try:
+        await session_manager.validate_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    fn = os.path.basename(filename)
+    try:
+        await asyncio.to_thread(library.delete_document, fn)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    def _mut(data):
+        if appdb.find_library_doc(data, fn) is None:
+            raise appdb.AbortWrite(None)
+        data["library"] = [d for d in data["library"] if d["filename"] != fn]
+    await asyncio.to_thread(appdb.update, _mut)
+
+
+@app.get("/sessions/{session_id}/library/content")
+async def get_library_content(session_id: str, filename: str) -> dict:
+    """Reconstruct a Library doc's text (from its indexed chunks) for the viewer."""
+    try:
+        await session_manager.validate_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    fn = os.path.basename(filename)
+    try:
+        text = await asyncio.to_thread(library.get_document_text, fn)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    if text is None:
+        raise HTTPException(status_code=404, detail=f"'{fn}' is not in the Library")
+    return {"filename": fn, "content": text, "mime_type": "text/markdown"}
 
 
 class SaveContentRequest(BaseModel):

@@ -116,3 +116,47 @@ export async function saveFileContent(
   }
   return res.json();
 }
+
+// ── Library (persistent KB) ──────────────────────────────────────────────────
+export async function saveToLibrary(
+  sessionId: string,
+  filename: string,
+): Promise<{ filename: string; chunks: number; status: string }> {
+  const res = await apiFetch(`/sessions/${sessionId}/library`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Failed to save to Library (${res.status}): ${detail}`);
+  }
+  return res.json();
+}
+
+export async function deleteFromLibrary(sessionId: string, filename: string): Promise<void> {
+  const res = await apiFetch(`/sessions/${sessionId}/library/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok && res.status !== 204) {
+    const detail = await res.text();
+    throw new Error(`Failed to remove from Library (${res.status}): ${detail}`);
+  }
+}
+
+export async function getLibraryContent(
+  sessionId: string,
+  filename: string,
+): Promise<FileContentResponse> {
+  const params = new URLSearchParams({ filename });
+  const res = await apiFetch(`/sessions/${sessionId}/library/content?${params.toString()}`, {
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Failed to load Library document (${res.status}): ${detail}`);
+  }
+  return res.json();
+}

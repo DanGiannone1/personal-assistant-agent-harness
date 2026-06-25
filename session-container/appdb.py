@@ -23,6 +23,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from azure.core import MatchConditions
@@ -36,7 +37,7 @@ _LOCK = threading.Lock()
 # keyed by a STABLE owner id (single-user app), so it persists across sessions/tabs/
 # restarts. Documents/files stay in the per-session workspace folder. AAD-only (no
 # account key): DefaultAzureCredential — az login locally, managed identity in ACA.
-_STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules")
+_STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules", "library")
 # Single-user POC: one stable key for the owner's data. Swap to the Entra `oid` here
 # when multi-user accounts are introduced — nothing else in this module changes.
 _OWNER_ID = os.getenv("COSMOS_OWNER_ID", "owner")
@@ -79,6 +80,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _seed_library() -> list[dict]:
+    """The persistent Library starts pre-loaded with the reference docs in seed_docs/ —
+    these are the owner's existing knowledge base (already indexed for RAG). Session
+    uploads are added later via Save to Library."""
+    seed_dir = Path(__file__).resolve().parent / "seed_docs"
+    if not seed_dir.is_dir():
+        return []
+    return [
+        {
+            "id": f"lib-{i + 1}",
+            "filename": p.name,
+            "title": p.stem.replace("-", " ").replace("_", " "),
+            "savedAt": _now_iso(),
+            "source": "reference",
+        }
+        for i, p in enumerate(sorted(seed_dir.glob("*.md")))
+    ]
+
+
 def _seed() -> dict:
     """A fresh seeded Flow dataset — a small set of tasks and calendar events."""
     return {
@@ -90,6 +110,9 @@ def _seed() -> dict:
         # Scheduled reminders — saved prompts the orchestrator runs on a cadence and
         # emails the result. Created by the user (via the agent) and persisted to Cosmos.
         "schedules": [],
+        # Persistent document Library (the searchable KB) — pre-loaded with reference docs;
+        # session files are promoted in via Save to Library. See library.py.
+        "library": _seed_library(),
         # Catalog of navigable pages. `keywords` help the navigate tool resolve
         # free-text destinations deterministically without a separate LLM routing pass.
         # NOTE: the AI Workbench (/assistant) is a frontend-only route and is intentionally
@@ -111,7 +134,7 @@ def _doc_to_state(doc: dict) -> dict:
     coerced to [] so callers never have to null-check.
     """
     state = {k: doc.get(k) for k in _STATE_KEYS}
-    for k in ("tasks", "events", "routes", "schedules"):
+    for k in ("tasks", "events", "routes", "schedules", "library"):
         if state.get(k) is None:
             state[k] = []
     if state.get("currentRoute") is None:
@@ -375,6 +398,10 @@ DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 def find_schedule(data: dict, schedule_id: str) -> dict | None:
     return next((s for s in data.get("schedules", []) if s["id"] == schedule_id), None)
+
+
+def find_library_doc(data: dict, filename: str) -> dict | None:
+    return next((d for d in data.get("library", []) if d["filename"] == filename), None)
 
 
 def resolve_schedule(data: dict, ref: str) -> dict | None:

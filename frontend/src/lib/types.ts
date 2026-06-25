@@ -94,10 +94,19 @@ export interface Schedule {
   nextRunAt?: string | null;
 }
 
+export interface LibraryDoc {
+  id: string;
+  filename: string;
+  title: string;
+  savedAt?: string;
+  source?: string;          // "reference" (seeded) | "upload" (promoted)
+}
+
 export interface AppState {
   currentRoute: string;
   tasks: Task[];
   events: CalendarEvent[];
   routes: { path: string; title: string; keywords?: string[] }[];
   schedules: Schedule[];
+  library: LibraryDoc[];
 }
