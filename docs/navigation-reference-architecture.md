@@ -3,6 +3,53 @@
 How the assistant moves the app from one screen to another — and why navigation is a
 **trust boundary**, not a place to let the model improvise.
 
+## Navigation at a glance
+
+"Navigation" just means changing what the app pane shows — going to the Calendar, opening a
+task, returning to the to-do list. It happens **three ways**:
+
+| Way | Trigger | Example | Who picks the destination |
+|---|---|---|---|
+| **Click** | User clicks the UI | Clicking "Calendar" in the sidebar | The user, directly — instant, no AI |
+| **Ask** | User says it in words | "take me to my calendar" | The app's resolver, from the user's words |
+| **Act** | User changes a record | "create a task" → lands on the new task | The action itself (create → the record, delete → the list) |
+
+```mermaid
+flowchart LR
+    User(("User"))
+    User -->|clicks| Click["Click<br/>sidebar / card"]
+    User -->|asks in words| Ask["Ask<br/>navigate tool"]
+    User -->|changes a record| Act["Act<br/>create / update / delete"]
+    Click --> Route(["Current route"])
+    Ask --> Route
+    Act --> Route
+    Route --> Pane["What the app pane shows<br/>(read from /app/state)"]
+```
+
+The one worth understanding is **Ask** — turning fuzzy words into a real screen. The whole
+journey is five steps:
+
+1. The user says where they want to go, in plain language.
+2. The agent passes those words, as-is, to a single `navigate` call.
+3. The **app** — not the AI — looks up what they meant, with deterministic rules.
+4. It lands on one of three outcomes: **one match** → go there; **several** → ask which;
+   **none** → offer the closest options.
+5. The screen follows *only* when it truly resolved — and never yanks the user off a screen
+   they just clicked to themselves.
+
+```mermaid
+flowchart TD
+    Say["User: 'go to the crypto task'"] --> Nav["navigate(destination)"]
+    Nav --> Resolve{"App resolves the words<br/>deterministic · no AI"}
+    Resolve -->|one match| Go["✅ Go there (set the route)"]
+    Resolve -->|several matches| Amb["🔀 Ambiguous — show options, don't move"]
+    Resolve -->|no match| NF["🚫 Not found — offer closest options, don't move"]
+```
+
+*Everything below is the detailed contract behind those five steps.*
+
+## The rule: intent in, resolution owned by the app
+
 The rule: **the model expresses intent; application code owns resolution.** The agent calls
 one tool with the user's words; a deterministic resolver in the app turns those words into a
 concrete route (or a short list to disambiguate). The model never chooses a URL.
