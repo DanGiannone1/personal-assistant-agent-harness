@@ -14,6 +14,9 @@ deeper:
 - **[crud-reference-architecture.md](crud-reference-architecture.md)** — CRUD as one state model with
   two callers (agent tools + manual REST) over one ETag-safe mutation path, the outcome contract, and
   the validation-parity gap.
+- **[personalized-navigation-via-user-context.md](personalized-navigation-via-user-context.md)** —
+  design direction (not built): user context ranks destinations for quick-nav and disambiguation,
+  without ever changing what's reachable.
 - **[harnesses.md](harnesses.md)** — the two interchangeable agent harnesses (Copilot SDK and Deep
   Agents), the `AgentSession` seam they share, and the reusable MCP-tools/skills direction.
 - **[retrieval.md](retrieval.md)** — the two-tier document model (session files + indexed Library),
