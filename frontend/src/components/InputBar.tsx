@@ -180,6 +180,7 @@ export default function InputBar({
             </button>
           )}
         </div>
+        <p className="composer-footer">AI can make mistakes. Double-check responses.</p>
       </div>
     </form>
   );

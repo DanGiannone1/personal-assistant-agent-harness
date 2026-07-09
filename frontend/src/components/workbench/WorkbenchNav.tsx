@@ -31,7 +31,7 @@ export default function WorkbenchNav({
     <nav className="tw-nav">
       {navItem("/home", "Home", Home)}
       <div className="tw-nav-section">Workspace</div>
-      {navItem("/todo", "To-Do", CheckSquare)}
+      {navItem("/todo", "Tasks", CheckSquare)}
       {navItem("/calendar", "Calendar", Calendar)}
       {navItem("/documents", "Documents", Files)}
       {navItem("/reminders", "Reminders", Bell)}
@@ -43,7 +43,7 @@ export default function WorkbenchNav({
         className={`tw-nav-item ${assistantActive ? "tw-nav-item-active" : ""}`}
       >
         <Sparkles size={16} strokeWidth={2.25} />
-        <span>AI Workbench</span>
+        <span>Assistant</span>
       </button>
     </nav>
   );

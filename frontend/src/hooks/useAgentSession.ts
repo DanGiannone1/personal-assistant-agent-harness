@@ -24,6 +24,8 @@ type Action =
   | { type: "ASSISTANT_START"; messageId: string }
   | { type: "DELTA"; delta: string }
   | { type: "MESSAGE_END" }
+  | { type: "REASONING_START" }
+  | { type: "REASONING_DELTA"; delta: string }
   | { type: "TOOL_START"; toolCallId: string; toolCallName: string }
   | { type: "TOOL_ARGS"; toolCallId: string; delta: string }
   | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: string[] }
@@ -147,6 +149,31 @@ function reducer(state: State, action: Action): State {
       };
     }
     case "MESSAGE_END": return { ...state, messages: updateLastMessage(state.messages, (m) => finalizeAssistantMessage(m)) };
+    case "REASONING_START": {
+      if (state.messages.length === 0) return state;
+      return {
+        ...state,
+        messages: updateLastMessage(state.messages, (m) => ({
+          ...m, parts: [...m.parts, { type: "reasoning" as const, content: "" }],
+        })),
+      };
+    }
+    case "REASONING_DELTA": {
+      if (state.messages.length === 0) return state;
+      return {
+        ...state,
+        messages: updateLastMessage(state.messages, (m) => {
+          const parts = [...m.parts];
+          const lastPart = parts[parts.length - 1];
+          if (lastPart && lastPart.type === "reasoning") {
+            parts[parts.length - 1] = { ...lastPart, content: lastPart.content + action.delta };
+          } else {
+            parts.push({ type: "reasoning" as const, content: action.delta });
+          }
+          return { ...m, parts };
+        }),
+      };
+    }
     case "TOOL_START": {
       if (state.messages.length === 0) return state;
       return {
@@ -264,9 +291,9 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (!appState) return "Home";
   if (route.startsWith("/todo/")) {
     const t = appState.tasks.find((x) => x.id === route.split("/").pop());
-    return t ? `the "${t.title}" task` : "To-Do";
+    return t ? `the "${t.title}" task` : "Tasks";
   }
-  if (route === "/todo") return "To-Do";
+  if (route === "/todo") return "Tasks";
   if (route === "/calendar") return "Calendar";
   if (route === "/documents") return "Documents";
   return "Home";
@@ -384,6 +411,9 @@ export function useAgentSession() {
       case "TEXT_MESSAGE_START": dispatch({ type: "ASSISTANT_START", messageId: event.message_id }); break;
       case "TEXT_MESSAGE_CONTENT": dispatch({ type: "DELTA", delta: event.delta }); break;
       case "TEXT_MESSAGE_END": dispatch({ type: "MESSAGE_END" }); break;
+      case "REASONING_START": dispatch({ type: "REASONING_START" }); break;
+      case "REASONING_DELTA": dispatch({ type: "REASONING_DELTA", delta: event.delta }); break;
+      case "REASONING_END": break;
       case "TOOL_CALL_START":
         if (event.tool_call_name !== "skill") stepCountRef.current += 1;
         toolNamesRef.current.set(event.tool_call_id, event.tool_call_name);
@@ -484,6 +514,12 @@ export function useAgentSession() {
     await Promise.all([refreshAppState(state.sessionId), refreshFiles(state.sessionId)]);
   }, [state.sessionId, refreshAppState, refreshFiles]);
 
+  // Re-pull app state after a manual CRUD mutation (tasks/events/reminders), so the UI
+  // reflects the same owner doc the agent mutates.
+  const refresh = useCallback(async () => {
+    if (state.sessionId) await refreshAppState(state.sessionId);
+  }, [state.sessionId, refreshAppState]);
+
   const handleStop = useCallback(() => {
     if (streamingRef.current) {  // synchronous — not the render-captured state
       cancelledRef.current = true;  // ignore any buffered events from the cancelled turn
@@ -505,6 +541,6 @@ export function useAgentSession() {
   return {
     state, statusMessage, isChatUploading, chatUploadName,
     handleSend, handleStop, handleChatUpload, doNewChat, startSession, navigateView,
-    uploadDocument, saveToLibrary, removeFromLibrary,
+    uploadDocument, saveToLibrary, removeFromLibrary, refresh,
   };
 }
