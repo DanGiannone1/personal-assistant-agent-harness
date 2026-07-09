@@ -13,6 +13,16 @@ import { useSession } from "./SessionProvider";
 // `headerActions` lets each surface add its own controls (expand/collapse, back-to-app).
 // `onOpenWorkspace` (dock only) surfaces a compact artifact card so a generated deliverable
 // isn't orphaned in the dock — one click opens it in the workspace canvas.
+// Human "Tue, Jun 30" label for an ISO day (matches the workspace's date formatting;
+// deterministic UTC + fixed names to avoid hydration mismatch).
+const _WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const _MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function humanDay(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  const [, m, day] = iso.split("-").map(Number);
+  return `${_WD[d.getUTCDay()]}, ${_MO[m - 1]} ${day}`;
+}
+
 export default function AssistantPanel({ headerActions, onOpenWorkspace }: { headerActions?: React.ReactNode; onOpenWorkspace?: () => void }) {
   const {
     state, statusMessage, isChatUploading, chatUploadName,
@@ -26,7 +36,7 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
   const quickNav = useMemo(() => (
     [
       { label: "Home", route: "/home" },
-      { label: "To-Do", route: "/todo" },
+      { label: "Tasks", route: "/todo" },
       { label: "Calendar", route: "/calendar" },
       { label: "Documents", route: "/documents" },
       { label: "Reminders", route: "/reminders" },
@@ -42,7 +52,7 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
     return app.tasks
       .filter((t) => t.dueDate && t.dueDate.slice(0, 10) < today && t.status !== "Done")
       .slice(0, 4)
-      .map((t) => ({ label: t.title, sublabel: `${t.group || "Task"} · due ${t.dueDate}`, route: `/todo/${t.id}` }));
+      .map((t) => ({ label: t.title, sublabel: `${t.group || "Task"} · due ${humanDay(t.dueDate!.slice(0, 10))}`, route: `/todo/${t.id}` }));
   }, [state.appState]);
 
   const handleNewChat = useCallback(() => {

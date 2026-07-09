@@ -222,6 +222,7 @@ frontend/.next/
 
 # Dev artifacts
 screenshots/*
+frontend/screenshots/
 sweep-results/
 logs/
 

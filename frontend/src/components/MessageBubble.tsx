@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Sparkles, ChevronDown, ChevronRight } from "lucide-react";
 import { ChatMessage, MessagePart } from "@/lib/types";
 import BespokeIcon from "./ui/BespokeIcon";
 import ToolTrace from "./ToolTrace";
@@ -14,6 +14,7 @@ interface MessageBubbleProps {
 
 type RenderedSegment =
   | { kind: "text"; part: MessagePart & { type: "text" }; index: number }
+  | { kind: "reasoning"; part: MessagePart & { type: "reasoning" }; index: number }
   | { kind: "tool_group"; parts: (MessagePart & { type: "tool_call" })[]; startIndex: number };
 
 function groupParts(parts: MessagePart[]): RenderedSegment[] {
@@ -31,13 +32,33 @@ function groupParts(parts: MessagePart[]): RenderedSegment[] {
         segments.push({ kind: "tool_group", parts: toolBatch, startIndex: toolBatchStart });
         toolBatch = [];
       }
-      segments.push({ kind: "text", part, index: i });
+      if (part.type === "reasoning") segments.push({ kind: "reasoning", part, index: i });
+      else segments.push({ kind: "text", part, index: i });
     }
   }
   if (toolBatch.length > 0) {
     segments.push({ kind: "tool_group", parts: toolBatch, startIndex: toolBatchStart });
   }
   return segments;
+}
+
+// Muted, collapsible "thinking" block — the model's reasoning summary (reasoning models only).
+function ReasoningBlock({ content }: { content: string }) {
+  const [open, setOpen] = useState(true);
+  if (!content.trim()) return null;
+  return (
+    <div className="reasoning-block" data-testid="reasoning-block">
+      <button type="button" className="reasoning-header" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <span>Thinking</span>
+      </button>
+      {open && (
+        <div className="reasoning-body">
+          <MarkdownRenderer content={content} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function MessageBubble({ message, onPick }: MessageBubbleProps) {
@@ -59,12 +80,14 @@ export default function MessageBubble({ message, onPick }: MessageBubbleProps) {
           {segments.map((seg) => {
             if (seg.kind === "text") {
               return (
-                <MarkdownRenderer 
-                  key={seg.index} 
-                  content={seg.part.content} 
-                  className="animate-fade-in" 
+                <MarkdownRenderer
+                  key={seg.index}
+                  content={seg.part.content}
+                  className="animate-fade-in"
                 />
               );
+            } else if (seg.kind === "reasoning") {
+              return <ReasoningBlock key={seg.index} content={seg.part.content} />;
             } else {
               return (
                 <ToolTrace

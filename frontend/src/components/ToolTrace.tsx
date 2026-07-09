@@ -1,6 +1,7 @@
 "use client";
 
-import { CheckCircle2, Activity, HelpCircle, AlertCircle, Sparkles, Circle } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, Activity, HelpCircle, AlertCircle, Sparkles, Circle, ChevronDown, ChevronRight } from "lucide-react";
 import { MessagePart, ToolOutcome } from "@/lib/types";
 
 function runningLabel(name: string): string {
@@ -92,11 +93,34 @@ function Step({ part, onPick }: { part: MessagePart & { type: "tool_call" }; onP
   );
 }
 
-export default function ToolTrace({ parts, onPick }: { parts: (MessagePart & { type: "tool_call" })[]; isStreaming?: boolean; onPick?: (text: string) => void }) {
+export default function ToolTrace({ parts, isStreaming, onPick }: { parts: (MessagePart & { type: "tool_call" })[]; isStreaming?: boolean; onPick?: (text: string) => void }) {
+  const [collapsed, setCollapsed] = useState(false);
   if (parts.length === 0) return null;
-  return (
+
+  const steps = (
     <div className="step-trace" data-testid="tool-trace">
       {parts.map((p) => <Step key={p.toolCallId} part={p} onPick={onPick} />)}
+    </div>
+  );
+
+  // Single-step turns stay clean — no collapsible header. Multi-step turns get a
+  // collapsible section header (like the reference UI). Keep it open while streaming.
+  if (parts.length < 2) return steps;
+
+  const open = isStreaming || !collapsed;
+  return (
+    <div className="step-group">
+      <button
+        type="button"
+        className="step-group-header"
+        onClick={() => setCollapsed((c) => !c)}
+        aria-expanded={open}
+        data-testid="step-group-toggle"
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <span>Worked through {parts.length} steps</span>
+      </button>
+      {open && steps}
     </div>
   );
 }

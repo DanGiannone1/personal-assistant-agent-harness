@@ -8,6 +8,12 @@ deeper:
 - **[spec.md](spec.md)** — the product: capabilities, surfaces, data model, agent tools, skills, theme.
 - **[architecture.md](architecture.md)** — the system: tiers, the AG-UI/SSE event flow, session
   lifecycle, state & storage, auth forwarding, the scheduler.
+- **[navigation-reference-architecture.md](navigation-reference-architecture.md)** — navigation as a
+  trust boundary: one intent call, a deterministic resolver, three explicit outcomes, and the
+  event-driven follow rule.
+- **[crud-reference-architecture.md](crud-reference-architecture.md)** — CRUD as one state model with
+  two callers (agent tools + manual REST) over one ETag-safe mutation path, the outcome contract, and
+  the validation-parity gap.
 - **[harnesses.md](harnesses.md)** — the two interchangeable agent harnesses (Copilot SDK and Deep
   Agents), the `AgentSession` seam they share, and the reusable MCP-tools/skills direction.
 - **[retrieval.md](retrieval.md)** — the two-tier document model (session files + indexed Library),

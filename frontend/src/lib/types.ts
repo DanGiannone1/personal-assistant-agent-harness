@@ -8,12 +8,16 @@ export type AGUIEvent =
   | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: string[] }
   | { type: "TOOL_CALL_END"; tool_call_id: string }
   | { type: "RUN_FINISHED"; thread_id: string; run_id: string }
-  | { type: "RUN_ERROR"; message: string };
+  | { type: "RUN_ERROR"; message: string }
+  | { type: "REASONING_START" }
+  | { type: "REASONING_DELTA"; delta: string }
+  | { type: "REASONING_END" };
 
 export type ToolOutcome = "ok" | "noop" | "error";
 
 export type MessagePart =
   | { type: "text"; content: string }
+  | { type: "reasoning"; content: string }
   | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: string[] };
 
 export interface TurnMeta {

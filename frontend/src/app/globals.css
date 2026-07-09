@@ -125,15 +125,28 @@ html, body {
 .message-body-user .prose-message p,
 .message-body-user .prose-message li { color: #FFFFFF !important; }
 
-/* Assistant Message: light gray card with dark text */
+/* Assistant Message: serif narrative on plain canvas (Claude-style reading surface) */
 .message-body-assistant .prose-message {
-  font-size: 1.05rem;
-  line-height: 1.7;
-  background: var(--surface-2);
-  padding: 1.25rem;
-  border-radius: 1.25rem 1.25rem 1.25rem 0.25rem;
-  border: 1px solid var(--border-subtle);
+  font-family: var(--font-serif), Georgia, "Times New Roman", serif;
+  font-size: 1.12rem;
+  line-height: 1.75;
+  letter-spacing: -0.003em;
+  background: transparent;
+  padding: 0.1rem 0;
+  border: none;
+  border-radius: 0;
   color: var(--text-primary);
+}
+
+/* Inline code rendered as pink monospace chips (like the reference UI) */
+.prose-message :not(pre) > code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.82em;
+  background: rgba(226, 68, 92, 0.07);
+  color: #c0344d;
+  padding: 0.12em 0.42em;
+  border-radius: 6px;
+  border: 1px solid rgba(226, 68, 92, 0.16);
 }
 
 /* Avatars */
@@ -512,10 +525,42 @@ html, body {
 }
 
 /* ── Claude-style inline step trace ── */
-.step-trace { display: flex; flex-direction: column; gap: 2px; margin: 0.35rem 0; }
-.step-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.84rem; animation: fade-in 0.2s ease-out both; }
-.step-row-skill { opacity: 0.7; font-size: 0.78rem; }
-.step-ic { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 6px; flex-shrink: 0; }
+.composer-footer { text-align: center; font-size: 0.72rem; color: var(--text-muted); margin-top: 0.6rem; }
+
+/* Reasoning ("thinking") blocks — muted, sans, indented; distinct from the serif narrative */
+.reasoning-block { margin: 0.3rem 0; }
+.reasoning-header {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.8rem; font-weight: 600; color: var(--text-muted);
+  background: none; border: none; cursor: pointer; padding: 0.15rem 0; transition: color 0.15s;
+}
+.reasoning-header:hover { color: var(--text-secondary); }
+.reasoning-body { border-left: 2px solid var(--border-subtle); padding-left: 0.85rem; margin: 0.15rem 0 0.4rem 0.25rem; }
+.reasoning-body .prose-message {
+  font-family: var(--font-geist-sans), system-ui, sans-serif !important;
+  font-size: 0.88rem; line-height: 1.6; color: var(--text-secondary);
+}
+.reasoning-body .prose-message p, .reasoning-body .prose-message li { color: var(--text-secondary); }
+.reasoning-body .prose-message strong { color: var(--text-secondary); font-weight: 700; }
+
+/* collapsible multi-step group header (reference-style disclosure) */
+.step-group { margin: 0.35rem 0; }
+.step-group-header {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.82rem; font-weight: 600; color: var(--text-muted);
+  padding: 0.2rem 0; background: none; border: none; cursor: pointer; transition: color 0.15s;
+}
+.step-group-header:hover { color: var(--text-secondary); }
+.step-trace { position: relative; display: flex; flex-direction: column; gap: 0; margin: 0.35rem 0 0.2rem; }
+/* connecting timeline line threaded behind the step nodes */
+.step-trace::before {
+  content: ""; position: absolute; left: 9px; top: 0.85rem; bottom: 0.85rem; width: 2px;
+  background: var(--border-subtle); border-radius: 2px; z-index: 0;
+}
+.step-row { position: relative; z-index: 1; display: flex; align-items: center; gap: 0.6rem; padding: 0.42rem 0; font-size: 0.86rem; animation: fade-in 0.2s ease-out both; }
+.step-row-skill { opacity: 0.75; font-size: 0.8rem; }
+/* circular nodes sit on the timeline; the icon's own surface bg masks the line behind it */
+.step-ic { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; flex-shrink: 0; background: var(--surface-1); }
 .step-ic-running { color: var(--brand-primary); }
 .step-ic-ok { color: var(--brand-success); }
 .step-ic-noop { color: var(--status-progress); }

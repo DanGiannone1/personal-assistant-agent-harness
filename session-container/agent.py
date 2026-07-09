@@ -40,6 +40,8 @@ from copilot.session import PermissionHandler
 from copilot.session_events import (
     AssistantMessageData,
     AssistantMessageDeltaData,
+    AssistantReasoningData,
+    AssistantReasoningDeltaData,
     SessionErrorData,
     SessionIdleData,
     SessionInfoData,
@@ -90,7 +92,10 @@ Only claim you did something after the tool that does it has returned successful
 never say a record was created/updated/deleted or that you navigated unless the tool call succeeded.
 
 How you work:
-- Read the request, then take the single most direct action. Do not over-plan.
+- Read the request, then take the single most direct action. Do not over-plan. (Exception: a few
+  requests are explicitly multi-step routines — like a weekly review — where a skill lays out a
+  sequence of steps. For those, load the skill and complete all of its steps in the turn rather
+  than stopping after one tool.)
 - For "take me to / go to / open / show me <place>" requests, call `navigate` with the
   user's destination words **verbatim**. Don't pre-resolve a vague phrase — pass it and
   let `navigate` decide. If it returns AMBIGUOUS, list the candidates and ask which one.
@@ -864,6 +869,7 @@ class AgentSession:
         self._run_id: str = ""
         self._current_message_id: str = ""
         self._message_started: bool = False
+        self._reasoning_active: bool = False
 
         self._raw_sdk_log_lock = threading.Lock()
         self._raw_sdk_log_path: str | None = None
@@ -919,17 +925,28 @@ class AgentSession:
         custom_tools = _build_flow_tools(self._working_dir)
         available_tools = [t.name for t in custom_tools] + ["skill"]
 
+        deployment = os.environ["AZURE_DEPLOYMENT"]
+        # Reasoning models (the gpt-5 family, excluding the *-chat variants) emit visible
+        # reasoning summaries through the Responses API; plain chat models use completions.
+        is_reasoning = deployment.startswith("gpt-5") and "chat" not in deployment
         provider = {
             "type": "azure",
             "base_url": os.environ["AZURE_ENDPOINT"],
             "bearer_token": token,
-            "wire_api": "completions",
+            "wire_api": "responses" if is_reasoning else "completions",
             "azure": {"api_version": os.getenv("AZURE_API_VERSION", "2024-10-21")},
         }
+        reasoning_kwargs = {}
+        if is_reasoning:
+            reasoning_kwargs = {
+                "reasoning_effort": os.getenv("REASONING_EFFORT", "medium"),
+                "reasoning_summary": "concise",
+            }
 
         self._session = await self._client.create_session(
-            model=os.environ["AZURE_DEPLOYMENT"],
+            model=deployment,
             provider=provider,
+            **reasoning_kwargs,
             system_message={"mode": "replace", "content": SYSTEM_PROMPT},
             working_directory=self._working_dir,
             tools=custom_tools,
@@ -1003,11 +1020,32 @@ class AgentSession:
             }
         )
 
+        if isinstance(data, AssistantReasoningDeltaData):
+            self._status = "thinking"
+            delta = data.delta_content or ""
+            if not delta:
+                return
+            if not self._reasoning_active:
+                self._reasoning_active = True
+                self._enqueue_sse({"type": "REASONING_START"})
+            self._enqueue_sse({"type": "REASONING_DELTA", "delta": delta})
+            return
+
+        if isinstance(data, AssistantReasoningData):
+            if self._reasoning_active:
+                self._enqueue_sse({"type": "REASONING_END"})
+                self._reasoning_active = False
+            return
+
         if isinstance(data, AssistantMessageDeltaData):
             self._status = "thinking"
             delta = data.delta_content or ""
             if not delta:
                 return
+            # assistant prose begins — close any open reasoning block first
+            if self._reasoning_active:
+                self._enqueue_sse({"type": "REASONING_END"})
+                self._reasoning_active = False
             if not self._message_started:
                 self._current_message_id = str(uuid.uuid4())
                 self._message_started = True
@@ -1108,6 +1146,7 @@ class AgentSession:
         self._run_id = str(uuid.uuid4())
         self._current_message_id = ""
         self._message_started = False
+        self._reasoning_active = False
         self._tools_called = 0
         self._tool_names.clear()
         self._turn_start = _time.monotonic()

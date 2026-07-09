@@ -174,7 +174,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["authorization", "content-type", "x-api-key"],
 )
 
@@ -436,6 +436,291 @@ async def get_library_content(session_id: str, filename: str) -> dict:
     if text is None:
         raise HTTPException(status_code=404, detail=f"'{fn}' is not in the Library")
     return {"filename": fn, "content": text, "mime_type": "text/markdown"}
+
+
+# ── Manual CRUD — tasks, events, reminders ───────────────────────────────────
+# So the app stands on its own without the AI: the same owner Cosmos doc the agent
+# mutates, edited directly from the UI through the concurrency-safe `appdb.update` path.
+# No session container / agent involved.
+class _NotFound(Exception):
+    """Raised inside a mutator when the target record is absent. Propagates through
+    appdb.update (which only catches AbortWrite) so _mutate can map it to a 404."""
+
+
+async def _require_session(session_id: str) -> None:
+    try:
+        await session_manager.validate_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+async def _mutate(mutator) -> None:
+    """Run an appdb.update mutator off-thread; map a _NotFound from the mutator to a 404."""
+    try:
+        await asyncio.to_thread(appdb.update, mutator)
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+class TaskCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    status: str = "To do"
+    priority: str = "Medium"
+    group: str = "General"
+    dueDate: str = ""
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = Field(None, max_length=300)
+    status: str | None = None
+    priority: str | None = None
+    group: str | None = None
+    dueDate: str | None = None
+
+
+class SubtaskCreate(BaseModel):
+    text: str = Field(..., min_length=1, max_length=300)
+
+
+class SubtaskToggle(BaseModel):
+    done: bool
+
+
+@app.post("/sessions/{session_id}/tasks", status_code=201)
+async def create_task(session_id: str, req: TaskCreate) -> dict:
+    await _require_session(session_id)
+    if req.status not in appdb.TASK_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
+    if req.priority not in appdb.TASK_PRIORITIES:
+        raise HTTPException(status_code=422, detail=f"priority must be one of {appdb.TASK_PRIORITIES}")
+    created: dict = {}
+
+    def _mut(data):
+        task = {
+            "id": appdb.new_id("t", data["tasks"]),
+            "title": req.title.strip(), "status": req.status, "priority": req.priority,
+            "group": (req.group or "General").strip() or "General", "dueDate": req.dueDate.strip(),
+            "subtasks": [], "notes": "", "createdAt": appdb._now_iso(),
+        }
+        data["tasks"].append(task)
+        created.update(task)
+    await _mutate(_mut)
+    return created
+
+
+@app.patch("/sessions/{session_id}/tasks/{task_id}")
+async def update_task(session_id: str, task_id: str, req: TaskUpdate) -> dict:
+    await _require_session(session_id)
+    if req.status is not None and req.status not in appdb.TASK_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
+    if req.priority is not None and req.priority not in appdb.TASK_PRIORITIES:
+        raise HTTPException(status_code=422, detail=f"priority must be one of {appdb.TASK_PRIORITIES}")
+    out: dict = {}
+
+    def _mut(data):
+        t = appdb.find_task(data, task_id)
+        if t is None:
+            raise _NotFound()
+        for field in ("title", "status", "priority", "group", "dueDate"):
+            val = getattr(req, field)
+            if val is not None:
+                t[field] = val.strip() if isinstance(val, str) else val
+        out.update(t)
+    await _mutate(_mut)
+    return out
+
+
+@app.delete("/sessions/{session_id}/tasks/{task_id}", status_code=204)
+async def delete_task(session_id: str, task_id: str):
+    await _require_session(session_id)
+
+    def _mut(data):
+        if appdb.find_task(data, task_id) is None:
+            raise _NotFound()
+        data["tasks"] = [t for t in data["tasks"] if t["id"] != task_id]
+    await _mutate(_mut)
+
+
+@app.post("/sessions/{session_id}/tasks/{task_id}/subtasks", status_code=201)
+async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate) -> dict:
+    await _require_session(session_id)
+
+    def _mut(data):
+        t = appdb.find_task(data, task_id)
+        if t is None:
+            raise _NotFound()
+        t.setdefault("subtasks", []).append({"text": req.text.strip(), "done": False})
+    await _mutate(_mut)
+    return {"status": "added"}
+
+
+@app.patch("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
+async def toggle_subtask(session_id: str, task_id: str, index: int, req: SubtaskToggle) -> dict:
+    await _require_session(session_id)
+
+    def _mut(data):
+        t = appdb.find_task(data, task_id)
+        subs = (t or {}).get("subtasks") or []
+        if t is None or index < 0 or index >= len(subs):
+            raise _NotFound()
+        subs[index]["done"] = req.done
+    await _mutate(_mut)
+    return {"status": "ok"}
+
+
+@app.delete("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
+async def delete_subtask(session_id: str, task_id: str, index: int) -> dict:
+    await _require_session(session_id)
+
+    def _mut(data):
+        t = appdb.find_task(data, task_id)
+        subs = (t or {}).get("subtasks") or []
+        if t is None or index < 0 or index >= len(subs):
+            raise _NotFound()
+        subs.pop(index)
+    await _mutate(_mut)
+    return {"status": "deleted"}
+
+
+class EventCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    date: str = Field(..., min_length=1, max_length=10)   # YYYY-MM-DD
+    start: str = ""
+    end: str = ""
+    type: str = "Meeting"
+
+
+class EventUpdate(BaseModel):
+    title: str | None = Field(None, max_length=300)
+    date: str | None = None
+    start: str | None = None
+    end: str | None = None
+    type: str | None = None
+
+
+@app.post("/sessions/{session_id}/events", status_code=201)
+async def create_event(session_id: str, req: EventCreate) -> dict:
+    await _require_session(session_id)
+    created: dict = {}
+
+    def _mut(data):
+        event = {
+            "id": appdb.new_id("e", data["events"]),
+            "title": req.title.strip(), "date": req.date.strip(), "start": req.start.strip(),
+            "end": req.end.strip(), "type": (req.type or "Meeting").strip() or "Meeting", "notes": "",
+        }
+        data["events"].append(event)
+        created.update(event)
+    await _mutate(_mut)
+    return created
+
+
+@app.patch("/sessions/{session_id}/events/{event_id}")
+async def update_event(session_id: str, event_id: str, req: EventUpdate) -> dict:
+    await _require_session(session_id)
+    out: dict = {}
+
+    def _mut(data):
+        e = appdb.find_event(data, event_id)
+        if e is None:
+            raise _NotFound()
+        for field in ("title", "date", "start", "end", "type"):
+            val = getattr(req, field)
+            if val is not None:
+                e[field] = val.strip()
+        out.update(e)
+    await _mutate(_mut)
+    return out
+
+
+@app.delete("/sessions/{session_id}/events/{event_id}", status_code=204)
+async def delete_event(session_id: str, event_id: str):
+    await _require_session(session_id)
+
+    def _mut(data):
+        if appdb.find_event(data, event_id) is None:
+            raise _NotFound()
+        data["events"] = [e for e in data["events"] if e["id"] != event_id]
+    await _mutate(_mut)
+
+
+class ScheduleCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    frequency: str
+    time: str
+    timezone: str = "UTC"
+    daysOfWeek: list[int] = Field(default_factory=list)
+
+
+class ScheduleUpdate(BaseModel):
+    enabled: bool | None = None
+    title: str | None = Field(None, max_length=200)
+    prompt: str | None = Field(None, max_length=2000)
+
+
+@app.post("/sessions/{session_id}/schedules", status_code=201)
+async def create_schedule(session_id: str, req: ScheduleCreate) -> dict:
+    await _require_session(session_id)
+    freq = req.frequency.strip().lower()
+    if freq not in appdb.SCHEDULE_FREQUENCIES:
+        raise HTTPException(status_code=422, detail=f"frequency must be one of {appdb.SCHEDULE_FREQUENCIES}")
+    try:
+        tz = appdb.normalize_timezone(req.timezone)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    days = sorted({d for d in req.daysOfWeek if 0 <= d <= 6}) if freq == "weekly" else []
+    if freq == "weekly" and not days:
+        raise HTTPException(status_code=422, detail="weekly reminder needs at least one day (0=Mon … 6=Sun)")
+    try:
+        next_run = appdb.compute_next_run(freq, req.time, tz, days)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=f"bad time: {exc}")
+    created: dict = {}
+
+    def _mut(data):
+        sched = {
+            "id": appdb.new_id("s", data["schedules"]), "title": req.title.strip(),
+            "prompt": req.prompt.strip(), "frequency": freq, "time": req.time.strip(),
+            "timezone": tz, "daysOfWeek": days, "enabled": True, "channel": "email",
+            "createdAt": appdb._now_iso(), "lastRunAt": None, "lastStatus": None,
+            "nextRunAt": next_run.isoformat(),
+        }
+        data["schedules"].append(sched)
+        created.update(sched)
+    await _mutate(_mut)
+    return created
+
+
+@app.patch("/sessions/{session_id}/schedules/{schedule_id}")
+async def update_schedule(session_id: str, schedule_id: str, req: ScheduleUpdate) -> dict:
+    await _require_session(session_id)
+    out: dict = {}
+
+    def _mut(data):
+        s = appdb.find_schedule(data, schedule_id)
+        if s is None:
+            raise _NotFound()
+        if req.enabled is not None:
+            s["enabled"] = req.enabled
+        if req.title is not None:
+            s["title"] = req.title.strip()
+        if req.prompt is not None:
+            s["prompt"] = req.prompt.strip()
+        out.update(s)
+    await _mutate(_mut)
+    return out
+
+
+@app.delete("/sessions/{session_id}/schedules/{schedule_id}", status_code=204)
+async def delete_schedule(session_id: str, schedule_id: str):
+    await _require_session(session_id)
+
+    def _mut(data):
+        if appdb.find_schedule(data, schedule_id) is None:
+            raise _NotFound()
+        data["schedules"] = [s for s in data["schedules"] if s["id"] != schedule_id]
+    await _mutate(_mut)
 
 
 class SaveContentRequest(BaseModel):
