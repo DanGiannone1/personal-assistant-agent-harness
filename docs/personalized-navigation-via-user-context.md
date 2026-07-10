@@ -55,13 +55,20 @@ resolver returned. One user-context store powers both.
 
 ## How the AI layers in — without losing fail-loud
 
-1. **Deterministic ranking first.** A weighted score (recency, frequency, priority/overdue,
-   profile affinity) over the grounded set. Explainable, testable, cheap; handles most cases.
-2. **AI as tie-breaker only, only within the grounded set.** When deterministic scores are
-   close, let the model pick among *real* options using conversation context. Safe because it
-   selects — it never generates a route.
-3. **Confidence threshold.** Auto-navigate only above it; otherwise show *ranked* candidate
-   chips. Never silently guess when genuinely uncertain — the current honesty contract
+These compose as the **internal resolution ladder of the single `navigate` tool** (diagrammed
+in [navigation-reference-architecture.md](navigation-reference-architecture.md#entry-point-2--intent-take-me-to)):
+the main agent still makes one call with the user's words; everything below runs inside the
+tool boundary, so candidate lists and any sub-LLM call never pollute the main agent's context.
+
+1. **Deterministic matching and ranking first.** Exact/lexical match, then (at real-world
+   destination counts) vector search, then a weighted context score (recency, frequency,
+   priority/overdue, profile affinity) — all over the grounded set. Explainable, testable,
+   cheap; handles most cases in milliseconds.
+2. **A sub-LLM as tie-breaker only, only within the grounded set.** When the cheap layers are
+   torn, an LLM call *inside the tool* picks among *real* candidates using conversation
+   context. Safe because it selects — it never generates a route.
+3. **Confidence threshold.** Auto-navigate only above it; otherwise return *ranked* candidate
+   chips and ask. Never silently guess when genuinely uncertain — the honesty contract
    ([ambiguous/not-found are first-class outcomes](navigation-reference-architecture.md))
    stays intact.
 

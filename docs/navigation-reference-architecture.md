@@ -5,48 +5,74 @@ How the assistant moves the app from one screen to another — and why navigatio
 
 ## Navigation at a glance
 
-"Navigation" just means changing what the app pane shows — going to the Calendar, opening a
-task, returning to the to-do list. It happens **three ways**:
+"Navigation" means changing what the app pane shows. The design is **two entry points, one
+shared primitive, one rule**.
 
-| Way | Trigger | Example | Who picks the destination |
-|---|---|---|---|
-| **Click** | User clicks the UI | Clicking "Calendar" in the sidebar | The user, directly — instant, no AI |
-| **Ask** | User says it in words | "take me to my calendar" | The app's resolver, from the user's words |
-| **Act** | User changes a record | "create a task" → lands on the new task | The action itself (create → the record, delete → the list) |
+**The rule: a route can only come from the set of destinations that actually exist.** The
+user, the model, or a sub-model may *select* a destination; none of them may *invent* one.
 
-```mermaid
-flowchart LR
-    User(("User"))
-    User -->|clicks| Click["Click<br/>sidebar / card"]
-    User -->|asks in words| Ask["Ask<br/>navigate tool"]
-    User -->|changes a record| Act["Act<br/>create / update / delete"]
-    Click --> Route(["Current route"])
-    Ask --> Route
-    Act --> Route
-    Route --> Pane["What the app pane shows<br/>(read from /app/state)"]
-```
+### Entry point 1 — quick links (no AI, instant)
 
-The one worth understanding is **Ask** — turning fuzzy words into a real screen. The whole
-journey is five steps:
+The sidebar and quick-nav chips navigate directly: a click sets the route in milliseconds,
+deterministically, with no model in the loop. User context's job here is **ranking** — which
+links surface first (most-visited, overdue, current engagement) — never membership: it
+reorders what's offered, it doesn't change what's reachable
+([personalized-navigation-via-user-context.md](personalized-navigation-via-user-context.md)).
 
-1. The user says where they want to go, in plain language.
-2. The agent passes those words, as-is, to a single `navigate` call.
-3. The **app** — not the AI — looks up what they meant, with deterministic rules.
-4. It lands on one of three outcomes: **one match** → go there; **several** → ask which;
-   **none** → offer the closest options.
-5. The screen follows *only* when it truly resolved — and never yanks the user off a screen
-   they just clicked to themselves.
+### Entry point 2 — intent ("take me to…")
+
+The main agent's only job is to recognize *that* the user wants to go somewhere and make
+**one call** — `navigate(<the user's words>)`. Everything else happens **inside the tool
+boundary**, as a resolution ladder that grounds the words to a real destination, cheapest
+layer first:
 
 ```mermaid
 flowchart TD
-    Say["User: 'go to the crypto task'"] --> Nav["navigate(destination)"]
-    Nav --> Resolve{"App resolves the words<br/>deterministic · no AI"}
-    Resolve -->|one match| Go["✅ Go there (set the route)"]
-    Resolve -->|several matches| Amb["🔀 Ambiguous — show options, don't move"]
-    Resolve -->|no match| NF["🚫 Not found — offer closest options, don't move"]
+    W["navigate('the northstar thing') — ONE tool call from the main agent"] --> L1{"1 · Deterministic match<br/>exact path/title, lexical"}
+    L1 -->|one hit| GO["✅ resolved — set the route"]
+    L1 -->|many / none| L2{"2 · Semantic match<br/>vector search over destinations, at scale"}
+    L2 -->|clear winner| GO
+    L2 -->|close candidates| L3{"3 · User-context ranking<br/>recency · frequency · salience"}
+    L3 -->|confident| GO
+    L3 -->|still torn| L4{"4 · Sub-LLM tie-break<br/>selects among REAL candidates only"}
+    L4 -->|confident| GO
+    L4 -->|genuinely ambiguous| ASK["🔀 ask the user — candidate chips"]
+    L2 -->|nothing plausible| NF["🚫 not found — offer real options"]
 ```
 
-*Everything below is the detailed contract behind those five steps.*
+The design consequences, in order of importance:
+
+- **One main-loop call, clean context.** Candidate lists, vector hits, and the tie-breaking
+  sub-LLM all live inside the tool — they never pollute the main agent's context. The main
+  agent spends the same tokens whether resolution took one layer or four. Candidates surface
+  to the *user* (as chips) only when the ladder genuinely can't decide.
+- **The ladder is a cost ladder.** Most navigations resolve at layer 1–2 in milliseconds; a
+  model call happens only when the cheap layers are torn. AI is a tie-breaker, not the path.
+- **Select, never generate.** Wherever a model participates (main agent expressing intent,
+  sub-LLM tie-breaking), it chooses among destinations the app enumerated. It cannot emit a
+  route that doesn't exist — that's the trust boundary.
+- **Honest outcomes.** "Ask the user" and "not found" are first-class results with real
+  options attached, never failures to paper over.
+
+### Navigation is a shared primitive, not a use-case feature
+
+Any use case that needs to move the app invokes this same capability as a step: creating a
+task lands the user on the new task, a generated report opens the report, a future workflow
+ends wherever its result lives. Those are **consumers** of navigation — nothing about the
+design above is specific to any of them.
+
+### Not a skill
+
+Every request may need to move the app, so navigation is a **baked-in tool**, always in the
+tool list on every turn — never a skill behind a trigger that might not fire. (By the role
+test: skills are *invoked method*; navigation is *always-available capability*.)
+
+---
+
+*Everything below is the detailed contract, anchored to the shipped implementation — which
+today covers ladder layers 1 and 5 (deterministic match + ask-the-user) at demo scale.
+Layers 2–4 are the designed extension for real-world destination counts; the resolver is
+the seam they slot into.*
 
 ## The rule: intent in, resolution owned by the app
 
