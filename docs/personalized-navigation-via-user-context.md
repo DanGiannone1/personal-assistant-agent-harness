@@ -55,22 +55,21 @@ resolver returned. One user-context store powers both.
 
 ## How the AI layers in — without losing fail-loud
 
-These compose as the **internal resolution ladder of the single `navigate` tool** (diagrammed
-in [navigation-reference-architecture.md](navigation-reference-architecture.md#entry-point-2--intent-take-me-to)):
-the main agent still makes one call with the user's words; everything below runs inside the
-tool boundary, so candidate lists and any sub-LLM call never pollute the main agent's context.
+Bare bones (see [navigation-reference-architecture.md](navigation-reference-architecture.md#navigation-at-a-glance)):
+the main agent makes one `navigate(<intent>)` call; **inside the tool**, a vector search over
+the real destinations returns candidates and **an LLM decides** among them. Candidate lists
+and the deciding LLM call never pollute the main agent's context, and the decision can only
+land *somewhere real* — it selects from what the search returned, never generates a route.
 
-1. **Deterministic matching and ranking first.** Exact/lexical match, then (at real-world
-   destination counts) vector search, then a weighted context score (recency, frequency,
-   priority/overdue, profile affinity) — all over the grounded set. Explainable, testable,
-   cheap; handles most cases in milliseconds.
-2. **A sub-LLM as tie-breaker only, only within the grounded set.** When the cheap layers are
-   torn, an LLM call *inside the tool* picks among *real* candidates using conversation
-   context. Safe because it selects — it never generates a route.
-3. **Confidence threshold.** Auto-navigate only above it; otherwise return *ranked* candidate
-   chips and ask. Never silently guess when genuinely uncertain — the honesty contract
-   ([ambiguous/not-found are first-class outcomes](navigation-reference-architecture.md))
-   stays intact.
+**Decide, don't interrogate.** The tool commits to the best match rather than asking
+clarifying questions; a wrong landing is cheap for the user to correct, an interrogation is
+friction on every ambiguous ask.
+
+**Where user context earns its keep** — the same store improves both paths over time:
+- **Quick links:** ranking (recency, frequency, salience, profile) decides which links
+  surface first.
+- **The in-tool decision:** the same signals bias which candidate the LLM picks — "the
+  review" resolves to the one this user opened yesterday.
 
 ## Real-world forcing functions
 

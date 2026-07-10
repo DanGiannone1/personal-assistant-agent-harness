@@ -5,74 +5,57 @@ How the assistant moves the app from one screen to another — and why navigatio
 
 ## Navigation at a glance
 
-"Navigation" means changing what the app pane shows. The design is **two entry points, one
-shared primitive, one rule**.
+"Navigation" means changing what the app pane shows. Bare bones: **one rule, two paths, one
+tool that everything else composes on.**
 
-**The rule: a route can only come from the set of destinations that actually exist.** The
-user, the model, or a sub-model may *select* a destination; none of them may *invent* one.
+**The rule: a route can only come from the set of destinations that actually exist.** Models
+*select* destinations; they never invent one.
 
-### Entry point 1 — quick links (no AI, instant)
+### Path 1 — quick links (no AI, instant)
 
-The sidebar and quick-nav chips navigate directly: a click sets the route in milliseconds,
-deterministically, with no model in the loop. User context's job here is **ranking** — which
-links surface first (most-visited, overdue, current engagement) — never membership: it
-reorders what's offered, it doesn't change what's reachable
+The sidebar and quick-nav chips set the route directly: a click, milliseconds, no model in
+the loop. As user context accrues (recency, frequency, salience), the links get better —
+context **ranks** what surfaces; it never changes what's reachable
 ([personalized-navigation-via-user-context.md](personalized-navigation-via-user-context.md)).
 
-### Entry point 2 — intent ("take me to…")
+### Path 2 — the nav tool (one tool, one call)
 
-The main agent's only job is to recognize *that* the user wants to go somewhere and make
-**one call** — `navigate(<the user's words>)`. Everything else happens **inside the tool
-boundary**, as a resolution ladder that grounds the words to a real destination, cheapest
-layer first:
+Users rarely ask for pure navigation — navigation happens *inside* tasks. Whenever a task
+needs a page, the agent makes one call: `navigate(<what the user means>)`. Inside the tool:
+
+1. **Vector search** over the real destinations (routes, records) returns candidates.
+2. **An LLM decides** — picks the best candidate. This call lives inside the tool, so
+   candidate lists never pollute the main agent's context.
+3. **Navigate.** The route is set; the pane follows.
 
 ```mermaid
-flowchart TD
-    W["navigate('the northstar thing') — ONE tool call from the main agent"] --> L1{"1 · Deterministic match<br/>exact path/title, lexical"}
-    L1 -->|one hit| GO["✅ resolved — set the route"]
-    L1 -->|many / none| L2{"2 · Semantic match<br/>vector search over destinations, at scale"}
-    L2 -->|clear winner| GO
-    L2 -->|close candidates| L3{"3 · User-context ranking<br/>recency · frequency · salience"}
-    L3 -->|confident| GO
-    L3 -->|still torn| L4{"4 · Sub-LLM tie-break<br/>selects among REAL candidates only"}
-    L4 -->|confident| GO
-    L4 -->|genuinely ambiguous| ASK["🔀 ask the user — candidate chips"]
-    L2 -->|nothing plausible| NF["🚫 not found — offer real options"]
+flowchart LR
+    T["task needs a page"] --> N["navigate(intent)"]
+    N --> V["vector search<br/>over real destinations"]
+    V --> D["LLM decides"]
+    D --> GO["route set — pane follows"]
 ```
 
-The design consequences, in order of importance:
+**Decide, don't interrogate.** The tool commits to the best match — no clarifying questions.
+If it lands wrong, the user says so and the next call gets it right; a cheap correction beats
+an interrogation. And it can only be wrong *somewhere real* — the LLM selects from what the
+vector search returned.
 
-- **One main-loop call, clean context.** Candidate lists, vector hits, and the tie-breaking
-  sub-LLM all live inside the tool — they never pollute the main agent's context. The main
-  agent spends the same tokens whether resolution took one layer or four. Candidates surface
-  to the *user* (as chips) only when the ladder genuinely can't decide.
-- **The ladder is a cost ladder.** Most navigations resolve at layer 1–2 in milliseconds; a
-  model call happens only when the cheap layers are torn. AI is a tie-breaker, not the path.
-- **Select, never generate.** Wherever a model participates (main agent expressing intent,
-  sub-LLM tie-breaking), it chooses among destinations the app enumerated. It cannot emit a
-  route that doesn't exist — that's the trust boundary.
-- **Honest outcomes.** "Ask the user" and "not found" are first-class results with real
-  options attached, never failures to paper over.
+### Everything composes on it
 
-### Navigation is a shared primitive, not a use-case feature
-
-Any use case that needs to move the app invokes this same capability as a step: creating a
-task lands the user on the new task, a generated report opens the report, a future workflow
-ends wherever its result lives. Those are **consumers** of navigation — nothing about the
-design above is specific to any of them.
-
-### Not a skill
-
-Every request may need to move the app, so navigation is a **baked-in tool**, always in the
-tool list on every turn — never a skill behind a trigger that might not fire. (By the role
-test: skills are *invoked method*; navigation is *always-available capability*.)
+CRUD, reminders, reports — any operation that should end on a page relies on the same nav
+call as its final step. Navigation is the one primitive; use cases are its consumers. And it
+is a **baked-in tool, not a skill**: every request may need to move the app, so it can't sit
+behind a trigger that might not fire.
 
 ---
 
-*Everything below is the detailed contract, anchored to the shipped implementation — which
-today covers ladder layers 1 and 5 (deterministic match + ask-the-user) at demo scale.
-Layers 2–4 are the designed extension for real-world destination counts; the resolver is
-the seam they slot into.*
+*The sections below document the **shipped demo implementation**: a deterministic lexical
+resolver with explicit ambiguous/not-found outcomes and candidate chips. The bare-bones
+target above replaces the matching internals with vector search + an in-tool LLM decision,
+and drops clarifying prompts in favor of decisive selection. The contract surfaces carry
+over unchanged: grounded routes only, honest trace outcomes, and the pane follows server
+state — never the model's claims.*
 
 ## The rule: intent in, resolution owned by the app
 
