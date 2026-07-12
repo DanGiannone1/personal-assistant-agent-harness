@@ -6,6 +6,8 @@ deeper:
 - **[use-cases.md](use-cases.md)** — the core use cases with concrete, runnable examples (manual +
   assistant path for each capability). Start here to see what it does.
 - **[spec.md](spec.md)** — the product: capabilities, surfaces, data model, agent tools, skills, theme.
+- **[roadmap.md](roadmap.md)** — where this goes next: the context layer, the competitive bar
+  against general assistants, and the phased path from demo to product.
 - **[architecture.md](architecture.md)** — the system: tiers, the AG-UI/SSE event flow, session
   lifecycle, state & storage, auth forwarding, the scheduler.
 - **[navigation-reference-architecture.md](navigation-reference-architecture.md)** — navigation as a
