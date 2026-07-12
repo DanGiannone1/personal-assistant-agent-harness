@@ -13,6 +13,8 @@ import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
 import CsvTable from "../CsvTable";
 import WorkbenchNav from "./WorkbenchNav";
+import { ProjectScreen, ProjectsList } from "./ProjectScreens";
+import type { QuickLink } from "@/lib/types";
 
 interface WorkbenchAppProps {
   appState: AppState | null;
@@ -24,6 +26,7 @@ interface WorkbenchAppProps {
   generatedFiles: AppFile[];
   newRecordIds: string[];
   agentWorking: boolean;
+  quickLinks?: QuickLink[];
   onSaveToLibrary: (filename: string) => Promise<void>;
   onRemoveFromLibrary: (filename: string) => Promise<void>;
   onUpload: (file: File) => Promise<void>;
@@ -62,7 +65,7 @@ function OverdueBadge() {
 
 export default function WorkbenchApp({
   appState, loading, viewRoute, onNavigate, sessionId, uploadedFiles, generatedFiles, newRecordIds, agentWorking,
-  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh,
+  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh, quickLinks = [],
 }: WorkbenchAppProps) {
   const [doc, setDoc] = useState<{ filename: string; content: string; mime?: string; loading: boolean; error: string | null } | null>(null);
   const [pulse, setPulse] = useState(false);
@@ -134,6 +137,7 @@ export default function WorkbenchApp({
           ) : (
             <RouteContent
               appState={appState}
+              quickLinks={quickLinks}
               viewRoute={viewRoute}
               onNavigate={onNavigate}
               uploadedFiles={uploadedFiles}
@@ -163,11 +167,18 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   else if (viewRoute === "/calendar") trail = "Calendar";
   else if (viewRoute === "/documents") trail = "Documents";
   else if (viewRoute === "/reminders") trail = "Reminders";
+  else if (viewRoute === "/projects") trail = "Projects";
+  else if (viewRoute.startsWith("/projects/")) {
+    const pid = viewRoute.split("/")[2];
+    const proj = (appState.projects ?? []).find((p) => p.id === pid);
+    const sub = viewRoute.split("/")[3];
+    trail = `Projects › ${proj?.name ?? ""}${sub ? ` › ${sub[0].toUpperCase()}${sub.slice(1)}` : ""}`;
+  }
   return <div className="tw-breadcrumb" data-testid="breadcrumb">{trail}</div>;
 }
 
-function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generatedFiles, newRecordIds, onOpenDoc, onSaveToLibrary, onRemoveFromLibrary, onUpload, sessionId, onRefresh }: {
-  appState: AppState | null; viewRoute: string; onNavigate: (r: string) => void;
+function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generatedFiles, newRecordIds, onOpenDoc, onSaveToLibrary, onRemoveFromLibrary, onUpload, sessionId, onRefresh, quickLinks }: {
+  appState: AppState | null; viewRoute: string; onNavigate: (r: string) => void; quickLinks: QuickLink[];
   uploadedFiles: AppFile[]; generatedFiles: AppFile[]; newRecordIds: string[];
   onOpenDoc: (f: string, fromLibrary?: boolean) => void;
   onSaveToLibrary: (f: string) => Promise<void>; onRemoveFromLibrary: (f: string) => Promise<void>;
@@ -180,6 +191,14 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const tasks = appState.tasks ?? [];
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
+
+  // ── Projects (/projects, /projects/{id}/…) — shared workspaces ────────────
+  if (viewRoute === "/projects") {
+    return <ProjectsList appState={appState} onNavigate={onNavigate} onRefresh={onRefresh} />;
+  }
+  if (viewRoute.startsWith("/projects/")) {
+    return <ProjectScreen appState={appState} viewRoute={viewRoute} onNavigate={onNavigate} onRefresh={onRefresh} />;
+  }
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────
   if (viewRoute.startsWith("/todo/")) {
@@ -398,10 +417,24 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const nextEvents = events.filter((e) => (e.date || "").slice(0, 10) >= today)
     .sort((a, b) => (`${a.date}${a.start || ""}` < `${b.date}${b.start || ""}` ? -1 : 1))
     .slice(0, 5);
+  const lastVisit = appState.context?.visits?.find((v) => v.path !== "/home");
   return (
     <div className="tw-screen" data-testid="home-screen">
-      <h1 className="tw-h1">Home</h1>
+      <h1 className="tw-h1">{appState.user ? `Welcome back, ${appState.user.displayName}` : "Home"}</h1>
       <p className="tw-subtle">Today&apos;s agenda — {absDate(today)}.</p>
+      {(quickLinks.length > 0 || lastVisit) && (
+        <section style={{ marginTop: 12 }} data-testid="home-quicklinks">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span className="tw-td-sub" style={{ fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 10.5 }}>Pick up where you left off</span>
+            {(quickLinks.length > 0 ? quickLinks : lastVisit ? [{ path: lastVisit.path, title: lastVisit.title || lastVisit.path, kind: "visit" }] : []).map((q) => (
+              <button key={q.path} type="button" className="tw-chip" data-testid={`quicklink-${q.path.replace(/\//g, "-")}`}
+                onClick={() => onNavigate(q.path)}>
+                {q.title}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="tw-stats">
         <Stat label="Tasks" value={tasks.length} />
         <Stat label="Open" value={openTasks.length} />

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
+import AppAuthProvider from "@/components/AppAuthProvider";
 import AuthGate from "@/components/AuthGate";
 import { SessionProvider } from "@/components/SessionProvider";
 
@@ -43,7 +44,9 @@ export default function RootLayout({
         {/* AuthGate + SessionProvider wrap ALL routes so the agent session is one
             continuous session shared across the host app and the /assistant workspace. */}
         <AuthGate>
-          <SessionProvider>{children}</SessionProvider>
+          <AppAuthProvider>
+            <SessionProvider>{children}</SessionProvider>
+          </AppAuthProvider>
         </AuthGate>
       </body>
     </html>

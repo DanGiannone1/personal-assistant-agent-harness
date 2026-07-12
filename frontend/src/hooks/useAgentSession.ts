@@ -1,7 +1,8 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
 import { AGUIEvent, AppFile, AppState, ChatMessage, MessagePart, ToolOutcome } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
-import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary } from "@/lib/api";
+import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getQuickLinks, recordVisit } from "@/lib/api";
+import type { QuickLink } from "@/lib/types";
 import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
 
@@ -42,6 +43,7 @@ type Action =
   | { type: "FILES_LOADED"; files: AppFile[] }
   | { type: "APP_STATE_LOADED"; appState: AppState; follow: boolean }
   | { type: "SET_VIEW_ROUTE"; route: string }
+  | { type: "QUICKLINKS_LOADED"; links: QuickLink[] }
   | { type: "SESSION_ERROR"; error: string | null };
 
 interface State {
@@ -55,6 +57,7 @@ interface State {
   viewRoute: string;
   appRoute: string;        // last server-side currentRoute we observed
   newRecordIds: string[];  // task/event ids that appeared on the latest refetch (for highlight)
+  quickLinks: QuickLink[]; // rank_destinations(context) — the no-AI quick links
   sessionError: string | null;
 }
 
@@ -270,6 +273,7 @@ function reducer(state: State, action: Action): State {
       };
     }
     case "SET_VIEW_ROUTE": return { ...state, viewRoute: action.route };
+    case "QUICKLINKS_LOADED": return { ...state, quickLinks: action.links };
     default: return state;
   }
 }
@@ -277,7 +281,7 @@ function reducer(state: State, action: Action): State {
 const initialState: State = {
   messages: [], isStreaming: false, sessionId: null, isInitializing: true,
   currentRunId: null, files: [], appState: null, viewRoute: "/home",
-  appRoute: "/home", newRecordIds: [], sessionError: null,
+  appRoute: "/home", newRecordIds: [], quickLinks: [], sessionError: null,
 };
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -353,6 +357,11 @@ export function useAgentSession() {
       // clobbering the pane with pre-mutation state and miscomputing newRecordIds).
       if (seq !== appStateSeqRef.current) return;
       dispatch({ type: "APP_STATE_LOADED", appState, follow });
+      // Quick links ride along with every state refresh (non-fatal, last-wins).
+      try {
+        const links = await getQuickLinks();
+        if (seq === appStateSeqRef.current) dispatch({ type: "QUICKLINKS_LOADED", links });
+      } catch { /* non-fatal */ }
     } catch { /* non-fatal — pane keeps last state */ }
   }, []);
 
@@ -400,6 +409,8 @@ export function useAgentSession() {
     // A deliberate manual nav: a trailing same-turn refetch must not yank the pane back.
     userNavSinceToolRef.current = true;
     dispatch({ type: "SET_VIEW_ROUTE", route });
+    // Every route change — manual click included — feeds the visit log (fire-and-forget).
+    void recordVisit(route, "");
   }, []);
 
   const handleAGUIEvent = useCallback((event: AGUIEvent) => {

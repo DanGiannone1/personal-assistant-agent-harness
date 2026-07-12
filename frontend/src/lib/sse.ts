@@ -1,4 +1,4 @@
-import { buildAuthHeaders } from "./auth";
+import { notifyAuthExpired, withAppAuth } from "./appAuth";
 import { AGUIEvent } from "./types";
 
 const API_BASE =
@@ -16,7 +16,7 @@ export async function* streamSSE(
   sessionId: string,
 ): AsyncGenerator<AGUIEvent> {
   const url = `${API_BASE}/sessions/${sessionId}/messages`;
-  const headers = await buildAuthHeaders({ "Content-Type": "application/json" });
+  const headers = await withAppAuth({ "Content-Type": "application/json" });
 
   const res = await fetch(url, {
     method: "POST",
@@ -25,6 +25,11 @@ export async function* streamSSE(
     signal,
   });
 
+  if (res.status === 401) {
+    notifyAuthExpired();
+    yield { type: "RUN_ERROR", message: "Signed out — please sign in again." };
+    return;
+  }
   if (!res.ok) {
     yield { type: "RUN_ERROR", message: `HTTP ${res.status}: ${res.statusText}` };
     return;

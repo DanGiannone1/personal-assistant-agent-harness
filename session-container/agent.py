@@ -52,6 +52,7 @@ from copilot.session_events import (
 
 import appdb
 import library
+import navsvc
 
 load_dotenv()
 
@@ -98,9 +99,16 @@ How you work:
   than stopping after one tool.)
 - For "take me to / go to / open / show me <place>" requests, call `navigate` with the
   user's destination words **verbatim**. Don't pre-resolve a vague phrase — pass it and
-  let `navigate` decide. If it returns AMBIGUOUS, list the candidates and ask which one.
-  If NOT_FOUND, say so and list the closest options. Never claim you navigated unless the
-  tool resolved a destination.
+  let `navigate` decide (it knows the user's pages, projects, and records, and uses their
+  recent activity to pick decisively). If it returns AMBIGUOUS, list the candidates and ask
+  which one. If NOT_FOUND, say so and list the closest options. Never claim you navigated
+  unless the tool resolved a destination.
+- Projects are shared workspaces with members and roles (owner/editor/viewer). Use
+  `list_projects` to see them, `create_project` to add one, `share_project` to grant a
+  user access. Tasks and events can live in a project OR in the personal space: pass the
+  tool's `project` argument when the user names a project or their current view is a
+  project page (see "[Current view: …]"); leave it empty for personal items. If a project
+  tool returns FORBIDDEN, tell the user their role doesn't allow it — do not retry.
 - Tasks: use `list_tasks` to review (it returns a computed `overdue` flag and each task's
   subtask progress), `create_task` to add one, `update_task` to change status/priority/
   group/due date, `add_subtask` to add a subtask, and `delete_task` to remove one.
@@ -142,6 +150,17 @@ Style:
   trivia, unrelated coding), don't answer at length — briefly redirect ("I'm focused on your
   Personal Assistant workspace — want me to look at your tasks, calendar, or a document?").
 """
+
+
+def _user_prompt_line(user_id: str) -> str:
+    """One grounding line so the assistant knows WHO it is operating for. Fail-soft to
+    the bare id: a Cosmos hiccup here must not block session start."""
+    try:
+        user = appdb.get_user(user_id)
+    except Exception:
+        user = None
+    name = (user or {}).get("displayName") or user_id
+    return f"\n\nYou are assisting {name} (user id: {user_id}). All state you read and mutate is theirs."
 
 
 def _sse_event(event: BaseEvent) -> str:
@@ -210,7 +229,7 @@ def _result_text(result) -> str:
 
 
 _NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS"}
-_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED"}
+_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE"}
 
 
 def _tool_outcome(result, success) -> str:
@@ -297,11 +316,12 @@ class NavigateParams(BaseModel):
 
 
 class ListTasksParams(BaseModel):
-    pass
+    project: str = Field(default="", description="Project name or id to list tasks from a shared project; empty = the personal space.")
 
 
 class CreateTaskParams(BaseModel):
     title: str = Field(description="Task title, e.g. 'Draft Q3 planning doc'")
+    project: str = Field(default="", description="Project name or id when the task belongs in a shared project (say the project the user meant, e.g. from '[Current view: …]' or their words); empty = personal space.")
     status: str = Field(default="", description="Status: 'To do', 'In progress', 'Blocked', or 'Done' (defaults to 'To do')")
     priority: str = Field(default="", description="Priority: 'Low', 'Medium', or 'High' (defaults to 'Medium')")
     group: str = Field(default="", description="Group/bucket, e.g. 'Work', 'Personal' (defaults to 'General')")
@@ -310,6 +330,7 @@ class CreateTaskParams(BaseModel):
 
 class UpdateTaskParams(BaseModel):
     task: str = Field(description="Task id or a distinctive part of its title")
+    project: str = Field(default="", description="Project name or id when the task lives in a shared project; empty = personal space.")
     status: str = Field(default="", description="New status: 'To do', 'In progress', 'Blocked', or 'Done'")
     priority: str = Field(default="", description="New priority: 'Low', 'Medium', or 'High'")
     group: str = Field(default="", description="New group/bucket")
@@ -318,6 +339,7 @@ class UpdateTaskParams(BaseModel):
 
 class DeleteTaskParams(BaseModel):
     task: str = Field(description="Task id or a distinctive part of its title")
+    project: str = Field(default="", description="Project name or id when the task lives in a shared project; empty = personal space.")
 
 
 class AddSubtaskParams(BaseModel):
@@ -326,11 +348,12 @@ class AddSubtaskParams(BaseModel):
 
 
 class ListEventsParams(BaseModel):
-    pass
+    project: str = Field(default="", description="Project name or id to list a shared project's calendar; empty = personal space.")
 
 
 class CreateEventParams(BaseModel):
     title: str = Field(description="Event title, e.g. 'Team standup'")
+    project: str = Field(default="", description="Project name or id when the event belongs to a shared project; empty = personal space.")
     date: str = Field(description="Event date (YYYY-MM-DD) — required")
     start: str = Field(default="", description="Start time (24h HH:MM), if known")
     end: str = Field(default="", description="End time (24h HH:MM), if known")
@@ -348,6 +371,21 @@ class UpdateEventParams(BaseModel):
 
 class DeleteEventParams(BaseModel):
     event: str = Field(description="Event id or a distinctive part of its title")
+
+
+class ListProjectsParams(BaseModel):
+    pass
+
+
+class CreateProjectParams(BaseModel):
+    name: str = Field(description="Project name, e.g. 'Website Launch'")
+    description: str = Field(default="", description="One-line description of the project")
+
+
+class ShareProjectParams(BaseModel):
+    project: str = Field(description="Project name or id to share")
+    user: str = Field(description="Username to add, e.g. 'ava'")
+    role: str = Field(default="viewer", description="Role to grant: 'viewer', 'editor', or 'owner'")
 
 
 class SearchDocumentsParams(BaseModel):
@@ -381,11 +419,11 @@ class DeleteScheduleParams(BaseModel):
 
 # ── Tool builders (closures over the session workspace) ─────────────────────
 
-def _build_flow_tools(working_dir: str) -> list:
+def _build_flow_tools(working_dir: str, user_id: str) -> list:
     workspace_root = Path(working_dir).resolve()
 
     def _load() -> dict:
-        return appdb.load()
+        return appdb.load_state(user_id)
 
     def _update(mutator):
         """Concurrency-safe owner-doc mutation (ETag + retry, see appdb.update).
@@ -396,7 +434,7 @@ def _build_flow_tools(working_dir: str) -> list:
         frequency) return early BEFORE _update; checks that inspect the current doc
         (resolve-by-ref, ambiguity, not-found) raise AbortWrite INSIDE the mutator so they
         re-evaluate against the fresh read on each retry."""
-        return appdb.update(mutator)
+        return appdb.update_state(user_id, mutator)
 
     def _resolve_task_strict(data: dict, ref: str):
         """Resolve a task ref to (task, error). Prefer exact id/title; fall back to a
@@ -422,29 +460,80 @@ def _build_flow_tools(working_dir: str) -> list:
             return None, f"AMBIGUOUS event '{ref}': {opts}. Ask which one."
         return matches[0], None
 
-    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, or a calendar event.")
-    def navigate(params: NavigateParams) -> str:
+    def _projects() -> list[dict]:
+        return appdb.list_projects_for(user_id)
+
+    def _visits() -> list[dict]:
+        return appdb.load_context(user_id)["visits"]
+
+    def _resolve_project_ref(ref: str):
+        """Resolve a project by id, exact name, then unique substring — members only."""
+        r = (ref or "").strip().lower()
+        projs = _projects()
+        if not r:
+            return None, "NAME_REQUIRED: which project?"
+        by_id = [p for p in projs if p["id"].lower() == r or p["id"].lower() == f"proj-{r}"]
+        exact = by_id or [p for p in projs if p["name"].lower() == r]
+        matches = exact if exact else [p for p in projs if r in p["name"].lower()]
+        if not matches:
+            return None, f"PROJECT_NOT_FOUND: no project of yours matches '{ref}'. Use list_projects."
+        if len(matches) > 1:
+            opts = "; ".join(f"[{p['id']}] {p['name']}" for p in matches)
+            return None, f"AMBIGUOUS project '{ref}': {opts}. Ask which one."
+        return matches[0], None
+
+    def _set_route(path: str, title: str) -> None:
+        """Route side-effect: point the pane at a result + feed the visit log."""
         def _mut(data):
-            result = appdb.resolve_destination(data, params.destination)
-            if result["status"] == "resolved":
-                data["currentRoute"] = result["path"]
-                return f"NAVIGATED to {result['title']} ({result['path']})"
-            opts = "; ".join(c["title"] for c in result["candidates"])
-            if result["status"] == "ambiguous":
-                raise appdb.AbortWrite(f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. Ask the user which one.")
-            raise appdb.AbortWrite(f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}.")
-        return _update(_mut)
+            data["currentRoute"] = path
+        appdb.update_state(user_id, _mut)
+        try:
+            appdb.record_visit(user_id, path, title)
+        except Exception:
+            _logging.getLogger(__name__).warning("visit log write failed", exc_info=True)
+
+    def _mutate_project_scoped(proj: dict, minimum: str, mutator):
+        """ETag-safe project mutation with the role re-checked inside the mutator."""
+        def _outer(doc):
+            role = appdb.member_role(doc, user_id)
+            if role is None:
+                raise appdb.AbortWrite(f"PROJECT_NOT_FOUND: '{proj['name']}'")
+            if not appdb.role_at_least(doc, user_id, minimum):
+                raise appdb.AbortWrite(
+                    f"FORBIDDEN: you have {role} access on '{doc['name']}' — {minimum} required.")
+            return mutator(doc)
+        return appdb.update_project(proj["id"], _outer)
+
+    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a project.")
+    def navigate(params: NavigateParams) -> str:
+        personal = _load()
+        result = navsvc.resolve(personal, _projects(), _visits(), params.destination)
+        if result["status"] == "resolved":
+            _set_route(result["path"], result["title"])
+            return f"NAVIGATED to {result['title']} ({result['path']})"
+        opts = "; ".join(c["title"] for c in result["candidates"])
+        if result["status"] == "ambiguous":
+            return f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. Ask the user which one."
+        return f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}."
 
     @define_tool(name="list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(params: ListTasksParams) -> str:
-        data = _load()
-        tasks = data["tasks"]
+        scope_label = "personal"
+        if params.project.strip():
+            proj, err = _resolve_project_ref(params.project)
+            if err:
+                return err
+            tasks = proj["tasks"]
+            scope_label = proj["name"]
+        else:
+            data = _load()
+            tasks = data["tasks"]
         if not tasks:
-            return "No tasks yet."
+            return f"No tasks yet in {scope_label}."
         from datetime import datetime, timezone
         today = datetime.now(timezone.utc).date().isoformat()
         n_over = sum(1 for t in tasks if appdb.is_overdue(t, today))
-        lines = [f"{len(tasks)} task(s) | today={today} | overdue={n_over}:"]
+        lines = [f"{len(tasks)} task(s) in {scope_label} | today={today} | overdue={n_over}:"]
         for t in tasks:
             subs = t.get("subtasks") or []
             done = sum(1 for s in subs if s.get("done"))
@@ -459,6 +548,31 @@ def _build_flow_tools(working_dir: str) -> list:
     def create_task(params: CreateTaskParams) -> str:
         if not params.title.strip():
             return "TITLE_REQUIRED: a task needs a title."
+        if params.project.strip():
+            proj, err = _resolve_project_ref(params.project)
+            if err:
+                return err
+            def _pmut(doc):
+                task = {
+                    "id": appdb.new_id("t", doc["tasks"]),
+                    "title": params.title.strip(),
+                    "status": params.status.strip() or "To do",
+                    "priority": params.priority.strip() or "Medium",
+                    "group": params.group.strip() or "General",
+                    "dueDate": params.due_date.strip(),
+                    "subtasks": [], "notes": "", "createdAt": appdb._now_iso(),
+                }
+                doc["tasks"].append(task)
+                appdb.log_activity(doc, user_id, "task.created", task["title"])
+                return task
+            out = _mutate_project_scoped(proj, "editor", _pmut)
+            if isinstance(out, str):
+                return out
+            _set_route(f"/projects/{proj['id']}/tasks/{out['id']}", out["title"])
+            return (
+                f"CREATED task [{out['id']}] '{out['title']}' in project {proj['name']}, "
+                f"status {out['status']}, priority {out['priority']}, due {out['dueDate'] or 'n/a'}."
+            )
         def _mut(data):
             task = {
                 "id": appdb.new_id("t", data["tasks"]),
@@ -481,6 +595,33 @@ def _build_flow_tools(working_dir: str) -> list:
 
     @define_tool(name="update_task", description="Update a task's status, priority, group, or due date.")
     def update_task(params: UpdateTaskParams) -> str:
+        if params.project.strip():
+            proj, perr = _resolve_project_ref(params.project)
+            if perr:
+                return perr
+            def _pmut(doc):
+                t, err = _resolve_task_strict(doc, params.task)
+                if err:
+                    raise appdb.AbortWrite(err)
+                changed = []
+                for field, val in (("status", params.status), ("priority", params.priority),
+                                   ("group", params.group)):
+                    if val.strip():
+                        t[field] = val.strip()
+                        changed.append(f"{field}={t[field]}")
+                if params.due_date.strip():
+                    t["dueDate"] = params.due_date.strip()
+                    changed.append(f"due={t['dueDate']}")
+                if not changed:
+                    raise appdb.AbortWrite("NO_CHANGES: specify a status, priority, group, or due_date to update.")
+                appdb.log_activity(doc, user_id, "task.updated", t["title"])
+                return (t, changed)
+            out = _mutate_project_scoped(proj, "editor", _pmut)
+            if isinstance(out, str):
+                return out
+            t, changed = out
+            _set_route(f"/projects/{proj['id']}/tasks/{t['id']}", t["title"])
+            return f"UPDATED task [{t['id']}] '{t['title']}' in {proj['name']}: {', '.join(changed)}."
         def _mut(data):
             t, err = _resolve_task_strict(data, params.task)
             if err:
@@ -506,6 +647,22 @@ def _build_flow_tools(working_dir: str) -> list:
 
     @define_tool(name="delete_task", description="Delete a task from the to-do list.")
     def delete_task(params: DeleteTaskParams) -> str:
+        if params.project.strip():
+            proj, perr = _resolve_project_ref(params.project)
+            if perr:
+                return perr
+            def _pmut(doc):
+                t, err = _resolve_task_strict(doc, params.task)
+                if err:
+                    raise appdb.AbortWrite(err)
+                doc["tasks"] = [x for x in doc["tasks"] if x["id"] != t["id"]]
+                appdb.log_activity(doc, user_id, "task.deleted", t["title"])
+                return t
+            out = _mutate_project_scoped(proj, "editor", _pmut)
+            if isinstance(out, str):
+                return out
+            _set_route(f"/projects/{proj['id']}/tasks", out["title"])
+            return f"DELETED task [{out['id']}] '{out['title']}' from {proj['name']}."
         def _mut(data):
             t, err = _resolve_task_strict(data, params.task)
             if err:
@@ -531,10 +688,18 @@ def _build_flow_tools(working_dir: str) -> list:
 
     @define_tool(name="list_events", description="List the calendar events with their date, time, and type.")
     def list_events(params: ListEventsParams) -> str:
-        data = _load()
-        events = data["events"]
+        scope_label = "personal"
+        if params.project.strip():
+            proj, err = _resolve_project_ref(params.project)
+            if err:
+                return err
+            events = proj["events"]
+            scope_label = proj["name"]
+        else:
+            data = _load()
+            events = data["events"]
         if not events:
-            return "No events yet."
+            return f"No events yet in {scope_label}."
         from datetime import datetime, timezone
         today = datetime.now(timezone.utc).date().isoformat()
         ordered = sorted(events, key=lambda e: (e.get("date") or "", e.get("start") or ""))
@@ -554,6 +719,26 @@ def _build_flow_tools(working_dir: str) -> list:
             return "TITLE_REQUIRED: an event needs a title."
         if not params.date.strip():
             return "DATE_REQUIRED: an event needs a date (YYYY-MM-DD)."
+        if params.project.strip():
+            proj, err = _resolve_project_ref(params.project)
+            if err:
+                return err
+            def _pmut(doc):
+                event = {
+                    "id": appdb.new_id("e", doc["events"]),
+                    "title": params.title.strip(), "date": params.date.strip(),
+                    "start": params.start.strip(), "end": params.end.strip(),
+                    "type": params.type.strip() or "Meeting", "notes": "",
+                }
+                doc["events"].append(event)
+                appdb.log_activity(doc, user_id, "event.created", event["title"])
+                return event
+            out = _mutate_project_scoped(proj, "editor", _pmut)
+            if isinstance(out, str):
+                return out
+            _set_route(f"/projects/{proj['id']}/calendar", out["title"])
+            when = out["start"] or "all-day"
+            return f"CREATED event [{out['id']}] '{out['title']}' on {out['date']} at {when} in project {proj['name']}."
         def _mut(data):
             event = {
                 "id": appdb.new_id("e", data["events"]),
@@ -681,6 +866,60 @@ def _build_flow_tools(working_dir: str) -> list:
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(params.content, encoding="utf-8")
         return f"WROTE {resolved.name} ({resolved.stat().st_size} bytes)."
+
+    @define_tool(name="list_projects", description="List the shared projects the user belongs to, with their role, members, and record counts.")
+    def list_projects(params: ListProjectsParams) -> str:
+        projs = _projects()
+        if not projs:
+            return "No projects yet. Create one with create_project."
+        lines = [f"{len(projs)} project(s):"]
+        for p in projs:
+            role = appdb.member_role(p, user_id)
+            members = ", ".join(f"{m['userId']}({m['role']})" for m in p["members"])
+            lines.append(
+                f"- [{p['id']}] {p['name']} | your role: {role} | members: {members} | "
+                f"tasks: {len(p['tasks'])} | events: {len(p['events'])}"
+            )
+        return "\n".join(lines)
+
+    @define_tool(name="create_project", description="Create a new shared project. The user becomes its owner.")
+    def create_project(params: CreateProjectParams) -> str:
+        name = params.name.strip()
+        if not name:
+            return "NAME_REQUIRED: the project needs a name."
+        existing = [p for p in _projects() if p["name"].lower() == name.lower()]
+        if existing:
+            return f"AMBIGUOUS: you already have a project named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
+        proj = appdb.new_project(user_id, name, params.description)
+        _set_route(f"/projects/{proj['id']}", proj["name"])
+        return f"CREATED project [{proj['id']}] '{proj['name']}'. You are its owner."
+
+    @define_tool(name="share_project", description="Share a project with another user (grant viewer, editor, or owner access). Only a project owner can share.")
+    def share_project(params: ShareProjectParams) -> str:
+        role = params.role.strip().lower() or "viewer"
+        if role not in appdb.PROJECT_ROLES:
+            return f"BAD_ROLE: use one of {appdb.PROJECT_ROLES}."
+        target = appdb.get_user(params.user.strip().lower())
+        if target is None:
+            return f"USER_REQUIRED: no user named '{params.user}'. Known users: " + ", ".join(u["id"] for u in appdb.list_users())
+        proj, err = _resolve_project_ref(params.project)
+        if err:
+            return err
+        def _pmut(doc):
+            existing = next((m for m in doc["members"] if m["userId"] == target["id"]), None)
+            if existing and existing["role"] == role:
+                raise appdb.AbortWrite(f"NO_CHANGES: {target['id']} already has {role} access on '{doc['name']}'.")
+            if existing:
+                existing["role"] = role
+            else:
+                doc["members"].append({"userId": target["id"], "role": role})
+            appdb.log_activity(doc, user_id, "member.added", f"{target['id']} as {role}")
+            return role
+        out = _mutate_project_scoped(proj, "owner", _pmut)
+        if isinstance(out, str) and out not in appdb.PROJECT_ROLES:
+            return out
+        _set_route(f"/projects/{proj['id']}/settings", proj["name"])
+        return f"SHARED project '{proj['name']}' with {target['id']} as {role}."
 
     @define_tool(name="search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")
     def search_documents(params: SearchDocumentsParams) -> str:
@@ -832,6 +1071,7 @@ def _build_flow_tools(working_dir: str) -> list:
 
     return [
         navigate,
+        list_projects, create_project, share_project,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,
@@ -848,11 +1088,13 @@ _HIDDEN_TOOLS: set[str] = set()
 class AgentSession:
     """Async context manager holding a persistent Copilot session (SDK 1.0.x)."""
 
-    def __init__(self, working_dir: str, token: str | None = None, session_id: str = "default"):
+    def __init__(self, working_dir: str, token: str | None = None, session_id: str = "default",
+                 user_id: str = "dan"):
         self._working_dir = working_dir
         self._initial_token = token
         self._token = token
         self._session_id = session_id
+        self._user_id = user_id
         self._client: CopilotClient | None = None
         self._session = None
         self._unsubscribe = None
@@ -906,6 +1148,10 @@ class AgentSession:
     def token(self) -> str | None:
         return self._token
 
+    @property
+    def user_id(self) -> str:
+        return self._user_id
+
     async def __aenter__(self) -> "AgentSession":
         if self._raw_sdk_log_path:
             Path(self._raw_sdk_log_path).write_text("", encoding="utf-8")
@@ -922,7 +1168,7 @@ class AgentSession:
         self._loop = asyncio.get_running_loop()
 
         skills_dir = str(Path(__file__).parent / "skills")
-        custom_tools = _build_flow_tools(self._working_dir)
+        custom_tools = _build_flow_tools(self._working_dir, self._user_id)
         available_tools = [t.name for t in custom_tools] + ["skill"]
 
         deployment = os.environ["AZURE_DEPLOYMENT"]
@@ -947,7 +1193,7 @@ class AgentSession:
             model=deployment,
             provider=provider,
             **reasoning_kwargs,
-            system_message={"mode": "replace", "content": SYSTEM_PROMPT},
+            system_message={"mode": "replace", "content": SYSTEM_PROMPT + _user_prompt_line(self._user_id)},
             working_directory=self._working_dir,
             tools=custom_tools,
             available_tools=available_tools,

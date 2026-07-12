@@ -106,6 +106,67 @@ export interface LibraryDoc {
   source?: string;          // "reference" (seeded) | "upload" (promoted)
 }
 
+export type ProjectRole = "owner" | "editor" | "viewer";
+
+export interface ProjectMember {
+  userId: string;
+  role: ProjectRole;
+}
+
+export interface Convention {
+  id: string;
+  text: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ActivityEntry {
+  ts: string;
+  userId: string;
+  action: string;
+  detail: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  members: ProjectMember[];
+  conventions: Convention[];
+  tasks: Task[];
+  events: CalendarEvent[];
+  library: LibraryDoc[];
+  activity: ActivityEntry[];
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface VisitEntry {
+  path: string;
+  title: string;
+  ts: string;
+}
+
+export interface UserContext {
+  visits: VisitEntry[];
+  workingContext: { activeProjectId?: string; lastRoute?: string };
+  memories: { id: string; text: string; scope: string; createdAt: string }[];
+  standingApprovals: string[];
+}
+
+export interface AppUserRecord {
+  id: string;
+  username: string;
+  displayName: string;
+  persona?: { role?: string; tone?: string; outputPrefs?: string; language?: string };
+}
+
+export interface QuickLink {
+  path: string;
+  title: string;
+  kind: string;
+}
+
 export interface AppState {
   currentRoute: string;
   tasks: Task[];
@@ -113,4 +174,8 @@ export interface AppState {
   routes: { path: string; title: string; keywords?: string[] }[];
   schedules: Schedule[];
   library: LibraryDoc[];
+  // Multi-user additions (served by /app/state in one fetch)
+  projects?: Project[];
+  user?: AppUserRecord;
+  context?: UserContext;
 }

@@ -1,4 +1,4 @@
-import { buildAuthHeaders } from "./auth";
+import { notifyAuthExpired, withAppAuth } from "./appAuth";
 import type { AppState, FileInfo } from "./types";
 
 const API_BASE =
@@ -11,8 +11,14 @@ export interface SessionMetadata {
 }
 
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = await buildAuthHeaders(init.headers);
-  return fetch(`${API_BASE}${path}`, { ...init, headers });
+  const headers = await withAppAuth(init.headers);
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (res.status === 401) {
+    // Token evicted (expiry / server restart): drop to the sign-in screen. Fail loud,
+    // never retry silently with no identity.
+    notifyAuthExpired();
+  }
+  return res;
 }
 
 export async function getAppState(sessionId: string): Promise<AppState> {
@@ -198,3 +204,36 @@ export const createSchedule = (sid: string, body: { title: string; prompt: strin
 export const updateSchedule = (sid: string, id: string, body: Partial<{ enabled: boolean; title: string; prompt: string }>) =>
   jsonReq("PATCH", `/sessions/${sid}/schedules/${id}`, body);
 export const deleteSchedule = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/schedules/${id}`);
+
+
+// ── Projects (shared workspaces) ─────────────────────────────────────────────
+import type { Project, QuickLink } from "./types";
+
+export const listProjects = () => jsonReq<Project[]>("GET", "/projects");
+export const createProject = (body: { name: string; description?: string }) =>
+  jsonReq<Project>("POST", "/projects", body);
+export const getProject = (pid: string) => jsonReq<Project>("GET", `/projects/${pid}`);
+export const addProjectMember = (pid: string, userId: string, role: string) =>
+  jsonReq("POST", `/projects/${pid}/members`, { userId, role });
+export const removeProjectMember = (pid: string, userId: string) =>
+  jsonReq("DELETE", `/projects/${pid}/members/${userId}`);
+export const addConvention = (pid: string, text: string) =>
+  jsonReq("POST", `/projects/${pid}/conventions`, { text });
+export const removeConvention = (pid: string, cid: string) =>
+  jsonReq("DELETE", `/projects/${pid}/conventions/${cid}`);
+
+export const createProjectTask = (pid: string, body: { title: string; status?: string; priority?: string; group?: string; dueDate?: string }) =>
+  jsonReq("POST", `/projects/${pid}/tasks`, body);
+export const updateProjectTask = (pid: string, tid: string, body: Partial<{ title: string; status: string; priority: string; group: string; dueDate: string }>) =>
+  jsonReq("PATCH", `/projects/${pid}/tasks/${tid}`, body);
+export const deleteProjectTask = (pid: string, tid: string) =>
+  jsonReq("DELETE", `/projects/${pid}/tasks/${tid}`);
+export const createProjectEvent = (pid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
+  jsonReq("POST", `/projects/${pid}/events`, body);
+export const deleteProjectEvent = (pid: string, eid: string) =>
+  jsonReq("DELETE", `/projects/${pid}/events/${eid}`);
+
+// ── Navigation context ───────────────────────────────────────────────────────
+export const recordVisit = (path: string, title: string) =>
+  jsonReq("POST", "/visits", { path, title }).catch(() => undefined); // fire-and-forget
+export const getQuickLinks = () => jsonReq<QuickLink[]>("GET", "/quicklinks");

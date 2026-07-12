@@ -52,6 +52,7 @@ export default function HostApp() {
             generatedFiles={generatedFiles}
             newRecordIds={state.newRecordIds}
             agentWorking={agentWorking}
+            quickLinks={state.quickLinks}
             onSaveToLibrary={saveToLibrary}
             onRemoveFromLibrary={removeFromLibrary}
             onUpload={uploadDocument}

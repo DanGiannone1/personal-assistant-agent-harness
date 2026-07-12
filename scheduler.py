@@ -49,11 +49,11 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-async def _consume_turn(session_manager, sid: str, prompt: str) -> str:
+async def _consume_turn(session_manager, sid: str, prompt: str, user_id: str) -> str:
     """Consume one agent turn's SSE stream → assistant text. Raises if the turn errored."""
     parts: list[str] = []
     run_error: str | None = None
-    async for chunk in session_manager.send_message(sid, prompt):
+    async for chunk in session_manager.send_message(sid, prompt, user_id):
         for line in chunk.splitlines():
             line = line.strip()
             if not line.startswith("data:"):
@@ -74,16 +74,16 @@ async def _consume_turn(session_manager, sid: str, prompt: str) -> str:
     return "".join(parts).strip()
 
 
-async def _run_prompt(session_manager, prompt: str) -> str:
-    """Run `prompt` as a one-off headless agent turn; return the assistant's text.
+async def _run_prompt(session_manager, prompt: str, user_id: str) -> str:
+    """Run `prompt` as a one-off headless agent turn AS `user_id`; return the text.
 
     Raises on agent error or timeout so the caller records the reminder as failed.
     """
-    meta = await session_manager.create_session()
+    meta = await session_manager.create_session(user_id)
     sid = meta["session_id"]
     try:
         return await asyncio.wait_for(
-            _consume_turn(session_manager, sid, prompt), timeout=_TURN_TIMEOUT_SECONDS
+            _consume_turn(session_manager, sid, prompt, user_id), timeout=_TURN_TIMEOUT_SECONDS
         )
     finally:
         try:
@@ -131,9 +131,16 @@ def _disable_broken(doc: dict, schedule: dict) -> None:
 
 
 async def run_due_once(session_manager, *, now: datetime | None = None) -> int:
-    """Run every reminder whose nextRunAt is due. Returns the count emailed."""
+    """Run every user's due reminders. Returns the count emailed."""
     now = now or datetime.now(timezone.utc)
-    data = await asyncio.to_thread(appdb.load)
+    emailed = 0
+    for user in await asyncio.to_thread(appdb.list_users):
+        emailed += await _run_due_for_user(session_manager, user["id"], now)
+    return emailed
+
+
+async def _run_due_for_user(session_manager, uid: str, now: datetime) -> int:
+    data = await asyncio.to_thread(appdb.load_state, uid)
     schedules = data.get("schedules", [])
 
     # Surface (don't silently drop) reminders with a corrupt nextRunAt — disable + record so
@@ -141,7 +148,7 @@ async def run_due_once(session_manager, *, now: datetime | None = None) -> int:
     for s in schedules:
         if s.get("enabled") and s.get("nextRunAt") and _parse_iso(s.get("nextRunAt")) is None:
             try:
-                await asyncio.to_thread(appdb.update, lambda doc, sc=s: _disable_broken(doc, sc))
+                await asyncio.to_thread(appdb.update_state, uid, lambda doc, sc=s: _disable_broken(doc, sc))
             except Exception:
                 logger.error("scheduler: could not disable broken reminder %s", s["id"], exc_info=True)
 
@@ -155,14 +162,14 @@ async def run_due_once(session_manager, *, now: datetime | None = None) -> int:
         # haven't sent yet — retry next tick, no duplicate. A send/crash after claiming
         # cannot re-fire, so delivery is at-most-once (no duplicate emails).
         try:
-            await asyncio.to_thread(appdb.update, lambda doc, sc=s: _claim(doc, sc, now))
+            await asyncio.to_thread(appdb.update_state, uid, lambda doc, sc=s: _claim(doc, sc, now))
         except Exception:
             logger.error("scheduler: could not claim reminder %s — will retry next tick", s["id"], exc_info=True)
             continue
 
         status = "ok"
         try:
-            body = await _run_prompt(session_manager, s["prompt"])
+            body = await _run_prompt(session_manager, s["prompt"], uid)
             if not body:
                 raise RuntimeError("agent produced no content")
             recipient = os.getenv("REMINDER_EMAIL", "")
@@ -176,7 +183,7 @@ async def run_due_once(session_manager, *, now: datetime | None = None) -> int:
         # Record the outcome (best-effort — already claimed, so a failure here only leaves the
         # status stale, never double-sends).
         try:
-            await asyncio.to_thread(appdb.update, lambda doc, sc=s, st=status: _set_status(doc, sc, st))
+            await asyncio.to_thread(appdb.update_state, uid, lambda doc, sc=s, st=status: _set_status(doc, sc, st))
         except Exception:
             logger.error("scheduler: could not record status for %s", s["id"], exc_info=True)
     return emailed

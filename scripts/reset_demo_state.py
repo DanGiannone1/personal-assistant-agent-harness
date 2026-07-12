@@ -30,5 +30,5 @@ data["events"] = [
     {"id": "e-1", "title": "Northstar sync", "date": "2026-06-26", "start": "10:00", "end": "10:30", "type": "Meeting", "notes": ""},
 ]
 data["schedules"] = []
-appdb.save(data)
+appdb.save_state("dan", data)
 print(f"reset OK — tasks={len(data['tasks'])} (2 overdue), events={len(data['events'])}, library={len(data['library'])}")

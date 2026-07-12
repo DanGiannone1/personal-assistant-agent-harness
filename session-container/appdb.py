@@ -1,25 +1,30 @@
-"""Mock Personal Assistant application data store for the POC.
+"""Personal Assistant application data store — multi-user.
 
-The app state (currentRoute/tasks/events/routes) lives in **Azure Cosmos DB** as ONE
-document for the single owner, keyed by a stable owner id (`COSMOS_OWNER_ID`, default
-`"owner"`) — NOT the ephemeral per-session id. Personal Assistant is one person's workspace, so the
-same document loads on every visit and survives new tabs, reloads, and restarts.
-Documents/files stay in the per-session workspace folder. The agent's tools read and
-mutate this store and the frontend renders it verbatim via the `/app/state` endpoint,
-so "the agent says it did something" and "the record actually exists" are the same fact.
+App state lives in **Azure Cosmos DB** as a set of documents in one container:
 
-Personal Assistant is a small personal-productivity app. Two record types live here:
-a *Task* (a to-do with a status, priority, group bucket, optional due date, and a list
-of subtasks) and an *Event* (a calendar entry — a meeting, reminder, or focus block on
-a given day). Documents (drafts the assistant writes) live as files in the workspace and
-are surfaced separately. There is no user/account hierarchy — it's one person's workspace.
+- ``users``            — the account registry: seeded users with password hashes + persona.
+- ``space-{userId}``   — one **personal space** per user: the flat workspace
+  (currentRoute/tasks/events/routes/schedules/library) that used to be the single
+  owner doc. Keyed by the stable user id, so it persists across sessions/tabs/restarts.
+- ``proj-*``           — shared **project** documents (M2+): records + members + conventions.
+
+Every mutation goes through the optimistic-ETag ``_update_doc`` path, one document at a
+time — concurrent writers (agent tools, manual UI, the reminder scheduler) can never
+clobber each other. AAD-only (no key): DefaultAzureCredential.
+
+Auth here is **demo-grade by design**: seeded username/password accounts (PBKDF2), no
+self-registration, no lockout/reset/MFA. The seam to a real identity provider is the
+login handler in the orchestrator — nothing in this module would change.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import random
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,20 +32,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from azure.core import MatchConditions
-from azure.cosmos import CosmosClient
+from azure.cosmos import CosmosClient, PartitionKey
 from azure.cosmos import exceptions as cosmos_exceptions
 from azure.identity import DefaultAzureCredential
 
 _LOCK = threading.Lock()
 
-# The app state (currentRoute/tasks/events/routes) is stored as ONE Cosmos document
-# keyed by a STABLE owner id (single-user app), so it persists across sessions/tabs/
-# restarts. Documents/files stay in the per-session workspace folder. AAD-only (no
-# account key): DefaultAzureCredential — az login locally, managed identity in ACA.
 _STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules", "library")
-# Single-user POC: one stable key for the owner's data. Swap to the Entra `oid` here
-# when multi-user accounts are introduced — nothing else in this module changes.
-_OWNER_ID = os.getenv("COSMOS_OWNER_ID", "owner")
+_USERS_DOC_ID = "users"
 _container_singleton = None
 
 
@@ -60,15 +59,22 @@ def _container():
             )
         database = os.getenv("COSMOS_DATABASE", "flow")
         container = os.getenv("COSMOS_CONTAINER", "appstate")
-        client = CosmosClient(endpoint, credential=DefaultAzureCredential())
-        _container_singleton = client.get_database_client(database).get_container_client(container)
+        key = os.getenv("COSMOS_KEY")
+        if key:
+            # Local dev against the Cosmos **emulator** (the real account is
+            # private-endpoint-only; laptops use the emulator by design). Key auth is
+            # emulator-only; production stays AAD via DefaultAzureCredential. The
+            # emulator starts empty, so create the db/container here.
+            client = CosmosClient(endpoint, credential=key)
+            db = client.create_database_if_not_exists(database)
+            _container_singleton = db.create_container_if_not_exists(
+                id=container, partition_key=PartitionKey(path="/sessionId")
+            )
+        else:
+            client = CosmosClient(endpoint, credential=DefaultAzureCredential())
+            _container_singleton = client.get_database_client(database).get_container_client(container)
         return _container_singleton
 
-
-def _owner_id() -> str:
-    # Single stable key for the one owner's app state — independent of the per-session
-    # workspace folder, so the same document loads on every visit.
-    return _OWNER_ID
 
 # Task lifecycle. A "Done" task is considered complete / not overdue.
 TASK_STATUSES = ["To do", "In progress", "Blocked", "Done"]
@@ -80,10 +86,120 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── Accounts ─────────────────────────────────────────────────────────────────
+# Seeded demo users. Same demo password for all three (documented, demo-grade):
+# it keeps the sign-in demo focused on *who you are* changing the app, not on
+# credential management. PBKDF2-HMAC-SHA256 (stdlib) — no plaintext at rest.
+
+_DEMO_PASSWORD = "demo1234"
+_PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt), _PBKDF2_ITERATIONS
+    )
+    return f"{salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, expected = stored.split("$", 1)
+    except ValueError:
+        return False
+    candidate = hash_password(password, salt).split("$", 1)[1]
+    return hmac.compare_digest(candidate, expected)
+
+
+def _seed_users() -> list[dict]:
+    def user(uid: str, name: str, role: str, tone: str) -> dict:
+        return {
+            "id": uid,
+            "username": uid,
+            "passwordHash": hash_password(_DEMO_PASSWORD),
+            "displayName": name,
+            "persona": {"role": role, "tone": tone, "outputPrefs": "", "language": "English"},
+        }
+    return [
+        user("dan", "Dan", "Product lead", "concise and direct"),
+        user("ava", "Ava", "Program manager", "friendly, detail-oriented"),
+        user("sam", "Sam", "Stakeholder (read-mostly)", "brief"),
+    ]
+
+
+def ensure_seeded() -> None:
+    """Idempotently create the users registry and every user's personal space."""
+    container = _container()
+    try:
+        users_doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        users_doc = {"id": _USERS_DOC_ID, "sessionId": _USERS_DOC_ID, "users": _seed_users()}
+        try:
+            container.create_item(users_doc)
+        except cosmos_exceptions.CosmosResourceExistsError:
+            users_doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    for u in users_doc["users"]:
+        _ensure_space_seeded(u["id"])
+    _seed_projects()
+
+
+def list_users() -> list[dict]:
+    """All user records, password hashes stripped."""
+    container = _container()
+    try:
+        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        ensure_seeded()
+        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    return [{k: v for k, v in u.items() if k != "passwordHash"} for u in doc["users"]]
+
+
+def get_user(user_id: str) -> dict | None:
+    return next((u for u in list_users() if u["id"] == user_id), None)
+
+
+def verify_login(username: str, password: str) -> dict | None:
+    """Check credentials → sanitized user record, or None. Fail closed on any mismatch."""
+    container = _container()
+    try:
+        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        ensure_seeded()
+        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    uname = (username or "").strip().lower()
+    for u in doc["users"]:
+        if u["username"] == uname and verify_password(password or "", u["passwordHash"]):
+            return {k: v for k, v in u.items() if k != "passwordHash"}
+    return None
+
+
+def update_user(user_id: str, mutator) -> dict | None:
+    """ETag-safe mutation of one user record inside the users doc (persona edits)."""
+    def _mut(doc):
+        u = next((x for x in doc["users"] if x["id"] == user_id), None)
+        if u is None:
+            raise AbortWrite(None)
+        return mutator(u)
+    return _update_raw(_USERS_DOC_ID, _mut)
+
+
+# ── Personal spaces ──────────────────────────────────────────────────────────
+
+def _space_id(user_id: str) -> str:
+    return f"space-{user_id}"
+
+
+def _valid_user(user_id: str) -> str:
+    """Every state access is keyed by a real user — fail loud on anything else."""
+    uid = (user_id or "").strip().lower()
+    if not uid or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", uid):
+        raise ValueError(f"invalid user id: {user_id!r}")
+    return uid
+
+
 def _seed_library() -> list[dict]:
-    """The persistent Library starts pre-loaded with the reference docs in seed_docs/ —
-    these are the owner's existing knowledge base (already indexed for RAG). Session
-    uploads are added later via Save to Library."""
+    """Personal spaces start with the reference docs in seed_docs/ (already indexed)."""
     seed_dir = Path(__file__).resolve().parent / "seed_docs"
     if not seed_dir.is_dir():
         return []
@@ -99,27 +215,19 @@ def _seed_library() -> list[dict]:
     ]
 
 
-def _seed() -> dict:
-    """A fresh seeded Personal Assistant dataset — a small set of tasks and calendar events."""
+def _seed_space() -> dict:
+    """A fresh personal space — empty records, seeded Library, the static route catalog."""
     return {
         "currentRoute": "/home",
-        # New sessions start empty — tasks and events are created by the user
-        # (manual UI) or the agent, then persisted to Cosmos.
         "tasks": [],
         "events": [],
-        # Scheduled reminders — saved prompts the orchestrator runs on a cadence and
-        # emails the result. Created by the user (via the agent) and persisted to Cosmos.
         "schedules": [],
-        # Persistent document Library (the searchable KB) — pre-loaded with reference docs;
-        # session files are promoted in via Save to Library. See library.py.
         "library": _seed_library(),
         # Catalog of navigable pages. `keywords` help the navigate tool resolve
         # free-text destinations deterministically without a separate LLM routing pass.
-        # NOTE: the AI Workbench (/assistant) is a frontend-only route and is intentionally
-        # NOT listed here.
         "routes": [
             {"path": "/home", "title": "Home", "keywords": ["home", "today", "overview", "agenda", "start", "dashboard"]},
-            {"path": "/todo", "title": "To-Do", "keywords": ["todo", "to do", "to-do", "tasks", "task", "list", "checklist"]},
+            {"path": "/todo", "title": "Tasks", "keywords": ["todo", "to do", "to-do", "tasks", "task", "list", "checklist"]},
             {"path": "/calendar", "title": "Calendar", "keywords": ["calendar", "schedule", "events", "event", "meetings", "agenda"]},
             {"path": "/documents", "title": "Documents", "keywords": ["documents", "docs", "notes", "files", "drafts", "library"]},
             {"path": "/reminders", "title": "Reminders", "keywords": ["reminders", "reminder", "schedules", "scheduled", "recurring", "digest", "summary email"]},
@@ -128,11 +236,7 @@ def _seed() -> dict:
 
 
 def _doc_to_state(doc: dict) -> dict:
-    """Strip Cosmos system fields (_rid/_etag/_ts/id/sessionId) → just the app-state shape.
-
-    Collections missing from older docs (e.g. `schedules` added after first seed) are
-    coerced to [] so callers never have to null-check.
-    """
+    """Strip Cosmos system fields → just the app-state shape; null-safe collections."""
     state = {k: doc.get(k) for k in _STATE_KEYS}
     for k in ("tasks", "events", "routes", "schedules", "library"):
         if state.get(k) is None:
@@ -142,46 +246,45 @@ def _doc_to_state(doc: dict) -> dict:
     return state
 
 
-def ensure_seeded() -> dict:
-    """Return the owner's state from Cosmos, creating a seeded doc if absent."""
-    oid = _owner_id()
+def _ensure_space_seeded(user_id: str) -> dict:
+    uid = _valid_user(user_id)
+    sid = _space_id(uid)
     container = _container()
     try:
-        return _doc_to_state(container.read_item(item=oid, partition_key=oid))
+        return _doc_to_state(container.read_item(item=sid, partition_key=sid))
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        data = _seed()
+        data = _seed_space()
         try:
-            container.create_item({"id": oid, "sessionId": oid, **data})
+            container.create_item({"id": sid, "sessionId": sid, **data})
             return data
         except cosmos_exceptions.CosmosResourceExistsError:
-            # Lost the create race to another writer — read the winner's doc.
-            return _doc_to_state(container.read_item(item=oid, partition_key=oid))
+            return _doc_to_state(container.read_item(item=sid, partition_key=sid))
 
 
-def load() -> dict:
-    """Load the owner's state document from Cosmos, seeding first if absent."""
-    oid = _owner_id()
+def load_state(user_id: str) -> dict:
+    """Load a user's personal-space state, seeding first if absent."""
+    uid = _valid_user(user_id)
+    sid = _space_id(uid)
     container = _container()
     try:
-        return _doc_to_state(container.read_item(item=oid, partition_key=oid))
+        return _doc_to_state(container.read_item(item=sid, partition_key=sid))
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        return ensure_seeded()
+        return _ensure_space_seeded(uid)
 
 
-def save(data: dict) -> None:
-    """Overwrite the owner doc unconditionally (last-write-wins).
+def save_state(user_id: str, data: dict) -> None:
+    """Overwrite a user's space unconditionally (last-write-wins).
 
-    NOT concurrency-safe — for seeding/admin/tests only. Concurrent mutations (agent
-    tools, the reminder scheduler) MUST go through `update()` so a write can't clobber
-    another writer's change.
+    NOT concurrency-safe — for seeding/admin/tests only. Concurrent mutations MUST go
+    through `update_state()` so a write can't clobber another writer's change.
     """
-    oid = _owner_id()
-    container = _container()
-    container.upsert_item({"id": oid, "sessionId": oid, **{k: data.get(k) for k in _STATE_KEYS}})
+    uid = _valid_user(user_id)
+    sid = _space_id(uid)
+    _container().upsert_item({"id": sid, "sessionId": sid, **{k: data.get(k) for k in _STATE_KEYS}})
 
 
 class AbortWrite(Exception):
-    """Raised by an `update()` mutator to return a result WITHOUT writing (validation/no-op)."""
+    """Raised by an update mutator to return a result WITHOUT writing (validation/no-op)."""
 
     def __init__(self, result=None):
         super().__init__("aborted")
@@ -191,33 +294,28 @@ class AbortWrite(Exception):
 _MAX_UPDATE_RETRIES = 10
 
 
-def update(mutator):
-    """Read-modify-write the owner doc with optimistic concurrency (ETag) + retry.
+def _update_raw(doc_id: str, mutator, body_keys: tuple | None = None):
+    """Read-modify-write any doc with optimistic concurrency (ETag) + retry.
 
-    `mutator(data)` mutates `data` in place and returns a result. It may raise
-    `AbortWrite(result)` to return without writing. If another writer commits between our
-    read and write (ETag mismatch), we re-read and re-run the mutator — safe because the
-    mutator has no side effects until the commit. Jittered backoff de-correlates retrying
-    writers; fails loud (rather than silently dropping the write) if contention persists.
+    `mutator(doc)` mutates the doc in place and returns a result; may raise
+    `AbortWrite(result)` to return without writing. Safe to re-run on conflict because
+    the mutator has no side effects until the commit. Fails loud on persistent contention.
     """
-    oid = _owner_id()
     container = _container()
     last_exc = None
     for attempt in range(_MAX_UPDATE_RETRIES):
         try:
-            doc = container.read_item(item=oid, partition_key=oid)
+            doc = container.read_item(item=doc_id, partition_key=doc_id)
         except cosmos_exceptions.CosmosResourceNotFoundError:
-            ensure_seeded()
-            continue
-        data = _doc_to_state(doc)
+            raise RuntimeError(f"document {doc_id!r} does not exist — seed before updating")
         try:
-            result = mutator(data)
+            result = mutator(doc)
         except AbortWrite as abort:
             return abort.result
-        body = {"id": oid, "sessionId": oid, **{k: data.get(k) for k in _STATE_KEYS}}
+        body = {k: v for k, v in doc.items() if not k.startswith("_")}
         try:
             container.replace_item(
-                item=oid, body=body,
+                item=doc_id, body=body,
                 etag=doc["_etag"], match_condition=MatchConditions.IfNotModified,
             )
             return result
@@ -225,8 +323,241 @@ def update(mutator):
             last_exc = exc  # a concurrent writer committed first — back off, re-read, retry
             time.sleep(random.uniform(0.02, 0.08) * (attempt + 1))
     raise RuntimeError(
-        f"owner doc update failed after {_MAX_UPDATE_RETRIES} retries (write contention)"
+        f"doc {doc_id!r} update failed after {_MAX_UPDATE_RETRIES} retries (write contention)"
     ) from last_exc
+
+
+def update_state(user_id: str, mutator):
+    """ETag-safe read-modify-write of a user's personal space.
+
+    `mutator(data)` receives the plain state dict (no Cosmos fields), mutates in place,
+    returns the tool/endpoint result. May raise AbortWrite(result) to skip the write.
+    """
+    uid = _valid_user(user_id)
+    _ensure_space_seeded(uid)
+
+    def _mut(doc):
+        data = _doc_to_state(doc)
+        result = mutator(data)
+        doc.update({k: data.get(k) for k in _STATE_KEYS})
+        return result
+
+    return _update_raw(_space_id(uid), _mut)
+
+
+
+# ── Projects ─────────────────────────────────────────────────────────────────
+# Shared workspaces: one Cosmos doc per project (records + members + conventions +
+# activity), mutated through the same ETag-safe path as personal spaces. Membership is
+# authorization: every read/write checks the caller's role — in the REST layer AND the
+# tool layer, so neither the UI nor the model can cross a membership boundary.
+
+PROJECT_ROLES = ["owner", "editor", "viewer"]
+
+
+def _project_doc_id(project_id: str) -> str:
+    pid = (project_id or "").strip()
+    return pid if pid.startswith("proj-") else f"proj-{pid}"
+
+
+def new_project(creator_id: str, name: str, description: str = "") -> dict:
+    """Create a project; the creator is its first owner. Returns the project doc."""
+    uid = _valid_user(creator_id)
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("project name is required")
+    container = _container()
+    pid = f"proj-{secrets.token_hex(4)}"
+    doc = {
+        "id": pid, "sessionId": pid,
+        "name": name, "description": (description or "").strip(),
+        "members": [{"userId": uid, "role": "owner"}],
+        "conventions": [],
+        "tasks": [], "events": [], "library": [],
+        "activity": [],
+        "createdAt": _now_iso(), "createdBy": uid,
+    }
+    container.create_item(doc)
+    return {k: v for k, v in doc.items() if not k.startswith("_")}
+
+
+def load_project(project_id: str) -> dict | None:
+    container = _container()
+    pid = _project_doc_id(project_id)
+    try:
+        doc = container.read_item(item=pid, partition_key=pid)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return None
+    return {k: v for k, v in doc.items() if not k.startswith("_")}
+
+
+def update_project(project_id: str, mutator):
+    """ETag-safe read-modify-write of one project doc (same contract as update_state)."""
+    return _update_raw(_project_doc_id(project_id), mutator)
+
+
+def list_projects_for(user_id: str) -> list[dict]:
+    """Every project where the user is a member (any role), as full docs."""
+    uid = _valid_user(user_id)
+    container = _container()
+    rows = container.query_items(
+        query="SELECT * FROM c WHERE STARTSWITH(c.id, 'proj-')",
+        enable_cross_partition_query=True,
+    )
+    out = []
+    for doc in rows:
+        if member_role(doc, uid) is not None:
+            out.append({k: v for k, v in doc.items() if not k.startswith("_")})
+    out.sort(key=lambda d: d.get("name", "").lower())
+    return out
+
+
+def member_role(project: dict, user_id: str) -> str | None:
+    uid = (user_id or "").strip().lower()
+    m = next((m for m in project.get("members", []) if m.get("userId") == uid), None)
+    return m.get("role") if m else None
+
+
+# Role gates: owner ⊃ editor ⊃ viewer.
+_ROLE_RANK = {"viewer": 0, "editor": 1, "owner": 2}
+
+
+def role_at_least(project: dict, user_id: str, minimum: str) -> bool:
+    role = member_role(project, user_id)
+    return role is not None and _ROLE_RANK[role] >= _ROLE_RANK[minimum]
+
+
+def log_activity(project: dict, user_id: str, action: str, detail: str) -> None:
+    """Append to the project's activity feed (call inside an update_project mutator)."""
+    project.setdefault("activity", []).insert(0, {
+        "ts": _now_iso(), "userId": user_id, "action": action, "detail": detail[:240],
+    })
+    del project["activity"][100:]  # bounded feed
+
+
+def _seed_projects() -> None:
+    """Demo fixture (idempotent): two similarly-named projects for the ambiguity demo,
+    different membership shapes, one French-deliverables convention."""
+    container = _container()
+    fixtures = [
+        {
+            "id": "proj-website-launch", "name": "Website Launch",
+            "description": "Marketing site refresh and launch",
+            "members": [{"userId": "dan", "role": "owner"}, {"userId": "sam", "role": "viewer"}],
+            "conventions": [],
+            "tasks": [
+                {"id": "t-1", "title": "Draft launch checklist", "status": "In progress",
+                 "priority": "High", "group": "Launch", "dueDate": "2026-07-16",
+                 "subtasks": [], "notes": "", "createdAt": _now_iso()},
+                {"id": "t-2", "title": "Review homepage copy", "status": "To do",
+                 "priority": "Medium", "group": "Content", "dueDate": "2026-07-14",
+                 "subtasks": [], "notes": "", "createdAt": _now_iso()},
+            ],
+            "events": [
+                {"id": "e-1", "title": "Launch go/no-go", "date": "2026-07-17",
+                 "start": "10:00", "end": "10:30", "type": "Meeting", "notes": ""},
+            ],
+        },
+        {
+            "id": "proj-product-launch", "name": "Product Launch",
+            "description": "V2 product rollout",
+            "members": [{"userId": "ava", "role": "owner"}, {"userId": "dan", "role": "editor"}],
+            "conventions": [
+                {"id": "c-1", "text": "Status documents are written in French.", "createdBy": "ava",
+                 "createdAt": _now_iso()},
+            ],
+            "tasks": [
+                {"id": "t-1", "title": "Finalize pricing tiers", "status": "To do",
+                 "priority": "High", "group": "Launch", "dueDate": "2026-07-15",
+                 "subtasks": [], "notes": "", "createdAt": _now_iso()},
+            ],
+            "events": [],
+        },
+        {
+            "id": "proj-q3-budget", "name": "Q3 Budget",
+            "description": "Quarterly budget planning",
+            "members": [{"userId": "ava", "role": "owner"}],
+            "conventions": [],
+            "tasks": [],
+            "events": [],
+        },
+    ]
+    for f in fixtures:
+        doc = {
+            **f, "sessionId": f["id"], "library": [], "activity": [],
+            "createdAt": _now_iso(), "createdBy": f["members"][0]["userId"],
+        }
+        try:
+            container.create_item(doc)
+        except cosmos_exceptions.CosmosResourceExistsError:
+            pass
+
+
+# ── Per-user context (visit log, working context, memories, approvals) ───────
+# The context store that personalizes navigation and (M5) the turn bundle. Small,
+# per-user, same ETag machinery. Visits are a capped ring buffer, newest first.
+
+_VISIT_CAP = 50
+
+
+def _ctx_id(user_id: str) -> str:
+    return f"ctx-{_valid_user(user_id)}"
+
+
+_CTX_DEFAULTS = {"visits": [], "workingContext": {}, "memories": [], "standingApprovals": []}
+
+
+def _ensure_ctx(user_id: str) -> dict:
+    cid = _ctx_id(user_id)
+    container = _container()
+    try:
+        doc = container.read_item(item=cid, partition_key=cid)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        doc = {"id": cid, "sessionId": cid, **_CTX_DEFAULTS}
+        try:
+            container.create_item(doc)
+        except cosmos_exceptions.CosmosResourceExistsError:
+            doc = container.read_item(item=cid, partition_key=cid)
+    return {k: doc.get(k, list(v) if isinstance(v, list) else dict(v)) for k, v in _CTX_DEFAULTS.items()}
+
+
+def load_context(user_id: str) -> dict:
+    return _ensure_ctx(user_id)
+
+
+def update_context(user_id: str, mutator):
+    _ensure_ctx(user_id)
+
+    def _mut(doc):
+        for k, v in _CTX_DEFAULTS.items():
+            doc.setdefault(k, list(v) if isinstance(v, list) else dict(v))
+        return mutator(doc)
+
+    return _update_raw(_ctx_id(user_id), _mut)
+
+
+def record_visit(user_id: str, path: str, title: str) -> None:
+    """Append to the user's visit log (newest first, deduping consecutive repeats)."""
+    path = (path or "").strip()
+    if not path:
+        return
+
+    def _mut(doc):
+        visits = doc["visits"]
+        if visits and visits[0].get("path") == path:
+            visits[0]["ts"] = _now_iso()
+            return
+        visits.insert(0, {"path": path, "title": (title or "")[:120], "ts": _now_iso()})
+        del visits[_VISIT_CAP:]
+
+    update_context(user_id, _mut)
+
+
+def set_working_context(user_id: str, **fields) -> None:
+    def _mut(doc):
+        doc["workingContext"].update({k: v for k, v in fields.items() if v is not None})
+
+    update_context(user_id, _mut)
 
 
 # ── Derived helpers ─────────────────────────────────────────────────────────

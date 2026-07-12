@@ -20,13 +20,15 @@ import appdb  # noqa: E402
 import library  # noqa: E402
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+import auth_users
 from api_auth import APIAuthenticator, AuthConfig
+from auth_users import current_user
 from session_manager import SessionManager
 from trace_logging import setup_trace_logging, trace_event
 
@@ -133,6 +135,13 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager(content_processor)
     await session_manager.start()
 
+    # Seed the account registry + per-user personal spaces (idempotent).
+    try:
+        await asyncio.to_thread(appdb.ensure_seeded)
+        logger.info("User accounts + personal spaces seeded")
+    except Exception:
+        logger.error("Could not seed users/spaces — sign-in will fail until Cosmos is reachable", exc_info=True)
+
     # Ensure the seeded Library reference docs are actually in the Search index, so the
     # library[] list can't point at content search can't find (idempotent, best-effort).
     try:
@@ -175,7 +184,7 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["authorization", "content-type", "x-api-key"],
+    allow_headers=["authorization", "content-type", "x-api-key", "x-auth-token"],
 )
 
 
@@ -230,28 +239,67 @@ class SendMessageRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000)
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
 # ---------------------------------------------------------------------------
-# Session endpoints
+# Auth — app-level accounts (see auth_users.py; demo-grade by design)
 # ---------------------------------------------------------------------------
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest) -> dict:
+    result = await asyncio.to_thread(auth_users.login, req.username, req.password)
+    trace_event("orchestrator", "auth.login", user=result["user"]["id"])
+    return result
+
+
+@app.post("/auth/logout", status_code=204)
+async def auth_logout(request: Request):
+    auth_users.logout(request.headers.get(auth_users.AUTH_HEADER))
+
+
+@app.get("/auth/me")
+async def auth_me(uid: str = Depends(current_user)) -> dict:
+    user = await asyncio.to_thread(appdb.get_user, uid)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Session endpoints — all require a signed-in user; sessions are owned
+# ---------------------------------------------------------------------------
+async def _require_owned_session(session_id: str, uid: str) -> None:
+    """A session belongs to the user who created it. Ownership is in-memory (like the
+    session set itself): after an orchestrator restart sessions are gone and the
+    frontend re-creates — strict, honest, demo-grade."""
+    try:
+        await session_manager.validate_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    owner = session_manager.session_owner(session_id)
+    if owner != uid:
+        # 404 (not 403): don't reveal that someone else's session id exists.
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
 @app.post("/sessions", status_code=201)
-async def create_session() -> dict:
-    """Create a new isolated agent session."""
+async def create_session(uid: str = Depends(current_user)) -> dict:
+    """Create a new isolated agent session owned by the signed-in user."""
     _clear_trace_log_for_new_session()
-    metadata = await session_manager.create_session()
+    metadata = await session_manager.create_session(uid)
     _clear_session_trace_artifacts(metadata["session_id"])
     return metadata
 
 
 @app.post("/sessions/{session_id}/messages")
-async def send_message(session_id: str, req: SendMessageRequest) -> StreamingResponse:
+async def send_message(session_id: str, req: SendMessageRequest, uid: str = Depends(current_user)) -> StreamingResponse:
     """Send a user message and stream back SSE events."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
 
     return StreamingResponse(
-        session_manager.send_message(session_id, req.prompt),
+        session_manager.send_message(session_id, req.prompt, uid),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -261,45 +309,33 @@ async def send_message(session_id: str, req: SendMessageRequest) -> StreamingRes
 
 
 @app.get("/sessions/{session_id}")
-async def get_session(session_id: str) -> dict:
+async def get_session(session_id: str, uid: str = Depends(current_user)) -> dict:
     """Check if a session is still active (used for session restore on reload)."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
     files = (await session_manager.list_files(session_id)).get("files", [])
     return {"session_id": session_id, "status": "active", "files": files}
 
 
 @app.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, uid: str = Depends(current_user)):
     """Delete a session."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
     await session_manager.delete_session(session_id)
 
 
 @app.get("/sessions/{session_id}/trace")
-async def get_session_trace(session_id: str) -> dict:
+async def get_session_trace(session_id: str, uid: str = Depends(current_user)) -> dict:
     """Return local trace file locations for the current session."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
     return {
         **_trace_paths_for_session(session_id),
     }
 
 
 @app.get("/sessions/{session_id}/files")
-async def list_files(session_id: str) -> dict:
+async def list_files(session_id: str, uid: str = Depends(current_user)) -> dict:
     """List files in a session's workspace."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
 
     try:
         return await session_manager.list_files(session_id)
@@ -310,28 +346,20 @@ async def list_files(session_id: str) -> dict:
 
 
 @app.get("/sessions/{session_id}/app/state")
-async def get_app_state(session_id: str) -> dict:
-    """Return the Tax Workbench application state for a session (rendered by the app pane)."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    try:
-        return await session_manager.get_app_state(session_id)
-    except Exception as exc:
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
-            raise HTTPException(status_code=exc.response.status_code, detail="Failed to load app state")
-        raise
+async def get_app_state(session_id: str, uid: str = Depends(current_user)) -> dict:
+    """Return the signed-in user's application state (rendered by the app pane)."""
+    await _require_owned_session(session_id, uid)
+    state = await asyncio.to_thread(appdb.load_state, uid)
+    state["projects"] = await asyncio.to_thread(appdb.list_projects_for, uid)
+    state["user"] = await asyncio.to_thread(appdb.get_user, uid)
+    state["context"] = await asyncio.to_thread(appdb.load_context, uid)
+    return state
 
 
 @app.get("/sessions/{session_id}/files/content")
-async def get_file_content(session_id: str, filename: str) -> dict:
+async def get_file_content(session_id: str, filename: str, uid: str = Depends(current_user)) -> dict:
     """Get text content for a workspace file."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
 
     try:
         return await session_manager.get_file_content(session_id, filename)
@@ -355,11 +383,8 @@ class SaveToLibraryRequest(BaseModel):
 
 
 @app.post("/sessions/{session_id}/library", status_code=201)
-async def save_to_library(session_id: str, req: SaveToLibraryRequest) -> dict:
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def save_to_library(session_id: str, req: SaveToLibraryRequest, uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
     filename = os.path.basename(req.filename)
     try:
         fc = await session_manager.get_file_content(session_id, filename)
@@ -388,7 +413,7 @@ async def save_to_library(session_id: str, req: SaveToLibraryRequest) -> dict:
                 "filename": filename, "title": title, "savedAt": now, "source": "upload",
             })
     try:
-        await asyncio.to_thread(appdb.update, _mut)
+        await asyncio.to_thread(appdb.update_state, uid, _mut)
     except Exception:
         # Recording the entry failed after indexing — roll back the index write so the two
         # stores can't drift, then surface the failure.
@@ -401,11 +426,8 @@ async def save_to_library(session_id: str, req: SaveToLibraryRequest) -> dict:
 
 
 @app.delete("/sessions/{session_id}/library/{filename}", status_code=204)
-async def delete_from_library(session_id: str, filename: str):
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def delete_from_library(session_id: str, filename: str, uid: str = Depends(current_user)):
+    await _require_owned_session(session_id, uid)
     fn = os.path.basename(filename)
 
     # Remove from the Cosmos list FIRST: a leftover index chunk is re-deletable, but a phantom
@@ -414,7 +436,7 @@ async def delete_from_library(session_id: str, filename: str):
         if appdb.find_library_doc(data, fn) is None:
             raise appdb.AbortWrite(None)
         data["library"] = [d for d in data["library"] if d["filename"] != fn]
-    await asyncio.to_thread(appdb.update, _mut)
+    await asyncio.to_thread(appdb.update_state, uid, _mut)
     try:
         await asyncio.to_thread(library.delete_document, fn)
     except RuntimeError as exc:
@@ -422,12 +444,9 @@ async def delete_from_library(session_id: str, filename: str):
 
 
 @app.get("/sessions/{session_id}/library/content")
-async def get_library_content(session_id: str, filename: str) -> dict:
+async def get_library_content(session_id: str, filename: str, uid: str = Depends(current_user)) -> dict:
     """Reconstruct a Library doc's text (from its indexed chunks) for the viewer."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
     fn = os.path.basename(filename)
     try:
         text = await asyncio.to_thread(library.get_document_text, fn)
@@ -447,17 +466,14 @@ class _NotFound(Exception):
     appdb.update (which only catches AbortWrite) so _mutate can map it to a 404."""
 
 
-async def _require_session(session_id: str) -> None:
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def _require_session(session_id: str, uid: str) -> None:
+    await _require_owned_session(session_id, uid)
 
 
-async def _mutate(mutator) -> None:
-    """Run an appdb.update mutator off-thread; map a _NotFound from the mutator to a 404."""
+async def _mutate(uid: str, mutator) -> None:
+    """Run an update_state mutator off-thread; map a _NotFound from the mutator to a 404."""
     try:
-        await asyncio.to_thread(appdb.update, mutator)
+        await asyncio.to_thread(appdb.update_state, uid, mutator)
     except _NotFound:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -487,8 +503,8 @@ class SubtaskToggle(BaseModel):
 
 
 @app.post("/sessions/{session_id}/tasks", status_code=201)
-async def create_task(session_id: str, req: TaskCreate) -> dict:
-    await _require_session(session_id)
+async def create_task(session_id: str, req: TaskCreate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
     if req.status not in appdb.TASK_STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
     if req.priority not in appdb.TASK_PRIORITIES:
@@ -504,13 +520,13 @@ async def create_task(session_id: str, req: TaskCreate) -> dict:
         }
         data["tasks"].append(task)
         created.update(task)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return created
 
 
 @app.patch("/sessions/{session_id}/tasks/{task_id}")
-async def update_task(session_id: str, task_id: str, req: TaskUpdate) -> dict:
-    await _require_session(session_id)
+async def update_task(session_id: str, task_id: str, req: TaskUpdate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
     if req.status is not None and req.status not in appdb.TASK_STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
     if req.priority is not None and req.priority not in appdb.TASK_PRIORITIES:
@@ -526,37 +542,37 @@ async def update_task(session_id: str, task_id: str, req: TaskUpdate) -> dict:
             if val is not None:
                 t[field] = val.strip() if isinstance(val, str) else val
         out.update(t)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return out
 
 
 @app.delete("/sessions/{session_id}/tasks/{task_id}", status_code=204)
-async def delete_task(session_id: str, task_id: str):
-    await _require_session(session_id)
+async def delete_task(session_id: str, task_id: str, uid: str = Depends(current_user)):
+    await _require_session(session_id, uid)
 
     def _mut(data):
         if appdb.find_task(data, task_id) is None:
             raise _NotFound()
         data["tasks"] = [t for t in data["tasks"] if t["id"] != task_id]
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
 
 
 @app.post("/sessions/{session_id}/tasks/{task_id}/subtasks", status_code=201)
-async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate) -> dict:
-    await _require_session(session_id)
+async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
 
     def _mut(data):
         t = appdb.find_task(data, task_id)
         if t is None:
             raise _NotFound()
         t.setdefault("subtasks", []).append({"text": req.text.strip(), "done": False})
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return {"status": "added"}
 
 
 @app.patch("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
-async def toggle_subtask(session_id: str, task_id: str, index: int, req: SubtaskToggle) -> dict:
-    await _require_session(session_id)
+async def toggle_subtask(session_id: str, task_id: str, index: int, req: SubtaskToggle, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
 
     def _mut(data):
         t = appdb.find_task(data, task_id)
@@ -564,13 +580,13 @@ async def toggle_subtask(session_id: str, task_id: str, index: int, req: Subtask
         if t is None or index < 0 or index >= len(subs):
             raise _NotFound()
         subs[index]["done"] = req.done
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return {"status": "ok"}
 
 
 @app.delete("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
-async def delete_subtask(session_id: str, task_id: str, index: int) -> dict:
-    await _require_session(session_id)
+async def delete_subtask(session_id: str, task_id: str, index: int, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
 
     def _mut(data):
         t = appdb.find_task(data, task_id)
@@ -578,7 +594,7 @@ async def delete_subtask(session_id: str, task_id: str, index: int) -> dict:
         if t is None or index < 0 or index >= len(subs):
             raise _NotFound()
         subs.pop(index)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return {"status": "deleted"}
 
 
@@ -599,8 +615,8 @@ class EventUpdate(BaseModel):
 
 
 @app.post("/sessions/{session_id}/events", status_code=201)
-async def create_event(session_id: str, req: EventCreate) -> dict:
-    await _require_session(session_id)
+async def create_event(session_id: str, req: EventCreate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
     created: dict = {}
 
     def _mut(data):
@@ -611,13 +627,13 @@ async def create_event(session_id: str, req: EventCreate) -> dict:
         }
         data["events"].append(event)
         created.update(event)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return created
 
 
 @app.patch("/sessions/{session_id}/events/{event_id}")
-async def update_event(session_id: str, event_id: str, req: EventUpdate) -> dict:
-    await _require_session(session_id)
+async def update_event(session_id: str, event_id: str, req: EventUpdate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
     out: dict = {}
 
     def _mut(data):
@@ -629,19 +645,19 @@ async def update_event(session_id: str, event_id: str, req: EventUpdate) -> dict
             if val is not None:
                 e[field] = val.strip()
         out.update(e)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return out
 
 
 @app.delete("/sessions/{session_id}/events/{event_id}", status_code=204)
-async def delete_event(session_id: str, event_id: str):
-    await _require_session(session_id)
+async def delete_event(session_id: str, event_id: str, uid: str = Depends(current_user)):
+    await _require_session(session_id, uid)
 
     def _mut(data):
         if appdb.find_event(data, event_id) is None:
             raise _NotFound()
         data["events"] = [e for e in data["events"] if e["id"] != event_id]
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
 
 
 class ScheduleCreate(BaseModel):
@@ -660,8 +676,8 @@ class ScheduleUpdate(BaseModel):
 
 
 @app.post("/sessions/{session_id}/schedules", status_code=201)
-async def create_schedule(session_id: str, req: ScheduleCreate) -> dict:
-    await _require_session(session_id)
+async def create_schedule(session_id: str, req: ScheduleCreate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
     freq = req.frequency.strip().lower()
     if freq not in appdb.SCHEDULE_FREQUENCIES:
         raise HTTPException(status_code=422, detail=f"frequency must be one of {appdb.SCHEDULE_FREQUENCIES}")
@@ -688,13 +704,13 @@ async def create_schedule(session_id: str, req: ScheduleCreate) -> dict:
         }
         data["schedules"].append(sched)
         created.update(sched)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return created
 
 
 @app.patch("/sessions/{session_id}/schedules/{schedule_id}")
-async def update_schedule(session_id: str, schedule_id: str, req: ScheduleUpdate) -> dict:
-    await _require_session(session_id)
+async def update_schedule(session_id: str, schedule_id: str, req: ScheduleUpdate, uid: str = Depends(current_user)) -> dict:
+    await _require_session(session_id, uid)
     out: dict = {}
 
     def _mut(data):
@@ -708,19 +724,19 @@ async def update_schedule(session_id: str, schedule_id: str, req: ScheduleUpdate
         if req.prompt is not None:
             s["prompt"] = req.prompt.strip()
         out.update(s)
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
     return out
 
 
 @app.delete("/sessions/{session_id}/schedules/{schedule_id}", status_code=204)
-async def delete_schedule(session_id: str, schedule_id: str):
-    await _require_session(session_id)
+async def delete_schedule(session_id: str, schedule_id: str, uid: str = Depends(current_user)):
+    await _require_session(session_id, uid)
 
     def _mut(data):
         if appdb.find_schedule(data, schedule_id) is None:
             raise _NotFound()
         data["schedules"] = [s for s in data["schedules"] if s["id"] != schedule_id]
-    await _mutate(_mut)
+    await _mutate(uid, _mut)
 
 
 class SaveContentRequest(BaseModel):
@@ -729,12 +745,9 @@ class SaveContentRequest(BaseModel):
 
 
 @app.put("/sessions/{session_id}/files/content")
-async def save_file_content(session_id: str, body: SaveContentRequest) -> dict:
+async def save_file_content(session_id: str, body: SaveContentRequest, uid: str = Depends(current_user)) -> dict:
     """Persist an in-app edit to an existing text artifact."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
     try:
         return await session_manager.save_file_content(session_id, body.filename, body.content)
     except Exception as exc:
@@ -748,12 +761,9 @@ async def save_file_content(session_id: str, body: SaveContentRequest) -> dict:
 
 
 @app.post("/sessions/{session_id}/upload")
-async def upload_file(session_id: str, file: UploadFile) -> dict:
+async def upload_file(session_id: str, file: UploadFile, uid: str = Depends(current_user)) -> dict:
     """Upload a document to a session's workspace."""
-    try:
-        await session_manager.validate_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_owned_session(session_id, uid)
 
     try:
         result = await session_manager.upload_file(session_id, file)
@@ -767,6 +777,264 @@ async def upload_file(session_id: str, file: UploadFile) -> dict:
         raise
     return result
 
+
+
+
+# ── Projects — shared workspaces (membership-gated at this layer AND in tools) ──
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = Field("", max_length=500)
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=120)
+    description: str | None = Field(None, max_length=500)
+
+
+class MemberAdd(BaseModel):
+    userId: str = Field(..., min_length=1, max_length=64)
+    role: str = Field("viewer")
+
+
+class ConventionCreate(BaseModel):
+    text: str = Field(..., min_length=1, max_length=300)
+
+
+async def _load_project_authed(project_id: str, uid: str, minimum: str = "viewer") -> dict:
+    """Project doc if the user holds at least `minimum` role. Non-members get 404
+    (membership isn't revealed); under-privileged members get 403 (explicit)."""
+    project = await asyncio.to_thread(appdb.load_project, project_id)
+    if project is None or appdb.member_role(project, uid) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not appdb.role_at_least(project, uid, minimum):
+        raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
+    return project
+
+
+async def _mutate_project(project_id: str, uid: str, minimum: str, mutator) -> None:
+    """ETag-safe project mutation with the role re-checked INSIDE the mutator (fresh
+    read each retry, so a concurrent role revocation can't be raced past)."""
+    def _mut(doc):
+        if appdb.member_role(doc, uid) is None:
+            raise _NotFound()
+        if not appdb.role_at_least(doc, uid, minimum):
+            raise appdb.AbortWrite("forbidden")
+        return mutator(doc)
+    result = await asyncio.to_thread(appdb.update_project, project_id, _mut)
+    if result == "forbidden":
+        raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
+
+
+@app.get("/projects")
+async def list_projects(uid: str = Depends(current_user)) -> list[dict]:
+    return await asyncio.to_thread(appdb.list_projects_for, uid)
+
+
+@app.post("/projects", status_code=201)
+async def create_project(req: ProjectCreate, uid: str = Depends(current_user)) -> dict:
+    project = await asyncio.to_thread(appdb.new_project, uid, req.name, req.description)
+    trace_event("orchestrator", "project.created", user=uid, project=project["id"])
+    return project
+
+
+@app.get("/projects/{project_id}")
+async def get_project(project_id: str, uid: str = Depends(current_user)) -> dict:
+    return await _load_project_authed(project_id, uid)
+
+
+@app.patch("/projects/{project_id}")
+async def patch_project(project_id: str, req: ProjectPatch, uid: str = Depends(current_user)) -> dict:
+    def _mut(doc):
+        if req.name is not None:
+            doc["name"] = req.name.strip()
+        if req.description is not None:
+            doc["description"] = req.description.strip()
+        appdb.log_activity(doc, uid, "project.updated", doc["name"])
+    await _mutate_project(project_id, uid, "owner", _mut)
+    return await _load_project_authed(project_id, uid)
+
+
+@app.post("/projects/{project_id}/members", status_code=201)
+async def add_member(project_id: str, req: MemberAdd, uid: str = Depends(current_user)) -> dict:
+    role = req.role.strip().lower()
+    if role not in appdb.PROJECT_ROLES:
+        raise HTTPException(status_code=422, detail=f"role must be one of {appdb.PROJECT_ROLES}")
+    target = await asyncio.to_thread(appdb.get_user, req.userId.strip().lower())
+    if target is None:
+        raise HTTPException(status_code=422, detail="No such user")
+
+    def _mut(doc):
+        existing = next((m for m in doc["members"] if m["userId"] == target["id"]), None)
+        if existing:
+            existing["role"] = role
+        else:
+            doc["members"].append({"userId": target["id"], "role": role})
+        appdb.log_activity(doc, uid, "member.added", f"{target['id']} as {role}")
+    await _mutate_project(project_id, uid, "owner", _mut)
+    return {"userId": target["id"], "role": role}
+
+
+@app.delete("/projects/{project_id}/members/{member_id}", status_code=204)
+async def remove_member(project_id: str, member_id: str, uid: str = Depends(current_user)):
+    def _mut(doc):
+        remaining_owners = [m for m in doc["members"]
+                            if m["role"] == "owner" and m["userId"] != member_id]
+        target = next((m for m in doc["members"] if m["userId"] == member_id), None)
+        if target is None:
+            raise _NotFound()
+        if target["role"] == "owner" and not remaining_owners:
+            raise appdb.AbortWrite("last-owner")
+        doc["members"] = [m for m in doc["members"] if m["userId"] != member_id]
+        appdb.log_activity(doc, uid, "member.removed", member_id)
+    def _wrapped(doc):
+        return _mut(doc)
+    result_holder = {}
+    def _outer(doc):
+        if appdb.member_role(doc, uid) is None:
+            raise _NotFound()
+        if not appdb.role_at_least(doc, uid, "owner"):
+            raise appdb.AbortWrite("forbidden")
+        return _mut(doc)
+    result = await asyncio.to_thread(appdb.update_project, project_id, _outer)
+    if result == "forbidden":
+        raise HTTPException(status_code=403, detail="Requires owner access")
+    if result == "last-owner":
+        raise HTTPException(status_code=422, detail="A project must keep at least one owner")
+
+
+# Project-scoped record CRUD — same shapes as personal, gated editor+.
+@app.post("/projects/{project_id}/tasks", status_code=201)
+async def create_project_task(project_id: str, req: TaskCreate, uid: str = Depends(current_user)) -> dict:
+    if req.status not in appdb.TASK_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
+    if req.priority not in appdb.TASK_PRIORITIES:
+        raise HTTPException(status_code=422, detail=f"priority must be one of {appdb.TASK_PRIORITIES}")
+    created: dict = {}
+
+    def _mut(doc):
+        task = {
+            "id": appdb.new_id("t", doc["tasks"]),
+            "title": req.title.strip(), "status": req.status, "priority": req.priority,
+            "group": (req.group or "General").strip() or "General", "dueDate": req.dueDate.strip(),
+            "subtasks": [], "notes": "", "createdAt": appdb._now_iso(),
+        }
+        doc["tasks"].append(task)
+        appdb.log_activity(doc, uid, "task.created", task["title"])
+        created.update(task)
+    await _mutate_project(project_id, uid, "editor", _mut)
+    return created
+
+
+@app.patch("/projects/{project_id}/tasks/{task_id}")
+async def update_project_task(project_id: str, task_id: str, req: TaskUpdate, uid: str = Depends(current_user)) -> dict:
+    if req.status is not None and req.status not in appdb.TASK_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
+    if req.priority is not None and req.priority not in appdb.TASK_PRIORITIES:
+        raise HTTPException(status_code=422, detail=f"priority must be one of {appdb.TASK_PRIORITIES}")
+    out: dict = {}
+
+    def _mut(doc):
+        t = appdb.find_task(doc, task_id)
+        if t is None:
+            raise _NotFound()
+        for field in ("title", "status", "priority", "group", "dueDate"):
+            val = getattr(req, field)
+            if val is not None:
+                t[field] = val.strip() if isinstance(val, str) else val
+        appdb.log_activity(doc, uid, "task.updated", t["title"])
+        out.update(t)
+    await _mutate_project(project_id, uid, "editor", _mut)
+    return out
+
+
+@app.delete("/projects/{project_id}/tasks/{task_id}", status_code=204)
+async def delete_project_task(project_id: str, task_id: str, uid: str = Depends(current_user)):
+    def _mut(doc):
+        t = appdb.find_task(doc, task_id)
+        if t is None:
+            raise _NotFound()
+        doc["tasks"] = [x for x in doc["tasks"] if x["id"] != task_id]
+        appdb.log_activity(doc, uid, "task.deleted", t["title"])
+    await _mutate_project(project_id, uid, "editor", _mut)
+
+
+@app.post("/projects/{project_id}/events", status_code=201)
+async def create_project_event(project_id: str, req: EventCreate, uid: str = Depends(current_user)) -> dict:
+    created: dict = {}
+
+    def _mut(doc):
+        event = {
+            "id": appdb.new_id("e", doc["events"]),
+            "title": req.title.strip(), "date": req.date.strip(), "start": req.start.strip(),
+            "end": req.end.strip(), "type": (req.type or "Meeting").strip() or "Meeting", "notes": "",
+        }
+        doc["events"].append(event)
+        appdb.log_activity(doc, uid, "event.created", event["title"])
+        created.update(event)
+    await _mutate_project(project_id, uid, "editor", _mut)
+    return created
+
+
+@app.delete("/projects/{project_id}/events/{event_id}", status_code=204)
+async def delete_project_event(project_id: str, event_id: str, uid: str = Depends(current_user)):
+    def _mut(doc):
+        e = appdb.find_event(doc, event_id)
+        if e is None:
+            raise _NotFound()
+        doc["events"] = [x for x in doc["events"] if x["id"] != event_id]
+        appdb.log_activity(doc, uid, "event.deleted", e["title"])
+    await _mutate_project(project_id, uid, "editor", _mut)
+
+
+@app.post("/projects/{project_id}/conventions", status_code=201)
+async def add_convention(project_id: str, req: ConventionCreate, uid: str = Depends(current_user)) -> dict:
+    created: dict = {}
+
+    def _mut(doc):
+        conv = {"id": appdb.new_id("c", doc.get("conventions", [])),
+                "text": req.text.strip(), "createdBy": uid, "createdAt": appdb._now_iso()}
+        doc.setdefault("conventions", []).append(conv)
+        appdb.log_activity(doc, uid, "convention.added", conv["text"])
+        created.update(conv)
+    await _mutate_project(project_id, uid, "editor", _mut)
+    return created
+
+
+@app.delete("/projects/{project_id}/conventions/{conv_id}", status_code=204)
+async def delete_convention(project_id: str, conv_id: str, uid: str = Depends(current_user)):
+    def _mut(doc):
+        if not any(c["id"] == conv_id for c in doc.get("conventions", [])):
+            raise _NotFound()
+        doc["conventions"] = [c for c in doc["conventions"] if c["id"] != conv_id]
+        appdb.log_activity(doc, uid, "convention.removed", conv_id)
+    await _mutate_project(project_id, uid, "editor", _mut)
+
+
+
+# ── Navigation context — visit log + quick links (no AI in this path) ─────────
+class VisitCreate(BaseModel):
+    path: str = Field(..., min_length=1, max_length=300)
+    title: str = Field("", max_length=200)
+
+
+@app.post("/visits", status_code=201)
+async def record_visit(req: VisitCreate, uid: str = Depends(current_user)) -> dict:
+    """Every route change — manual click or agent-driven — feeds the visit log."""
+    await asyncio.to_thread(appdb.record_visit, uid, req.path, req.title)
+    return {"status": "ok"}
+
+
+@app.get("/quicklinks")
+async def quick_links(uid: str = Depends(current_user)) -> list[dict]:
+    """rank_destinations(context) — the no-utterance consumer: top destinations now."""
+    import navsvc
+    personal = await asyncio.to_thread(appdb.load_state, uid)
+    projects = await asyncio.to_thread(appdb.list_projects_for, uid)
+    ctx = await asyncio.to_thread(appdb.load_context, uid)
+    ranked = await asyncio.to_thread(
+        navsvc.rank_destinations, personal, projects, ctx["visits"], None, None, 5
+    )
+    return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked]
 
 # ---------------------------------------------------------------------------
 # Health

@@ -103,6 +103,9 @@ class SessionManager:
             timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10),
         )
         self._sessions: set[str] = set()
+        # Session ownership: sid -> user id. In-memory like the session set itself —
+        # a restart drops both, and the frontend re-creates (demo-grade, documented).
+        self._owners: dict[str, str] = {}
         self._cogservices_credential: DefaultAzureCredential | None = None
         self._cogservices_token: str | None = None
         self._cogservices_expires_on: float = 0
@@ -151,22 +154,28 @@ class SessionManager:
         base = POOL_MANAGEMENT_ENDPOINT.rstrip("/")
         return f"{base}{path}?identifier={session_id}"
 
-    async def create_session(self) -> dict:
+    async def create_session(self, user_id: str) -> dict:
         session_id = uuid.uuid4().hex[:16]
 
         url = self._pool_url("/session", session_id)
         resp = await self._http.post(
             url,
             timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
+            headers={"X-User-Id": user_id},
         )
         resp.raise_for_status()
 
         self._sessions.add(session_id)
-        logger.info("Created session %s", session_id)
+        self._owners[session_id] = user_id
+        logger.info("Created session %s (user=%s)", session_id, user_id)
         return {
             "session_id": session_id,
             "status": "active",
+            "user_id": user_id,
         }
+
+    def session_owner(self, session_id: str) -> str | None:
+        return self._owners.get(session_id)
 
     async def validate_session(self, session_id: str) -> None:
         """Ensure session exists, probing pool state for orchestrator restarts."""
@@ -187,6 +196,7 @@ class SessionManager:
     async def delete_session(self, session_id: str) -> None:
         """Delete session and best-effort reset container context."""
         self._sessions.discard(session_id)
+        self._owners.pop(session_id, None)
         reset_url = self._pool_url("/session", session_id)
         try:
             resp = await self._http.delete(reset_url)
@@ -196,14 +206,15 @@ class SessionManager:
         except Exception:
             logger.warning("Session reset failed for %s during delete", session_id, exc_info=True)
 
-    async def send_message(self, session_id: str, prompt: str) -> AsyncGenerator[str, None]:
+    async def send_message(self, session_id: str, prompt: str, user_id: str) -> AsyncGenerator[str, None]:
         """Stream SSE events from the session container to the frontend."""
         try:
             stream_url = self._pool_url("/chat/stream", session_id)
 
             cogservices_token = await self._get_cogservices_token()
             chat_body = {"prompt": prompt}
-            headers = {}
+            # The agent always runs AS a specific user — tools scope to that user's state.
+            headers = {"X-User-Id": user_id}
             if cogservices_token:
                 headers["X-Cogservices-Token"] = cogservices_token
 

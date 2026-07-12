@@ -320,16 +320,20 @@ def _normalize_workspace_text(text: str) -> str:
 
 # ───────────────────────── Personal Assistant tools as LangChain tools ────────────────────
 
-def _build_langchain_tools(working_dir: str) -> list:
+def _build_langchain_tools(working_dir: str, user_id: str) -> list:
     """Port of agent._build_flow_tools as native LangChain tools (same names, args,
-    marker-string returns, and behavior). Closures over the session workspace."""
+    marker-string returns, and behavior). Closures over the session workspace + user.
+
+    NOTE (parity gap, pre-existing): this harness mutates via load→save (last-write-
+    wins) rather than the copilot harness's ETag-safe update path. Scoped per-user
+    here; converging on update_state is tracked parity work."""
     workspace_root = Path(working_dir).resolve()
 
     def _load() -> dict:
-        return appdb.load()
+        return appdb.load_state(user_id)
 
     def _save(data: dict) -> None:
-        appdb.save(data)
+        appdb.save_state(user_id, data)
 
     def _resolve_task_strict(data: dict, ref: str):
         r = (ref or "").strip().lower()
@@ -649,7 +653,9 @@ class AgentSession:
     session container's `server.py` consumes both identically.
     """
 
-    def __init__(self, working_dir: str, token: str | None = None, session_id: str = "default"):
+    def __init__(self, working_dir: str, token: str | None = None, session_id: str = "default",
+                 user_id: str = "dan"):
+        self._user_id = user_id
         self._working_dir = working_dir
         self._initial_token = token
         self._token = token
@@ -680,6 +686,10 @@ class AgentSession:
     @property
     def status(self) -> str:
         return self._status
+
+    @property
+    def user_id(self) -> str:
+        return self._user_id
 
     @property
     def token(self) -> str | None:
@@ -723,7 +733,7 @@ class AgentSession:
             streaming=True,
         )
 
-        tools = _build_langchain_tools(self._working_dir)
+        tools = _build_langchain_tools(self._working_dir, self._user_id)
         self._tool_names = {t.name for t in tools}
         self._checkpointer = InMemorySaver()
         self._agent = create_deep_agent(
