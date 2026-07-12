@@ -886,9 +886,6 @@ async def remove_member(project_id: str, member_id: str, uid: str = Depends(curr
             raise appdb.AbortWrite("last-owner")
         doc["members"] = [m for m in doc["members"] if m["userId"] != member_id]
         appdb.log_activity(doc, uid, "member.removed", member_id)
-    def _wrapped(doc):
-        return _mut(doc)
-    result_holder = {}
     def _outer(doc):
         if appdb.member_role(doc, uid) is None:
             raise _NotFound()

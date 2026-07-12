@@ -5,7 +5,7 @@ import {
   FileText, CheckCircle2, Circle, ArrowLeft, Home as HomeIcon, AlertTriangle, Calendar as CalendarIcon, Clock,
   BookMarked, Trash2, Upload, Plus,
 } from "lucide-react";
-import type { AppFile, AppState, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
+import type { AppFile, AppState, Task, Schedule, LibraryDoc } from "@/lib/types";
 import { getFileContent, getLibraryContent,
   createTask, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask,
   createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule } from "@/lib/api";

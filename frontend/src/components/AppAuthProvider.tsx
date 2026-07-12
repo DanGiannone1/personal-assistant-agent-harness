@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { KeyRound, LogIn } from "lucide-react";
 
-import { AppUser, getAppToken, getStoredUser, login, logout, notifyAuthExpired } from "@/lib/appAuth";
+import { AppUser, getAppToken, getStoredUser, login, logout } from "@/lib/appAuth";
 
 interface AppAuthValue {
   user: AppUser;
