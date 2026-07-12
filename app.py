@@ -6,6 +6,7 @@ Proxies all AI interactions to isolated session containers via SessionManager.
 import asyncio
 import logging
 import os
+import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -142,6 +143,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Could not index seed Library docs (search may be unconfigured)", exc_info=True)
 
+    # Seed the demo user accounts (idempotent). Sign-in depends on these; a failure here
+    # surfaces loudly in logs and every login will 401 rather than silently half-work.
+    try:
+        created = await asyncio.to_thread(appdb.ensure_seeded_users)
+        if created:
+            logger.info("Seeded %d demo user account(s)", created)
+    except Exception:
+        logger.warning("Could not seed demo users (Cosmos unreachable?)", exc_info=True)
+
     # Background reminder scheduler — runs due reminders and emails their output.
     import scheduler
     scheduler_task = asyncio.create_task(scheduler.scheduler_loop(session_manager))
@@ -175,8 +185,15 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["authorization", "content-type", "x-api-key"],
+    allow_headers=["authorization", "content-type", "x-api-key", "x-user-token"],
 )
+
+# ── User sessions (spec F1) ──────────────────────────────────────────────────
+# Demo-grade app-level accounts, distinct from api_auth (which authenticates the CALLER
+# application): a login mints an opaque token mapped in memory to the seeded user. An
+# orchestrator restart just means re-login — consistent with in-memory agent sessions.
+_user_tokens: dict[str, dict] = {}  # token -> {"id","username","displayName"}
+_USER_EXEMPT_PATHS = {"/health", "/auth/login"}
 
 
 @app.middleware("http")
@@ -187,6 +204,27 @@ async def security_headers(request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
     return response
+
+
+@app.middleware("http")
+async def enforce_user_auth(request: Request, call_next):
+    """Resolve the signed-in user from x-user-token and bind them for this request.
+
+    Runs inside enforce_api_auth (caller auth first, then user identity). The appdb
+    contextvar covers direct appdb work (manual CRUD, Library); container-proxied calls
+    forward the user explicitly as headers because streaming bodies outlive this scope.
+    """
+    if request.method == "OPTIONS" or request.url.path in _USER_EXEMPT_PATHS:
+        return await call_next(request)
+    user = _user_tokens.get(request.headers.get("x-user-token", ""))
+    if user is None:
+        return JSONResponse(status_code=401, content={"detail": "Sign in required."})
+    request.state.user = user
+    ctx = appdb.set_current_user(user["id"])
+    try:
+        return await call_next(request)
+    finally:
+        appdb.reset_current_user(ctx)
 
 
 @app.middleware("http")
@@ -230,20 +268,54 @@ class SendMessageRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000)
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=80)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints (app-level user accounts — spec F1)
+# ---------------------------------------------------------------------------
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest) -> dict:
+    """Exchange username+password for a session token. The seam to a real IdP is here."""
+    user = await asyncio.to_thread(appdb.get_user, req.username)
+    if user is None or not appdb.verify_password(req.password, user.get("passwordHash", "")):
+        # One message for both cases — don't leak which usernames exist.
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    token = secrets.token_urlsafe(32)
+    info = {"id": user["id"], "username": user["username"], "displayName": user.get("displayName") or user["username"]}
+    _user_tokens[token] = info
+    trace_event("orchestrator", "auth.login", user=info["id"])
+    return {"token": token, "user": info}
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request) -> dict:
+    """Who is signed in (used for session restore on reload)."""
+    return {"user": request.state.user}
+
+
+@app.post("/auth/logout", status_code=204)
+async def auth_logout(request: Request):
+    token = request.headers.get("x-user-token", "")
+    _user_tokens.pop(token, None)
+
+
 # ---------------------------------------------------------------------------
 # Session endpoints
 # ---------------------------------------------------------------------------
 @app.post("/sessions", status_code=201)
-async def create_session() -> dict:
-    """Create a new isolated agent session."""
+async def create_session(request: Request) -> dict:
+    """Create a new isolated agent session for the signed-in user."""
     _clear_trace_log_for_new_session()
-    metadata = await session_manager.create_session()
+    metadata = await session_manager.create_session(user=request.state.user)
     _clear_session_trace_artifacts(metadata["session_id"])
     return metadata
 
 
 @app.post("/sessions/{session_id}/messages")
-async def send_message(session_id: str, req: SendMessageRequest) -> StreamingResponse:
+async def send_message(session_id: str, req: SendMessageRequest, request: Request) -> StreamingResponse:
     """Send a user message and stream back SSE events."""
     try:
         await session_manager.validate_session(session_id)
@@ -251,7 +323,7 @@ async def send_message(session_id: str, req: SendMessageRequest) -> StreamingRes
         raise HTTPException(status_code=404, detail="Session not found")
 
     return StreamingResponse(
-        session_manager.send_message(session_id, req.prompt),
+        session_manager.send_message(session_id, req.prompt, user=request.state.user),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -310,15 +382,15 @@ async def list_files(session_id: str) -> dict:
 
 
 @app.get("/sessions/{session_id}/app/state")
-async def get_app_state(session_id: str) -> dict:
-    """Return the Tax Workbench application state for a session (rendered by the app pane)."""
+async def get_app_state(session_id: str, request: Request) -> dict:
+    """Return the signed-in user's application state (rendered by the app pane)."""
     try:
         await session_manager.validate_session(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
     try:
-        return await session_manager.get_app_state(session_id)
+        return await session_manager.get_app_state(session_id, user=request.state.user)
     except Exception as exc:
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
             raise HTTPException(status_code=exc.response.status_code, detail="Failed to load app state")

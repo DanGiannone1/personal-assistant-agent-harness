@@ -160,12 +160,25 @@ class ChatRequest(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
+def _require_user(request: Request) -> tuple[str, str]:
+    """The signed-in user forwarded by the orchestrator. Required on appdb-touching routes."""
+    uid = request.headers.get("X-User-Id")
+    if not uid:
+        raise HTTPException(status_code=400, detail="X-User-Id header required")
+    return uid, request.headers.get("X-User-Name") or uid
+
+
 @app.post("/session", status_code=201)
 async def create_session(request: Request) -> dict:
     session_id = _get_identifier(request)
+    uid, _ = _require_user(request)
     workspace = Path(_session_workspace(session_id))
     workspace.mkdir(parents=True, exist_ok=True)
-    appdb.ensure_seeded()
+    ctx = appdb.set_current_user(uid)
+    try:
+        appdb.ensure_seeded()
+    finally:
+        appdb.reset_current_user(ctx)
     _ensure_documents_seeded(str(workspace))
     trace_event("session", "session.created", session_id=session_id, workspace=str(workspace))
     return {"session_id": session_id, "status": "active"}
@@ -180,10 +193,15 @@ async def app_state(request: Request) -> dict:
     new shape: {currentRoute, tasks[], events[], routes[]}.
     """
     session_id = _get_identifier(request)
+    uid, _ = _require_user(request)
     _require_existing_session(session_id)
     workspace = _session_workspace(session_id)
     _ensure_documents_seeded(workspace)  # lazy-seed docs for restored/reset sessions
-    return appdb.load()
+    ctx = appdb.set_current_user(uid)
+    try:
+        return appdb.load()
+    finally:
+        appdb.reset_current_user(ctx)
 
 
 @app.get("/session")
@@ -226,6 +244,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     # Token forwarded from the orchestrator via header (never in the body).
     token = request.headers.get("X-Cogservices-Token") or None
+    uid, uname = _require_user(request)
+    # whoami grounding: the agent always knows who it's acting for, server-side —
+    # alongside the [Today]/[Current view] preamble the frontend already sends.
+    full_prompt = f"[User: {uname} ({uid})]\n{req.prompt}"
 
     try:
         chat_timeout = int(os.getenv("CHAT_TIMEOUT_SECONDS", "300"))
@@ -233,6 +255,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         chat_timeout = 300
 
     async def generate():
+        # Bind the user for the WHOLE turn: tools run inside session.send() iterations,
+        # so the contextvar must live in the generator, not the (already-exited) handler.
+        ctx = appdb.set_current_user(uid)
         try:
             try:
                 session = await _get_or_create_session(token=token, session_id=session_id)
@@ -240,12 +265,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     "session",
                     "agent.prompt_received",
                     session_id=session_id,
+                    user=uid,
                     uploaded_files=sorted(_read_uploaded_manifest(_session_workspace(session_id))),
-                    prompt_length=len(req.prompt),
-                    prompt_preview=req.prompt[:500],
+                    prompt_length=len(full_prompt),
+                    prompt_preview=full_prompt[:500],
                 )
                 async with asyncio.timeout(chat_timeout):
-                    async for event in session.send(req.prompt):
+                    async for event in session.send(full_prompt):
                         yield event
             except asyncio.TimeoutError:
                 logger.warning("Chat stream timed out after %ds", chat_timeout)
@@ -258,6 +284,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         except GeneratorExit:
             pass
         finally:
+            appdb.reset_current_user(ctx)
             lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream")

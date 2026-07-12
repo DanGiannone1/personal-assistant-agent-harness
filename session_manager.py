@@ -151,12 +151,18 @@ class SessionManager:
         base = POOL_MANAGEMENT_ENDPOINT.rstrip("/")
         return f"{base}{path}?identifier={session_id}"
 
-    async def create_session(self) -> dict:
+    @staticmethod
+    def _user_headers(user: dict) -> dict:
+        """Forward the signed-in user to the container (ASCII usernames by seed construction)."""
+        return {"X-User-Id": user["id"], "X-User-Name": user.get("displayName", "")}
+
+    async def create_session(self, user: dict) -> dict:
         session_id = uuid.uuid4().hex[:16]
 
         url = self._pool_url("/session", session_id)
         resp = await self._http.post(
             url,
+            headers=self._user_headers(user),
             timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
         )
         resp.raise_for_status()
@@ -196,14 +202,14 @@ class SessionManager:
         except Exception:
             logger.warning("Session reset failed for %s during delete", session_id, exc_info=True)
 
-    async def send_message(self, session_id: str, prompt: str) -> AsyncGenerator[str, None]:
+    async def send_message(self, session_id: str, prompt: str, user: dict) -> AsyncGenerator[str, None]:
         """Stream SSE events from the session container to the frontend."""
         try:
             stream_url = self._pool_url("/chat/stream", session_id)
 
             cogservices_token = await self._get_cogservices_token()
             chat_body = {"prompt": prompt}
-            headers = {}
+            headers = self._user_headers(user)
             if cogservices_token:
                 headers["X-Cogservices-Token"] = cogservices_token
 
@@ -402,10 +408,10 @@ class SessionManager:
         )
         return result
 
-    async def get_app_state(self, session_id: str) -> dict:
-        """Proxy GET /app/state to the session container (Tax Workbench state)."""
+    async def get_app_state(self, session_id: str, user: dict) -> dict:
+        """Proxy GET /app/state to the session container (the app pane's source of truth)."""
         url = self._pool_url("/app/state", session_id)
-        resp = await self._http.get(url)
+        resp = await self._http.get(url, headers=self._user_headers(user))
         resp.raise_for_status()
         return resp.json()
 

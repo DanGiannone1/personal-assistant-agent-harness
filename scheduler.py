@@ -49,11 +49,11 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-async def _consume_turn(session_manager, sid: str, prompt: str) -> str:
+async def _consume_turn(session_manager, sid: str, prompt: str, user: dict) -> str:
     """Consume one agent turn's SSE stream → assistant text. Raises if the turn errored."""
     parts: list[str] = []
     run_error: str | None = None
-    async for chunk in session_manager.send_message(sid, prompt):
+    async for chunk in session_manager.send_message(sid, prompt, user=user):
         for line in chunk.splitlines():
             line = line.strip()
             if not line.startswith("data:"):
@@ -74,16 +74,16 @@ async def _consume_turn(session_manager, sid: str, prompt: str) -> str:
     return "".join(parts).strip()
 
 
-async def _run_prompt(session_manager, prompt: str) -> str:
-    """Run `prompt` as a one-off headless agent turn; return the assistant's text.
+async def _run_prompt(session_manager, prompt: str, user: dict) -> str:
+    """Run `prompt` as a one-off headless agent turn AS `user`; return the assistant's text.
 
     Raises on agent error or timeout so the caller records the reminder as failed.
     """
-    meta = await session_manager.create_session()
+    meta = await session_manager.create_session(user=user)
     sid = meta["session_id"]
     try:
         return await asyncio.wait_for(
-            _consume_turn(session_manager, sid, prompt), timeout=_TURN_TIMEOUT_SECONDS
+            _consume_turn(session_manager, sid, prompt, user), timeout=_TURN_TIMEOUT_SECONDS
         )
     finally:
         try:
@@ -131,8 +131,27 @@ def _disable_broken(doc: dict, schedule: dict) -> None:
 
 
 async def run_due_once(session_manager, *, now: datetime | None = None) -> int:
-    """Run every reminder whose nextRunAt is due. Returns the count emailed."""
+    """Run every user's due reminders (schedules live in per-user docs). Total emailed."""
     now = now or datetime.now(timezone.utc)
+    users = await asyncio.to_thread(appdb.list_users)
+    total = 0
+    for u in users:
+        user = {"id": u["id"], "username": u.get("username", ""),
+                "displayName": u.get("displayName", "")}
+        # Bind the user for this slice of the tick — contextvars propagate into to_thread,
+        # so every appdb.load/update below operates on THIS user's document.
+        ctx = appdb.set_current_user(user["id"])
+        try:
+            total += await _run_due_for_user(session_manager, user, now)
+        except Exception:
+            logger.error("scheduler: tick failed for user %s", user["id"], exc_info=True)
+        finally:
+            appdb.reset_current_user(ctx)
+    return total
+
+
+async def _run_due_for_user(session_manager, user: dict, now: datetime) -> int:
+    """Run the bound user's due reminders. Returns the count emailed."""
     data = await asyncio.to_thread(appdb.load)
     schedules = data.get("schedules", [])
 
@@ -162,7 +181,7 @@ async def run_due_once(session_manager, *, now: datetime | None = None) -> int:
 
         status = "ok"
         try:
-            body = await _run_prompt(session_manager, s["prompt"])
+            body = await _run_prompt(session_manager, s["prompt"], user)
             if not body:
                 raise RuntimeError("agent produced no content")
             recipient = os.getenv("REMINDER_EMAIL", "")

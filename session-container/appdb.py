@@ -1,9 +1,10 @@
-"""Mock Personal Assistant application data store for the POC.
+"""Personal Assistant application data store.
 
-The app state (currentRoute/tasks/events/routes) lives in **Azure Cosmos DB** as ONE
-document for the single owner, keyed by a stable owner id (`COSMOS_OWNER_ID`, default
-`"owner"`) — NOT the ephemeral per-session id. Personal Assistant is one person's workspace, so the
-same document loads on every visit and survives new tabs, reloads, and restarts.
+App state (currentRoute/tasks/events/schedules/library/routes) lives in **Azure Cosmos DB**
+as ONE document **per user**, keyed by the signed-in user's id — bound per request/turn via
+`set_current_user()` and NEVER guessed (an unbound call fails loud). A `users` container
+holds the seeded demo accounts (username + salted PBKDF2 password hash). Each user's
+document loads on every visit and survives new tabs, reloads, and restarts.
 Documents/files stay in the per-session workspace folder. The agent's tools read and
 mutate this store and the frontend renders it verbatim via the `/app/state` endpoint,
 so "the agent says it did something" and "the record actually exists" are the same fact.
@@ -12,14 +13,18 @@ Personal Assistant is a small personal-productivity app. Two record types live h
 a *Task* (a to-do with a status, priority, group bucket, optional due date, and a list
 of subtasks) and an *Event* (a calendar entry — a meeting, reminder, or focus block on
 a given day). Documents (drafts the assistant writes) live as files in the workspace and
-are surfaced separately. There is no user/account hierarchy — it's one person's workspace.
+are surfaced separately.
 """
 
 from __future__ import annotations
 
+import base64
+import contextvars
+import hashlib
 import os
 import random
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -38,10 +43,23 @@ _LOCK = threading.Lock()
 # restarts. Documents/files stay in the per-session workspace folder. AAD-only (no
 # account key): DefaultAzureCredential — az login locally, managed identity in ACA.
 _STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules", "library")
-# Single-user POC: one stable key for the owner's data. Swap to the Entra `oid` here
-# when multi-user accounts are introduced — nothing else in this module changes.
-_OWNER_ID = os.getenv("COSMOS_OWNER_ID", "owner")
+# Multi-user: the owner of app state is the SIGNED-IN USER, bound per request/turn via
+# `set_current_user()` (the orchestrator middleware and the session container both set it
+# from the authenticated caller). `COSMOS_OWNER_ID` remains as an explicit single-user
+# escape hatch (admin scripts, legacy deploys) — but there is NO implicit default: an
+# appdb call with neither set is a bug and fails loud rather than silently sharing one doc.
+_CURRENT_USER: contextvars.ContextVar[str | None] = contextvars.ContextVar("appdb_user", default=None)
 _container_singleton = None
+_users_singleton = None
+
+
+def set_current_user(user_id: str | None) -> contextvars.Token:
+    """Bind the signed-in user for this request/turn context. Returns the reset token."""
+    return _CURRENT_USER.set(user_id)
+
+
+def reset_current_user(token: contextvars.Token) -> None:
+    _CURRENT_USER.reset(token)
 
 
 def _container():
@@ -66,9 +84,112 @@ def _container():
 
 
 def _owner_id() -> str:
-    # Single stable key for the one owner's app state — independent of the per-session
-    # workspace folder, so the same document loads on every visit.
-    return _OWNER_ID
+    """The signed-in user whose app state this request touches. Fail loud when unbound."""
+    uid = _CURRENT_USER.get()
+    if uid:
+        return uid
+    env = os.getenv("COSMOS_OWNER_ID")
+    if env:
+        return env
+    raise RuntimeError(
+        "No user bound for this appdb call — set_current_user() was not called for this "
+        "request/turn (and COSMOS_OWNER_ID is unset). Refusing to guess whose data this is."
+    )
+
+
+# ── Users (accounts) ─────────────────────────────────────────────────────────
+# Demo-grade accounts per the projects spec: seeded users, salted PBKDF2 password hashes,
+# no self-registration. The seam to a real identity provider is the login handler only.
+
+def _users_container():
+    global _users_singleton
+    if _users_singleton is not None:
+        return _users_singleton
+    with _LOCK:
+        if _users_singleton is not None:
+            return _users_singleton
+        endpoint = os.getenv("COSMOS_ENDPOINT")
+        if not endpoint:
+            raise RuntimeError("COSMOS_ENDPOINT is not set — Cosmos is required for accounts.")
+        database = os.getenv("COSMOS_DATABASE", "flow")
+        client = CosmosClient(endpoint, credential=DefaultAzureCredential())
+        _users_singleton = client.get_database_client(database).get_container_client(
+            os.getenv("COSMOS_USERS_CONTAINER", "users")
+        )
+        return _users_singleton
+
+
+_PBKDF2_ITERATIONS = 300_000
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
+    return "pbkdf2-sha256$%d$%s$%s" % (
+        _PBKDF2_ITERATIONS,
+        base64.b64encode(salt).decode(),
+        base64.b64encode(digest).decode(),
+    )
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, iters, salt_b64, hash_b64 = stored.split("$")
+        if scheme != "pbkdf2-sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), base64.b64decode(salt_b64), int(iters)
+        )
+        return secrets.compare_digest(digest, base64.b64decode(hash_b64))
+    except (ValueError, TypeError):
+        return False
+
+
+def get_user(username: str) -> dict | None:
+    """Look up a user by username (usernames are unique by seed construction)."""
+    rows = list(_users_container().query_items(
+        query="SELECT * FROM c WHERE c.username = @u",
+        parameters=[{"name": "@u", "value": (username or "").strip().lower()}],
+        enable_cross_partition_query=True,
+    ))
+    return rows[0] if rows else None
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    try:
+        return _users_container().read_item(item=user_id, partition_key=user_id)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return None
+
+
+# Demo fixture per the projects spec: dan / ava / sam. Passwords are demo-grade on purpose.
+_SEED_USERS = [
+    {"id": "u-dan", "username": "dan", "displayName": "Dan", "password": "dan-demo-1"},
+    {"id": "u-ava", "username": "ava", "displayName": "Ava", "password": "ava-demo-1"},
+    {"id": "u-sam", "username": "sam", "displayName": "Sam", "password": "sam-demo-1"},
+]
+
+
+def list_users() -> list[dict]:
+    """All seeded users (the scheduler iterates these; volumes are tiny by design)."""
+    return list(_users_container().query_items(
+        query="SELECT * FROM c", enable_cross_partition_query=True,
+    ))
+
+
+def ensure_seeded_users() -> int:
+    """Create the seeded demo users if absent (idempotent). Returns how many were created."""
+    created = 0
+    for spec in _SEED_USERS:
+        if get_user_by_id(spec["id"]) is None:
+            _users_container().create_item({
+                "id": spec["id"], "username": spec["username"],
+                "displayName": spec["displayName"],
+                "passwordHash": hash_password(spec["password"]),
+                "persona": {}, "createdAt": _now_iso(),
+            })
+            created += 1
+    return created
 
 # Task lifecycle. A "Done" task is considered complete / not overdue.
 TASK_STATUSES = ["To do", "In progress", "Blocked", "Done"]
