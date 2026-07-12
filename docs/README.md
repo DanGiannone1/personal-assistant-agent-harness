@@ -8,6 +8,9 @@ deeper:
 - **[spec.md](spec.md)** — the product: capabilities, surfaces, data model, agent tools, skills, theme.
 - **[roadmap.md](roadmap.md)** — where this goes next: the context layer, the competitive bar
   against general assistants, and the phased path from demo to product.
+- **[projects-spec.md](projects-spec.md)** — the aligned build spec: accounts, shared projects as
+  the context scope, the navigation upgrade, preview-card CRUD, and the personal context layer —
+  each feature specified app-first, then harness-enabled.
 - **[architecture.md](architecture.md)** — the system: tiers, the AG-UI/SSE event flow, session
   lifecycle, state & storage, auth forwarding, the scheduler.
 - **[navigation-reference-architecture.md](navigation-reference-architecture.md)** — navigation as a
