@@ -3,6 +3,8 @@
 Start with the [top-level README](../README.md) for the overview and quick start. These docs go
 deeper:
 
+- **[manifesto.md](manifesto.md)** — why this exists and where it's going: the engagement
+  workspace we run our own work in, and the principles we won't trade. Read this first.
 - **[use-cases.md](use-cases.md)** — the core use cases with concrete, runnable examples (manual +
   assistant path for each capability). Start here to see what it does.
 - **[spec.md](spec.md)** — the product: capabilities, surfaces, data model, agent tools, skills, theme.
