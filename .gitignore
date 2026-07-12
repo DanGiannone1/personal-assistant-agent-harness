@@ -256,3 +256,6 @@ logs_dev.out
 
 # Per-round review screenshots are bulky and redundant with screenshots/poc; keep only findings.md
 review/*/screens/
+
+# Local IDA reference material (not part of the app)
+/ida-reference/
