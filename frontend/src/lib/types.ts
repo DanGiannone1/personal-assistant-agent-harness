@@ -5,7 +5,7 @@ export type AGUIEvent =
   | { type: "TEXT_MESSAGE_END"; message_id: string }
   | { type: "TOOL_CALL_START"; tool_call_id: string; tool_call_name: string; parent_message_id?: string }
   | { type: "TOOL_CALL_ARGS"; tool_call_id: string; delta: string }
-  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: string[] }
+  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: string[]; card?: ToolCard }
   | { type: "TOOL_CALL_END"; tool_call_id: string }
   | { type: "RUN_FINISHED"; thread_id: string; run_id: string }
   | { type: "RUN_ERROR"; message: string }
@@ -18,7 +18,7 @@ export type ToolOutcome = "ok" | "noop" | "error";
 export type MessagePart =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: string[] };
+  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: string[]; card?: ToolCard };
 
 export interface TurnMeta {
   steps: number;       // tool calls in the turn
@@ -104,6 +104,28 @@ export interface LibraryDoc {
   title: string;
   savedAt?: string;
   source?: string;          // "reference" (seeded) | "upload" (promoted)
+}
+
+// Structured preview card a mutating tool attaches to its result: the UI renders the
+// record (or the pending action) so prose can never stand in for what happened.
+export interface ToolCard {
+  kind: "confirm" | "record";
+  action?: string;      // confirm: the tool to re-call with confirmed=true
+  title?: string;
+  detail?: string;
+  recordKind?: string;  // record: task | event | …
+  scope?: string;       // record: personal | project name
+  fields?: Record<string, string>;
+}
+
+export interface ContextBundle {
+  user: { id: string; displayName: string };
+  persona: { role?: string; tone?: string; outputPrefs?: string; language?: string };
+  memories: { id: string; text: string; scope: string; createdAt: string }[];
+  conventions: { id: string; text: string }[];
+  projectName: string | null;
+  workingContext: { activeProjectId?: string; lastRoute?: string };
+  precedence: string[];
 }
 
 export type ProjectRole = "owner" | "editor" | "viewer";

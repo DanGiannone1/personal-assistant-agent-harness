@@ -237,3 +237,15 @@ export const deleteProjectEvent = (pid: string, eid: string) =>
 export const recordVisit = (path: string, title: string) =>
   jsonReq("POST", "/visits", { path, title }).catch(() => undefined); // fire-and-forget
 export const getQuickLinks = () => jsonReq<QuickLink[]>("GET", "/quicklinks");
+
+// ── Settings + context bundle (M4/M5) ───────────────────────────────────────
+import type { ContextBundle } from "./types";
+
+export const getApprovals = () => jsonReq<{ approvals: string[]; available: string[] }>("GET", "/settings/approvals");
+export const putApprovals = (approvals: string[]) => jsonReq("PUT", "/settings/approvals", { approvals });
+export const putPersona = (p: { role: string; tone: string; outputPrefs: string; language: string }) =>
+  jsonReq("PUT", "/settings/persona", p);
+export const addMemory = (text: string) => jsonReq("POST", "/settings/memories", { text });
+export const deleteMemory = (id: string) => jsonReq("DELETE", `/settings/memories/${id}`);
+export const getContextBundle = (view: string) =>
+  jsonReq<ContextBundle>("GET", `/context-bundle?view=${encodeURIComponent(view)}`);

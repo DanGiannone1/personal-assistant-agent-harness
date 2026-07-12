@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Home, CheckSquare, Calendar, Files, Sparkles, Bell, LogOut, FolderKanban } from "lucide-react";
+import { Home, CheckSquare, Calendar, Files, Sparkles, Bell, LogOut, FolderKanban, Settings } from "lucide-react";
 import { AppState } from "@/lib/types";
 import { useAppAuth } from "@/components/AppAuthProvider";
 
@@ -48,6 +48,8 @@ export default function WorkbenchNav({
         <Sparkles size={16} strokeWidth={2.25} />
         <span>Assistant</span>
       </button>
+
+      {navItem("/settings", "Settings", Settings)}
 
       {/* Signed-in user chip — the whole workspace is this user's. */}
       <div className="mt-auto pt-4 border-t border-border-subtle/60">

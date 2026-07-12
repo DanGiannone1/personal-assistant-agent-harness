@@ -14,6 +14,7 @@ import MarkdownRenderer from "../MarkdownRenderer";
 import CsvTable from "../CsvTable";
 import WorkbenchNav from "./WorkbenchNav";
 import { ProjectScreen, ProjectsList } from "./ProjectScreens";
+import SettingsScreen from "./SettingsScreen";
 import type { QuickLink } from "@/lib/types";
 
 interface WorkbenchAppProps {
@@ -168,6 +169,7 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   else if (viewRoute === "/documents") trail = "Documents";
   else if (viewRoute === "/reminders") trail = "Reminders";
   else if (viewRoute === "/projects") trail = "Projects";
+  else if (viewRoute === "/settings") trail = "Settings";
   else if (viewRoute.startsWith("/projects/")) {
     const pid = viewRoute.split("/")[2];
     const proj = (appState.projects ?? []).find((p) => p.id === pid);
@@ -191,6 +193,11 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const tasks = appState.tasks ?? [];
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
+
+  // ── Settings (/settings) — persona, approvals, memories ──────────────────
+  if (viewRoute === "/settings") {
+    return <SettingsScreen appState={appState} onRefresh={onRefresh} />;
+  }
 
   // ── Projects (/projects, /projects/{id}/…) — shared workspaces ────────────
   if (viewRoute === "/projects") {

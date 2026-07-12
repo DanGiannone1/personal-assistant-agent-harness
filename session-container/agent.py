@@ -119,6 +119,16 @@ How you work:
   `prompt`, pick `daily`/`weekly`, a `time` (HH:MM), and a `timezone` if the user implies one
   (ask only if genuinely unclear). Use `list_schedules` to review and `delete_schedule` to
   cancel. The app runs the saved prompt on the cadence and emails whatever it produces.
+- When the user states a durable preference or working agreement ("we do reviews on
+  Fridays", "always round to thousands"), offer to remember it with `propose_memory`.
+  It stores NOTHING until the user confirms; after an explicit yes, call `save_memory`
+  with the same text. Saved memories and project conventions arrive in your context each
+  turn — apply them, with precedence: the user's current instruction beats a project
+  convention, which beats their persona defaults.
+- Deleting things is confirm-first: delete tools return PENDING_CONFIRM with a card the
+  user sees. Nothing is deleted until the user confirms — then call the tool again with
+  confirmed=true. If the user has granted a standing approval for that action, the tool
+  commits immediately instead. Never set confirmed=true without an explicit user yes.
 - For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
   context — never judge dates yourself.
 - Documents come in two tiers. **Session files** are this session's uploads + drafts —
@@ -228,7 +238,7 @@ def _result_text(result) -> str:
     return str(result or "")
 
 
-_NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS"}
+_NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS", "PENDING_CONFIRM"}
 _ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE"}
 
 
@@ -253,6 +263,23 @@ def _tool_outcome(result, success) -> str:
     if not text:
         return "error"
     return "ok"
+
+
+def _extract_card(result) -> dict | None:
+    """Pull a structured preview card out of a tool result (CARD_JSON trailer line).
+
+    Cards are how mutating tools SHOW what they did / propose to do — the UI renders
+    the card, so a prose claim can never stand in for the record. The trailer stays in
+    the model-visible result too (harmless, and keeps one source of truth)."""
+    text = _result_text(result)
+    for line in text.splitlines():
+        if line.startswith("CARD_JSON: "):
+            try:
+                card = _json.loads(line[len("CARD_JSON: "):])
+                return card if isinstance(card, dict) else None
+            except Exception:
+                return None
+    return None
 
 
 def _nav_candidates(result) -> list[str]:
@@ -340,6 +367,7 @@ class UpdateTaskParams(BaseModel):
 class DeleteTaskParams(BaseModel):
     task: str = Field(description="Task id or a distinctive part of its title")
     project: str = Field(default="", description="Project name or id when the task lives in a shared project; empty = personal space.")
+    confirmed: bool = Field(default=False, description="Set true ONLY after the user has explicitly confirmed this deletion (e.g. by replying to the confirmation card).")
 
 
 class AddSubtaskParams(BaseModel):
@@ -371,6 +399,7 @@ class UpdateEventParams(BaseModel):
 
 class DeleteEventParams(BaseModel):
     event: str = Field(description="Event id or a distinctive part of its title")
+    confirmed: bool = Field(default=False, description="Set true ONLY after the user has explicitly confirmed this deletion.")
 
 
 class ListProjectsParams(BaseModel):
@@ -386,6 +415,14 @@ class ShareProjectParams(BaseModel):
     project: str = Field(description="Project name or id to share")
     user: str = Field(description="Username to add, e.g. 'ava'")
     role: str = Field(default="viewer", description="Role to grant: 'viewer', 'editor', or 'owner'")
+
+
+class ProposeMemoryParams(BaseModel):
+    text: str = Field(description="The durable fact to remember, phrased as a standalone statement, e.g. 'Weekly reviews happen on Fridays'.")
+
+
+class SaveMemoryParams(BaseModel):
+    text: str = Field(description="The exact memory text the user just confirmed saving.")
 
 
 class SearchDocumentsParams(BaseModel):
@@ -415,6 +452,7 @@ class ListSchedulesParams(BaseModel):
 
 class DeleteScheduleParams(BaseModel):
     schedule: str = Field(description="Schedule id or a distinctive part of its title")
+    confirmed: bool = Field(default=False, description="Set true ONLY after the user has explicitly confirmed this deletion.")
 
 
 # ── Tool builders (closures over the session workspace) ─────────────────────
@@ -491,6 +529,26 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             appdb.record_visit(user_id, path, title)
         except Exception:
             _logging.getLogger(__name__).warning("visit log write failed", exc_info=True)
+
+    def _has_standing_approval(action: str) -> bool:
+        try:
+            return action in appdb.load_context(user_id)["standingApprovals"]
+        except Exception:
+            return False
+
+    def _confirm_card(action: str, title: str, detail: str) -> str:
+        """A PENDING_CONFIRM result: nothing was mutated; the UI renders Confirm/Cancel."""
+        card = {"kind": "confirm", "action": action, "title": title, "detail": detail}
+        return (
+            f"PENDING_CONFIRM: {action} '{title}' requires the user's confirmation. "
+            f"Nothing has been changed yet. Ask the user to confirm (the app shows a card), "
+            f"then re-call the tool with confirmed=true.\nCARD_JSON: " + _json.dumps(card)
+        )
+
+    def _record_card(kind: str, record: dict, scope: str) -> str:
+        card = {"kind": "record", "recordKind": kind, "scope": scope,
+                "fields": {k: record.get(k) for k in ("id", "title", "status", "priority", "group", "dueDate", "date", "start", "end", "type") if record.get(k)}}
+        return "\nCARD_JSON: " + _json.dumps(card)
 
     def _mutate_project_scoped(proj: dict, minimum: str, mutator):
         """ETag-safe project mutation with the role re-checked inside the mutator."""
@@ -572,6 +630,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return (
                 f"CREATED task [{out['id']}] '{out['title']}' in project {proj['name']}, "
                 f"status {out['status']}, priority {out['priority']}, due {out['dueDate'] or 'n/a'}."
+                + _record_card("task", out, proj["name"])
             )
         def _mut(data):
             task = {
@@ -590,6 +649,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return (
                 f"CREATED task [{task['id']}] '{task['title']}', status {task['status']}, "
                 f"priority {task['priority']}, group {task['group']}, due {task['dueDate'] or 'n/a'}."
+                + _record_card("task", task, "personal")
             )
         return _update(_mut)
 
@@ -647,6 +707,19 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="delete_task", description="Delete a task from the to-do list.")
     def delete_task(params: DeleteTaskParams) -> str:
+        if not params.confirmed and not _has_standing_approval("delete_task"):
+            data = _load() if not params.project.strip() else None
+            scope_data = data
+            if params.project.strip():
+                proj_probe, perr0 = _resolve_project_ref(params.project)
+                if perr0:
+                    return perr0
+                scope_data = proj_probe
+            t, terr = _resolve_task_strict(scope_data, params.task)
+            if terr:
+                return terr
+            return _confirm_card("delete_task", t["title"],
+                                 f"Delete task [{t['id']}] permanently" + (f" from project {scope_data['name']}" if params.project.strip() else ""))
         if params.project.strip():
             proj, perr = _resolve_project_ref(params.project)
             if perr:
@@ -789,6 +862,11 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="delete_event", description="Delete a calendar event.")
     def delete_event(params: DeleteEventParams) -> str:
+        if not params.confirmed and not _has_standing_approval("delete_event"):
+            e, eerr = _resolve_event_strict(_load(), params.event)
+            if eerr:
+                return eerr
+            return _confirm_card("delete_event", e["title"], f"Delete event [{e['id']}] permanently")
         def _mut(data):
             e, err = _resolve_event_strict(data, params.event)
             if err:
@@ -920,6 +998,27 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return out
         _set_route(f"/projects/{proj['id']}/settings", proj["name"])
         return f"SHARED project '{proj['name']}' with {target['id']} as {role}."
+
+    @define_tool(name="propose_memory", description="Propose saving a durable fact to the user's workspace memory. NOTHING is stored until the user confirms — the app shows a confirmation card. Use when the user states a lasting preference or working agreement worth remembering.")
+    def propose_memory(params: ProposeMemoryParams) -> str:
+        text = params.text.strip()
+        if not text:
+            return "TEXT_REQUIRED: what should be remembered?"
+        return _confirm_card("save_memory", text[:80],
+                             "Save to workspace memory (visible and editable in Settings)")
+
+    @define_tool(name="save_memory", description="Save a memory the user has JUST explicitly confirmed (after propose_memory). Never call without that confirmation.")
+    def save_memory(params: SaveMemoryParams) -> str:
+        text = params.text.strip()
+        if not text:
+            return "TEXT_REQUIRED: what should be remembered?"
+        def _mut(doc):
+            mem = {"id": appdb.new_id("m", doc["memories"]), "text": text,
+                   "scope": "global", "createdAt": appdb._now_iso()}
+            doc["memories"].append(mem)
+            return mem
+        mem = appdb.update_context(user_id, _mut)
+        return f"SAVED memory [{mem['id']}]: {text}. The user can view or remove it in Settings."
 
     @define_tool(name="search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")
     def search_documents(params: SearchDocumentsParams) -> str:
@@ -1060,6 +1159,11 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="delete_schedule", description="Delete a scheduled reminder.")
     def delete_schedule(params: DeleteScheduleParams) -> str:
+        if not params.confirmed and not _has_standing_approval("delete_schedule"):
+            sch = appdb.resolve_schedule(_load(), params.schedule)
+            if sch is None:
+                return f"NOT_FOUND: no reminder matches '{params.schedule}'."
+            return _confirm_card("delete_schedule", sch["title"], f"Delete reminder [{sch['id']}] permanently")
         def _mut(data):
             s = appdb.resolve_schedule(data, params.schedule)
             if s is None:
@@ -1075,6 +1179,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,
+        propose_memory, save_memory,
         search_documents, save_to_library, list_library,
         create_schedule, list_schedules, delete_schedule,
     ]
@@ -1344,6 +1449,9 @@ class AgentSession:
                     cands = _nav_candidates(result)
                     if cands:
                         payload["candidates"] = cands
+                card = _extract_card(result)
+                if card:
+                    payload["card"] = card
                 self._enqueue_sse(payload)
                 self._enqueue(ToolCallEndEvent(tool_call_id=call_id))
             _trace("agent.tool_end", session_id=self._session_id, run_id=self._run_id, tool=tool, call_id=call_id, success=getattr(data, "success", None), outcome=outcome)

@@ -1036,6 +1036,114 @@ async def quick_links(uid: str = Depends(current_user)) -> list[dict]:
     )
     return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked]
 
+
+
+# ── Personal settings — standing approvals, persona, memories (M4/M5) ────────
+class ApprovalsPut(BaseModel):
+    approvals: list[str] = Field(default_factory=list, max_length=20)
+
+
+_APPROVABLE = {"delete_task", "delete_event", "delete_schedule"}
+
+
+@app.get("/settings/approvals")
+async def get_approvals(uid: str = Depends(current_user)) -> dict:
+    ctx = await asyncio.to_thread(appdb.load_context, uid)
+    return {"approvals": ctx["standingApprovals"], "available": sorted(_APPROVABLE)}
+
+
+@app.put("/settings/approvals")
+async def put_approvals(req: ApprovalsPut, uid: str = Depends(current_user)) -> dict:
+    bad = [a for a in req.approvals if a not in _APPROVABLE]
+    if bad:
+        raise HTTPException(status_code=422, detail=f"Unknown action(s): {bad}")
+
+    def _mut(doc):
+        doc["standingApprovals"] = sorted(set(req.approvals))
+    await asyncio.to_thread(appdb.update_context, uid, _mut)
+    return {"approvals": sorted(set(req.approvals))}
+
+
+class PersonaPut(BaseModel):
+    role: str = Field("", max_length=120)
+    tone: str = Field("", max_length=200)
+    outputPrefs: str = Field("", max_length=300)
+    language: str = Field("", max_length=60)
+
+
+@app.put("/settings/persona")
+async def put_persona(req: PersonaPut, uid: str = Depends(current_user)) -> dict:
+    def _mut(user):
+        user["persona"] = {
+            "role": req.role.strip(), "tone": req.tone.strip(),
+            "outputPrefs": req.outputPrefs.strip(), "language": req.language.strip() or "English",
+        }
+        return user["persona"]
+    persona = await asyncio.to_thread(appdb.update_user, uid, _mut)
+    if persona is None:
+        raise HTTPException(status_code=404, detail="Unknown user")
+    return persona
+
+
+class MemoryCreate(BaseModel):
+    text: str = Field(..., min_length=1, max_length=400)
+
+
+@app.post("/settings/memories", status_code=201)
+async def add_memory(req: MemoryCreate, uid: str = Depends(current_user)) -> dict:
+    created: dict = {}
+
+    def _mut(doc):
+        mem = {"id": appdb.new_id("m", doc["memories"]), "text": req.text.strip(),
+               "scope": "global", "createdAt": appdb._now_iso()}
+        doc["memories"].append(mem)
+        created.update(mem)
+    await asyncio.to_thread(appdb.update_context, uid, _mut)
+    return created
+
+
+@app.delete("/settings/memories/{memory_id}", status_code=204)
+async def delete_memory(memory_id: str, uid: str = Depends(current_user)):
+    def _mut(doc):
+        if not any(m["id"] == memory_id for m in doc["memories"]):
+            raise _NotFound()
+        doc["memories"] = [m for m in doc["memories"] if m["id"] != memory_id]
+    try:
+        await asyncio.to_thread(appdb.update_context, uid, _mut)
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/context-bundle")
+async def context_bundle(view: str = "", uid: str = Depends(current_user)) -> dict:
+    """The per-turn context bundle — what personalizes the next turn, made LEGIBLE.
+
+    Precedence (docs/projects-spec.md F8): turn instruction > project convention >
+    user persona > app default. The bundle carries each level separately so the
+    inspector can show exactly what applied and why; the frontend renders the same
+    bundle into the prompt preamble, so what the user sees IS what the model got.
+    """
+    user = await asyncio.to_thread(appdb.get_user, uid)
+    ctx = await asyncio.to_thread(appdb.load_context, uid)
+    conventions: list[dict] = []
+    project_name = None
+    # A project's conventions apply when the turn's view is inside that project.
+    if view.startswith("/projects/"):
+        pid = view.split("/")[2] if len(view.split("/")) > 2 else ""
+        project = await asyncio.to_thread(appdb.load_project, pid)
+        if project and appdb.member_role(project, uid) is not None:
+            conventions = project.get("conventions", [])
+            project_name = project["name"]
+    return {
+        "user": {"id": uid, "displayName": (user or {}).get("displayName", uid)},
+        "persona": (user or {}).get("persona", {}),
+        "memories": ctx["memories"],
+        "conventions": conventions,
+        "projectName": project_name,
+        "workingContext": ctx["workingContext"],
+        "precedence": ["turn instruction", "project convention", "user persona", "app default"],
+    }
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { AGUIEvent, AppFile, AppState, ChatMessage, MessagePart, ToolOutcome } from "@/lib/types";
+import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, ToolCard, ToolOutcome } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
-import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getQuickLinks, recordVisit } from "@/lib/api";
+import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getContextBundle, getQuickLinks, recordVisit } from "@/lib/api";
 import type { QuickLink } from "@/lib/types";
 import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
@@ -29,7 +29,7 @@ type Action =
   | { type: "REASONING_DELTA"; delta: string }
   | { type: "TOOL_START"; toolCallId: string; toolCallName: string }
   | { type: "TOOL_ARGS"; toolCallId: string; delta: string }
-  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: string[] }
+  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: string[]; card?: ToolCard }
   | { type: "TOOL_END"; toolCallId: string }
   | { type: "SET_TURN_META"; steps: number; durationMs: number }
   | { type: "DONE" }
@@ -44,6 +44,7 @@ type Action =
   | { type: "APP_STATE_LOADED"; appState: AppState; follow: boolean }
   | { type: "SET_VIEW_ROUTE"; route: string }
   | { type: "QUICKLINKS_LOADED"; links: QuickLink[] }
+  | { type: "BUNDLE_USED"; bundle: ContextBundle | null }
   | { type: "SESSION_ERROR"; error: string | null };
 
 interface State {
@@ -58,6 +59,7 @@ interface State {
   appRoute: string;        // last server-side currentRoute we observed
   newRecordIds: string[];  // task/event ids that appeared on the latest refetch (for highlight)
   quickLinks: QuickLink[]; // rank_destinations(context) — the no-AI quick links
+  lastBundle: ContextBundle | null; // what personalized the most recent turn (inspector)
   sessionError: string | null;
 }
 
@@ -206,7 +208,7 @@ function reducer(state: State, action: Action): State {
         messages: updateLastMessage(state.messages, (m) => ({
           ...m,
           parts: m.parts.map((p) =>
-            p.type === "tool_call" && p.toolCallId === action.toolCallId ? { ...p, outcome: action.outcome, candidates: action.candidates } : p,
+            p.type === "tool_call" && p.toolCallId === action.toolCallId ? { ...p, outcome: action.outcome, candidates: action.candidates, card: action.card } : p,
           ),
         })),
       };
@@ -274,6 +276,7 @@ function reducer(state: State, action: Action): State {
     }
     case "SET_VIEW_ROUTE": return { ...state, viewRoute: action.route };
     case "QUICKLINKS_LOADED": return { ...state, quickLinks: action.links };
+    case "BUNDLE_USED": return { ...state, lastBundle: action.bundle };
     default: return state;
   }
 }
@@ -281,7 +284,7 @@ function reducer(state: State, action: Action): State {
 const initialState: State = {
   messages: [], isStreaming: false, sessionId: null, isInitializing: true,
   currentRunId: null, files: [], appState: null, viewRoute: "/home",
-  appRoute: "/home", newRecordIds: [], quickLinks: [], sessionError: null,
+  appRoute: "/home", newRecordIds: [], quickLinks: [], lastBundle: null, sessionError: null,
 };
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -440,7 +443,7 @@ export function useAgentSession() {
           // A fresh agent nav supersedes any earlier manual nav this turn.
           userNavSinceToolRef.current = false;
         }
-        dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, outcome: event.outcome, candidates: event.candidates });
+        dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, outcome: event.outcome, candidates: event.candidates, card: event.card });
         break;
       }
       case "TOOL_CALL_END":
@@ -474,11 +477,30 @@ export function useAgentSession() {
       abortRef.current?.abort();
       controller = new AbortController();
       abortRef.current = controller;
-      // Attach today's date + the user's current view so the agent never guesses "today"
-      // (deadline/overdue questions need the real date) and can resolve "here" / "this".
+      // Compose the per-turn context bundle (persona, memories, conventions) and inject
+      // it as a LEGIBLE preamble — the inspector renders the same bundle, so what the
+      // user can audit is exactly what the model received. Precedence is stated inline.
       const label = viewLabel(appStateRef.current, viewRouteRef.current);
       const today = new Date().toISOString().slice(0, 10);
-      const prompt = `[Today: ${today}] [Current view: ${label}]\n\n${content}`;
+      let preamble = `[Today: ${today}] [Current view: ${label}]`;
+      try {
+        const bundle = await getContextBundle(viewRouteRef.current);
+        dispatch({ type: "BUNDLE_USED", bundle });
+        preamble += ` [User: ${bundle.user.displayName}]`;
+        const p = bundle.persona || {};
+        const personaBits = [p.role, p.tone, p.outputPrefs, p.language && p.language !== "English" ? `writes in ${p.language}` : ""].filter(Boolean);
+        if (personaBits.length) preamble += `\n[Persona: ${personaBits.join("; ")}]`;
+        if (bundle.memories.length) preamble += `\n[Workspace memory: ${bundle.memories.map((m) => m.text).join(" | ")}]`;
+        if (bundle.conventions.length) preamble += `\n[Project conventions — ${bundle.projectName}: ${bundle.conventions.map((c) => c.text).join(" | ")}]`;
+        if (bundle.memories.length || bundle.conventions.length || personaBits.length) {
+          preamble += `\n[Precedence: the user's instruction in this message overrides project conventions, which override persona defaults.]`;
+        }
+      } catch {
+        // Bundle unavailable (endpoint down): the turn still runs with date+view; the
+        // inspector will show that no personalization applied rather than guessing.
+        dispatch({ type: "BUNDLE_USED", bundle: null });
+      }
+      const prompt = `${preamble}\n\n${content}`;
       for await (const event of streamSSE(prompt, controller.signal, state.sessionId)) { handleAGUIEvent(event); }
       if (streamingRef.current) dispatch({ type: "DONE" });
     } catch (err: unknown) {

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle2, Activity, HelpCircle, AlertCircle, Sparkles, Circle, ChevronDown, ChevronRight } from "lucide-react";
-import { MessagePart, ToolOutcome } from "@/lib/types";
+import { MessagePart, ToolCard, ToolOutcome } from "@/lib/types";
 
 function runningLabel(name: string): string {
   const labels: Record<string, string> = {
@@ -12,6 +12,8 @@ function runningLabel(name: string): string {
     list_events: "Reviewing events", search_documents: "Searching documents",
     list_documents: "Browsing documents",
     read_workspace_file: "Reading document", write_file: "Saving document", skill: "Loading skill",
+    list_projects: "Reviewing projects", create_project: "Creating project", share_project: "Sharing project",
+    propose_memory: "Proposing memory", save_memory: "Saving memory", delete_schedule: "Deleting reminder",
   };
   return labels[name] || "Working";
 }
@@ -21,7 +23,9 @@ function runningLabel(name: string): string {
 function doneLabel(name: string, outcome: ToolOutcome | undefined): string {
   if (name === "skill") return "Skill loaded";  // skill loads carry no outcome by design
   if (outcome === "noop") {
-    return ({ navigate: "Needs clarification", update_task: "No changes", update_event: "No changes" } as Record<string, string>)[name] || "No change";
+    return ({ navigate: "Needs clarification", update_task: "No changes", update_event: "No changes",
+      delete_task: "Awaiting confirmation", delete_event: "Awaiting confirmation",
+      delete_schedule: "Awaiting confirmation", propose_memory: "Awaiting confirmation" } as Record<string, string>)[name] || "No change";
   }
   if (outcome === "error") {
     return ({ navigate: "Destination not found", update_task: "Task not found", delete_task: "Task not found", add_subtask: "Task not found", create_task: "Couldn't create task", update_event: "Event not found", delete_event: "Event not found", create_event: "Couldn't create event", search_documents: "Search not configured" } as Record<string, string>)[name] || "Couldn't complete";
@@ -29,6 +33,8 @@ function doneLabel(name: string, outcome: ToolOutcome | undefined): string {
   if (outcome === undefined) return "Done";
   const labels: Record<string, string> = {
     navigate: "Navigated", create_task: "Task created", update_task: "Task updated",
+    list_projects: "Projects reviewed", create_project: "Project created", share_project: "Project shared",
+    save_memory: "Memory saved", delete_schedule: "Reminder deleted",
     delete_task: "Task deleted", add_subtask: "Subtask added", list_tasks: "Tasks reviewed",
     create_event: "Event created", update_event: "Event updated", delete_event: "Event deleted",
     list_events: "Events reviewed", search_documents: "Documents searched",
@@ -66,6 +72,41 @@ function StepIcon({ running, outcome, skill }: { running: boolean; outcome: Tool
   return <span className="step-ic step-ic-ok"><CheckCircle2 size={12} /></span>;
 }
 
+function CardView({ card, onPick }: { card: ToolCard; onPick?: (text: string) => void }) {
+  if (card.kind === "confirm") {
+    return (
+      <div className="step-card step-card-confirm" data-testid="confirm-card">
+        <div className="step-card-title">{card.title}</div>
+        {card.detail && <div className="step-card-detail">{card.detail}</div>}
+        <div className="step-card-actions">
+          <button type="button" className="step-card-btn step-card-btn-primary" disabled={!onPick}
+            data-testid="confirm-card-yes"
+            onClick={() => onPick?.("Yes — confirmed, go ahead.")}>
+            Confirm
+          </button>
+          <button type="button" className="step-card-btn" disabled={!onPick}
+            data-testid="confirm-card-no"
+            onClick={() => onPick?.("No — cancel that.")}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const fields = card.fields ?? {};
+  return (
+    <div className="step-card" data-testid="record-card">
+      <div className="step-card-title">{fields.title ?? card.recordKind}</div>
+      <div className="step-card-fields">
+        {Object.entries(fields).filter(([k]) => k !== "title").map(([k, v]) => (
+          <span key={k} className="step-card-field"><b>{k}</b> {v}</span>
+        ))}
+        {card.scope && <span className="step-card-field"><b>scope</b> {card.scope}</span>}
+      </div>
+    </div>
+  );
+}
+
 function Step({ part, onPick }: { part: MessagePart & { type: "tool_call" }; onPick?: (text: string) => void }) {
   const running = part.status === "running";
   const isSkill = part.tool === "skill";
@@ -79,6 +120,7 @@ function Step({ part, onPick }: { part: MessagePart & { type: "tool_call" }; onP
         <span className="step-label">{label}</span>
         {ctx && <span className="step-ctx" title={ctx}>{ctx}</span>}
       </div>
+      {!running && part.card && <CardView card={part.card} onPick={onPick} />}
       {candidates.length > 0 && (
         <div className="step-candidates">
           {candidates.map((c) => (

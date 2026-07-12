@@ -32,16 +32,20 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
   const [confirmNewChat, setConfirmNewChat] = useState(false);
   const agentWorking = state.isStreaming || isChatUploading;
   const artifacts = useMemo(() => state.files.filter((f) => f.origin === "generated"), [state.files]);
-  // Instant quick-nav targets (the app's pages) — client-side, no agent.
-  const quickNav = useMemo(() => (
-    [
+  // Instant quick-nav targets — context-ranked when the visit log has signal
+  // (rank_destinations with no utterance), static pages as the cold-start fallback.
+  const quickNav = useMemo(() => {
+    if (state.quickLinks.length > 0) {
+      return state.quickLinks.map((q) => ({ label: q.title, route: q.path }));
+    }
+    return [
       { label: "Home", route: "/home" },
       { label: "Tasks", route: "/todo" },
       { label: "Calendar", route: "/calendar" },
       { label: "Documents", route: "/documents" },
       { label: "Reminders", route: "/reminders" },
-    ]
-  ), []);
+    ];
+  }, [state.quickLinks]);
 
   // "Needs attention" — overdue tasks, computed client-side so opening the assistant lands the
   // user on what matters with one click (no asking, no agent turn). Done = not overdue.
@@ -120,6 +124,24 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
                 </span>
                 <ArrowRight size={15} className="text-text-muted shrink-0" />
               </button>
+            )}
+            {state.lastBundle && (
+              <details className="ctx-inspector" data-testid="context-inspector">
+                <summary>What personalized the last turn</summary>
+                <div className="ctx-inspector-body">
+                  <span className="ctx-line"><b>User</b> {state.lastBundle.user.displayName}</span>
+                  {(state.lastBundle.persona.role || state.lastBundle.persona.tone) && (
+                    <span className="ctx-line"><b>Persona</b> {[state.lastBundle.persona.role, state.lastBundle.persona.tone, state.lastBundle.persona.outputPrefs].filter(Boolean).join(" · ")}</span>
+                  )}
+                  {state.lastBundle.memories.length > 0 && (
+                    <span className="ctx-line"><b>Memory</b> {state.lastBundle.memories.map((m) => m.text).join(" | ")}</span>
+                  )}
+                  {state.lastBundle.conventions.length > 0 && (
+                    <span className="ctx-line"><b>Conventions ({state.lastBundle.projectName})</b> {state.lastBundle.conventions.map((c) => c.text).join(" | ")}</span>
+                  )}
+                  <span className="ctx-line"><b>Precedence</b> {state.lastBundle.precedence.join(" › ")}</span>
+                </div>
+              </details>
             )}
             <InputBar
               onSend={handleSend}
