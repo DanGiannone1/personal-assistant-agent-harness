@@ -22,6 +22,7 @@ import random
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -38,6 +39,13 @@ _LOCK = threading.Lock()
 # restarts. Documents/files stay in the per-session workspace folder. AAD-only (no
 # account key): DefaultAzureCredential — az login locally, managed identity in ACA.
 _STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules", "library")
+# The Engagements page's static route — shared by _seed() and the on-read migration
+# in _doc_to_state() so pre-existing owner docs pick the page up without a backfill.
+_ENGAGEMENTS_ROUTE = {
+    "path": "/engagements",
+    "title": "Engagements",
+    "keywords": ["engagements", "engagement", "customers", "accounts", "portfolio", "health"],
+}
 # Single-user POC: one stable key for the owner's data. Swap to the Entra `oid` here
 # when multi-user accounts are introduced — nothing else in this module changes.
 _OWNER_ID = os.getenv("COSMOS_OWNER_ID", "owner")
@@ -60,7 +68,11 @@ def _container():
             )
         database = os.getenv("COSMOS_DATABASE", "flow")
         container = os.getenv("COSMOS_CONTAINER", "appstate")
-        client = CosmosClient(endpoint, credential=DefaultAzureCredential())
+        # AAD-only in real environments (az login locally, managed identity in ACA).
+        # COSMOS_KEY exists ONLY for the local emulator (real Cosmos is
+        # private-endpoint-only and key auth is disabled account-wide).
+        key = os.getenv("COSMOS_KEY")
+        client = CosmosClient(endpoint, credential=key or DefaultAzureCredential())
         _container_singleton = client.get_database_client(database).get_container_client(container)
         return _container_singleton
 
@@ -123,6 +135,7 @@ def _seed() -> dict:
             {"path": "/calendar", "title": "Calendar", "keywords": ["calendar", "schedule", "events", "event", "meetings", "agenda"]},
             {"path": "/documents", "title": "Documents", "keywords": ["documents", "docs", "notes", "files", "drafts", "library"]},
             {"path": "/reminders", "title": "Reminders", "keywords": ["reminders", "reminder", "schedules", "scheduled", "recurring", "digest", "summary email"]},
+            _ENGAGEMENTS_ROUTE.copy(),
         ],
     }
 
@@ -139,6 +152,10 @@ def _doc_to_state(doc: dict) -> dict:
             state[k] = []
     if state.get("currentRoute") is None:
         state["currentRoute"] = "/home"
+    # Self-healing route migration: owner docs seeded before the Engagements page
+    # existed lack its route; normalize on read so navigation works without a migration.
+    if not any(r.get("path") == "/engagements" for r in state["routes"]):
+        state["routes"].append(_ENGAGEMENTS_ROUTE.copy())
     return state
 
 
@@ -291,7 +308,7 @@ def is_overdue(task: dict, today: str | None = None) -> bool:
         return False
 
 
-def resolve_destination(data: dict, destination: str) -> dict:
+def resolve_destination(data: dict, destination: str, engagements: list[dict] | None = None) -> dict:
     """Resolve a free-text destination to a concrete route.
 
     Returns one of:
@@ -305,23 +322,28 @@ def resolve_destination(data: dict, destination: str) -> dict:
     routes plus individual tasks and events by title.
     """
     q = (destination or "").strip().lower()
+    engagements = engagements or []
     if not q:
-        return {"status": "not_found", "candidates": _all_destinations(data)[:8]}
+        return {"status": "not_found", "candidates": _all_destinations(data, engagements)[:8]}
 
     # 1) Exact static route path or title.
     for route in data["routes"]:
         if q == route["path"].lower() or q == route["title"].lower():
             return {"status": "resolved", "path": route["path"], "title": route["title"]}
 
-    # 2) Tasks / events by exact title.
+    # 2) Tasks / events / engagements by exact title.
     t_exact = [t for t in data["tasks"] if t["title"].lower() == q]
     e_exact = [e for e in data["events"] if e["title"].lower() == q]
-    if len(t_exact) + len(e_exact) == 1:
+    g_exact = [g for g in engagements if g["title"].lower() == q]
+    if len(t_exact) + len(e_exact) + len(g_exact) == 1:
         if t_exact:
             t = t_exact[0]
             return {"status": "resolved", "path": task_route(t["id"]), "title": t["title"]}
-        e = e_exact[0]
-        return {"status": "resolved", "path": event_route(e["id"]), "title": e["title"]}
+        if e_exact:
+            e = e_exact[0]
+            return {"status": "resolved", "path": event_route(e["id"]), "title": e["title"]}
+        g = g_exact[0]
+        return {"status": "resolved", "path": engagement_route(g["id"]), "title": g["title"]}
 
     # 3) Word-boundary / keyword matching across routes + tasks + events. Deliberately NOT
     # raw bidirectional substring (a 1-2 char query like "x" must not match inside a word).
@@ -360,6 +382,9 @@ def resolve_destination(data: dict, destination: str) -> dict:
     for e in data["events"]:
         if len(q) >= 3 and q in e["title"].lower():
             matches.append({"path": event_route(e["id"]), "title": e["title"]})
+    for g in engagements:
+        if len(q) >= 3 and q in g["title"].lower():
+            matches.append({"path": engagement_route(g["id"]), "title": g["title"]})
 
     seen: set[str] = set()
     deduped = [m for m in matches if not (m["path"] in seen or seen.add(m["path"]))]
@@ -368,13 +393,14 @@ def resolve_destination(data: dict, destination: str) -> dict:
         return {"status": "resolved", "path": deduped[0]["path"], "title": deduped[0]["title"]}
     if len(deduped) > 1:
         return {"status": "ambiguous", "candidates": deduped}
-    return {"status": "not_found", "candidates": _all_destinations(data)[:8]}
+    return {"status": "not_found", "candidates": _all_destinations(data, engagements)[:8]}
 
 
-def _all_destinations(data: dict) -> list[dict]:
+def _all_destinations(data: dict, engagements: list[dict] | None = None) -> list[dict]:
     dests = [{"path": r["path"], "title": r["title"]} for r in data["routes"]]
     dests += [{"path": task_route(t["id"]), "title": t["title"]} for t in data["tasks"]]
     dests += [{"path": event_route(e["id"]), "title": e["title"]} for e in data["events"]]
+    dests += [{"path": engagement_route(g["id"]), "title": g["title"]} for g in (engagements or [])]
     return dests
 
 
@@ -480,3 +506,186 @@ def schedule_summary(s: dict) -> str:
         days = ", ".join(DAY_NAMES[d] for d in sorted(s.get("daysOfWeek") or []) if 0 <= d <= 6)
         return f"Weekly on {days or '—'} at {when} ({tz})"
     return f"Daily at {when} ({tz})"
+
+
+# ── Engagements (shared scope) ───────────────────────────────────────────────
+# One Cosmos doc PER engagement (id == sessionId == "eng-<8 hex>", so each
+# engagement is its own partition), in the same container as the owner doc.
+# Engagements are the collaboration surface: they are shared by construction —
+# nothing in them is keyed by the owner. Same optimistic-ETag discipline as the
+# owner doc, so a health change and its explanatory note commit atomically and
+# concurrent editors converge through the retry loop. See docs/engagements.md.
+
+ENGAGEMENT_STAGES = ["Discovery", "Design", "Build", "Deploy", "Live", "Closed"]
+HEALTH_LEVELS = ["green", "amber", "red"]
+MILESTONE_STATUSES = ["Planned", "In progress", "Done", "Slipped"]
+RISK_SEVERITIES = ["Low", "Medium", "High"]
+RISK_STATUSES = ["Open", "Mitigating", "Closed"]
+ACTION_STATUSES = ["Open", "Done"]
+# kind → (list field on the doc, id prefix). The item tools take a `kind`
+# argument rather than spawning nine near-identical tools.
+ENGAGEMENT_ITEM_KINDS = {
+    "milestone": ("milestones", "m"),
+    "risk": ("risks", "r"),
+    "action": ("actions", "a"),
+}
+
+_ENGAGEMENT_FIELDS = (
+    "title", "customer", "stage", "health", "healthNote", "members",
+    "startDate", "targetDate", "notes", "milestones", "risks", "actions",
+    "createdAt", "updatedAt",
+)
+
+
+def _engagement_to_state(doc: dict) -> dict:
+    """Strip Cosmos system fields → the engagement shape; coerce missing collections."""
+    eng = {"id": doc["id"]}
+    for k in _ENGAGEMENT_FIELDS:
+        eng[k] = doc.get(k)
+    for k in ("milestones", "risks", "actions", "members"):
+        if eng.get(k) is None:
+            eng[k] = []
+    if not eng.get("stage"):
+        eng["stage"] = ENGAGEMENT_STAGES[0]
+    if not eng.get("health"):
+        eng["health"] = "green"
+    for k in ("title", "customer", "healthNote", "notes", "startDate", "targetDate"):
+        if eng.get(k) is None:
+            eng[k] = ""
+    return eng
+
+
+def engagement_route(engagement_id: str) -> str:
+    return f"/engagements/{engagement_id}"
+
+
+def create_engagement(title: str, customer: str = "", stage: str = "",
+                      health: str = "", health_note: str = "",
+                      start_date: str = "", target_date: str = "",
+                      notes: str = "") -> dict:
+    """Create a new engagement doc. Raises ValueError on bad stage/health."""
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("engagement title is required")
+    stage = (stage or ENGAGEMENT_STAGES[0]).strip() or ENGAGEMENT_STAGES[0]
+    if stage not in ENGAGEMENT_STAGES:
+        raise ValueError(f"stage must be one of {ENGAGEMENT_STAGES}")
+    health = (health or "green").strip().lower() or "green"
+    if health not in HEALTH_LEVELS:
+        raise ValueError(f"health must be one of {HEALTH_LEVELS}")
+    eid = "eng-" + uuid.uuid4().hex[:8]
+    now = _now_iso()
+    doc = {
+        "id": eid, "sessionId": eid, "type": "engagement",
+        "title": title, "customer": (customer or "").strip(), "stage": stage,
+        "health": health, "healthNote": (health_note or "").strip(),
+        "members": [], "startDate": (start_date or "").strip(),
+        "targetDate": (target_date or "").strip(), "notes": (notes or "").strip(),
+        "milestones": [], "risks": [], "actions": [],
+        "createdAt": now, "updatedAt": now,
+    }
+    _container().create_item(doc)
+    return _engagement_to_state(doc)
+
+
+def list_engagements() -> list[dict]:
+    """All engagement docs (cross-partition query — fine at team scale), oldest first."""
+    docs = _container().query_items(
+        query="SELECT * FROM c WHERE c.type = 'engagement'",
+        enable_cross_partition_query=True,
+    )
+    return sorted((_engagement_to_state(d) for d in docs),
+                  key=lambda e: (e.get("createdAt") or "", e["id"]))
+
+
+def load_engagement(engagement_id: str) -> dict | None:
+    try:
+        doc = _container().read_item(item=engagement_id, partition_key=engagement_id)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return None
+    if doc.get("type") != "engagement":
+        return None
+    return _engagement_to_state(doc)
+
+
+def update_engagement(engagement_id: str, mutator):
+    """Read-modify-write ONE engagement doc — same ETag+retry semantics as `update()`.
+
+    Raises KeyError if the engagement doesn't exist; callers map that to 404 (REST)
+    or an `error` outcome (tools). `mutator(eng)` mutates in place; AbortWrite works
+    exactly as it does for the owner doc.
+    """
+    container = _container()
+    last_exc = None
+    for attempt in range(_MAX_UPDATE_RETRIES):
+        try:
+            doc = container.read_item(item=engagement_id, partition_key=engagement_id)
+        except cosmos_exceptions.CosmosResourceNotFoundError:
+            raise KeyError(f"engagement {engagement_id!r} not found")
+        if doc.get("type") != "engagement":
+            raise KeyError(f"engagement {engagement_id!r} not found")
+        eng = _engagement_to_state(doc)
+        try:
+            result = mutator(eng)
+        except AbortWrite as abort:
+            return abort.result
+        eng["updatedAt"] = _now_iso()
+        body = {"id": engagement_id, "sessionId": engagement_id, "type": "engagement",
+                **{k: eng.get(k) for k in _ENGAGEMENT_FIELDS}}
+        try:
+            container.replace_item(
+                item=engagement_id, body=body,
+                etag=doc["_etag"], match_condition=MatchConditions.IfNotModified,
+            )
+            return result
+        except cosmos_exceptions.CosmosAccessConditionFailedError as exc:
+            last_exc = exc  # a concurrent writer committed first — back off, re-read, retry
+            time.sleep(random.uniform(0.02, 0.08) * (attempt + 1))
+    raise RuntimeError(
+        f"engagement doc update failed after {_MAX_UPDATE_RETRIES} retries (write contention)"
+    ) from last_exc
+
+
+def delete_engagement(engagement_id: str) -> bool:
+    """Delete an engagement doc; True if it existed."""
+    try:
+        _container().delete_item(item=engagement_id, partition_key=engagement_id)
+        return True
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return False
+
+
+def resolve_engagement(ref: str, engagements: list[dict] | None = None) -> dict | None:
+    """Resolve an engagement by id, then exact title, then unique title substring."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    engs = engagements if engagements is not None else list_engagements()
+    by_id = next((g for g in engs if g["id"] == ref), None)
+    if by_id:
+        return by_id
+    low = ref.lower()
+    exact = [g for g in engs if g["title"].lower() == low]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [g for g in engs if low in g["title"].lower()]
+    return partial[0] if len(partial) == 1 else None
+
+
+def find_engagement_item(eng: dict, kind: str, ref: str) -> dict | None:
+    """Resolve a milestone/risk/action within an engagement by id, exact title, or
+    unique title substring."""
+    field, _prefix = ENGAGEMENT_ITEM_KINDS[kind]
+    items = eng.get(field) or []
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    by_id = next((i for i in items if i["id"] == ref), None)
+    if by_id:
+        return by_id
+    low = ref.lower()
+    exact = [i for i in items if i["title"].lower() == low]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [i for i in items if low in i["title"].lower()]
+    return partial[0] if len(partial) == 1 else None

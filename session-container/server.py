@@ -175,15 +175,16 @@ async def create_session(request: Request) -> dict:
 async def app_state(request: Request) -> dict:
     """Return the full Personal Assistant application state for this session.
 
-    Source of truth is the workspace JSON the agent's tools mutate; seeds lazily
-    if missing (e.g. after a reset or orchestrator-probed restore). Returns the
-    new shape: {currentRoute, tasks[], events[], routes[]}.
+    Assembled from BOTH scopes: the personal owner doc (tasks/events/…) plus the
+    shared engagement docs (see docs/engagements.md) — so the UI renders every
+    surface from state the tools actually committed. Seeds lazily if missing
+    (e.g. after a reset or orchestrator-probed restore).
     """
     session_id = _get_identifier(request)
     _require_existing_session(session_id)
     workspace = _session_workspace(session_id)
     _ensure_documents_seeded(workspace)  # lazy-seed docs for restored/reset sessions
-    return appdb.load()
+    return {**appdb.load(), "engagements": appdb.list_engagements()}
 
 
 @app.get("/session")

@@ -747,6 +747,220 @@ async def save_file_content(session_id: str, body: SaveContentRequest) -> dict:
         raise
 
 
+# ── Manual CRUD — engagements (shared scope) ─────────────────────────────────
+# Engagements live in their OWN Cosmos docs (one per engagement — shared with the
+# team, not keyed by the owner) and mutate through appdb.update_engagement, the
+# same ETag-safe discipline as the owner doc. See docs/engagements.md.
+
+_ENGAGEMENT_ITEM_PATHS = {"milestones": "milestone", "risks": "risk", "actions": "action"}
+_ITEM_STATUS_SETS = {
+    "milestone": appdb.MILESTONE_STATUSES,
+    "risk": appdb.RISK_STATUSES,
+    "action": appdb.ACTION_STATUSES,
+}
+
+
+async def _mutate_engagement(engagement_id: str, mutator) -> None:
+    """Run an appdb.update_engagement mutator off-thread; map missing → 404."""
+    try:
+        await asyncio.to_thread(appdb.update_engagement, engagement_id, mutator)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+def _resolve_item_kind(kind_path: str) -> str:
+    kind = _ENGAGEMENT_ITEM_PATHS.get(kind_path)
+    if kind is None:
+        raise HTTPException(status_code=404, detail="Unknown engagement item collection")
+    return kind
+
+
+def _check_item_enums(kind: str, status: str | None, severity: str | None) -> None:
+    if status and status not in _ITEM_STATUS_SETS[kind]:
+        raise HTTPException(status_code=422, detail=f"{kind} status must be one of {_ITEM_STATUS_SETS[kind]}")
+    if severity:
+        if kind != "risk":
+            raise HTTPException(status_code=422, detail="severity applies to risks only")
+        if severity not in appdb.RISK_SEVERITIES:
+            raise HTTPException(status_code=422, detail=f"severity must be one of {appdb.RISK_SEVERITIES}")
+
+
+class EngagementCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    customer: str = Field("", max_length=200)
+    stage: str = "Discovery"
+    health: str = "green"
+    healthNote: str = Field("", max_length=500)
+    startDate: str = ""
+    targetDate: str = ""
+    notes: str = Field("", max_length=5000)
+
+
+class EngagementUpdate(BaseModel):
+    title: str | None = Field(None, max_length=300)
+    customer: str | None = Field(None, max_length=200)
+    stage: str | None = None
+    health: str | None = None
+    healthNote: str | None = Field(None, max_length=500)
+    startDate: str | None = None
+    targetDate: str | None = None
+    notes: str | None = Field(None, max_length=5000)
+
+
+class EngagementItemCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    dueDate: str = ""
+    severity: str = ""     # risks only
+    owner: str = ""
+    notes: str = Field("", max_length=2000)  # stored as `mitigation` on risks
+
+
+class EngagementItemUpdate(BaseModel):
+    title: str | None = Field(None, max_length=300)
+    status: str | None = None
+    severity: str | None = None
+    dueDate: str | None = None
+    owner: str | None = None
+    notes: str | None = Field(None, max_length=2000)
+
+
+@app.get("/sessions/{session_id}/engagements")
+async def list_engagements(session_id: str) -> list[dict]:
+    await _require_session(session_id)
+    return await asyncio.to_thread(appdb.list_engagements)
+
+
+@app.post("/sessions/{session_id}/engagements", status_code=201)
+async def create_engagement(session_id: str, req: EngagementCreate) -> dict:
+    await _require_session(session_id)
+    if req.stage not in appdb.ENGAGEMENT_STAGES:
+        raise HTTPException(status_code=422, detail=f"stage must be one of {appdb.ENGAGEMENT_STAGES}")
+    if req.health not in appdb.HEALTH_LEVELS:
+        raise HTTPException(status_code=422, detail=f"health must be one of {appdb.HEALTH_LEVELS}")
+    if req.health in ("amber", "red") and not req.healthNote.strip():
+        raise HTTPException(status_code=422, detail="amber/red health requires healthNote (the why)")
+    try:
+        return await asyncio.to_thread(
+            appdb.create_engagement,
+            req.title, req.customer, req.stage, req.health, req.healthNote,
+            req.startDate, req.targetDate, req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/sessions/{session_id}/engagements/{engagement_id}")
+async def get_engagement(session_id: str, engagement_id: str) -> dict:
+    await _require_session(session_id)
+    eng = await asyncio.to_thread(appdb.load_engagement, engagement_id)
+    if eng is None:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    return eng
+
+
+@app.patch("/sessions/{session_id}/engagements/{engagement_id}")
+async def update_engagement(session_id: str, engagement_id: str, req: EngagementUpdate) -> dict:
+    await _require_session(session_id)
+    if req.stage is not None and req.stage not in appdb.ENGAGEMENT_STAGES:
+        raise HTTPException(status_code=422, detail=f"stage must be one of {appdb.ENGAGEMENT_STAGES}")
+    if req.health is not None and req.health not in appdb.HEALTH_LEVELS:
+        raise HTTPException(status_code=422, detail=f"health must be one of {appdb.HEALTH_LEVELS}")
+    if req.health in ("amber", "red") and req.healthNote is None:
+        # The why must ride along unless one is already recorded on the doc.
+        existing = await asyncio.to_thread(appdb.load_engagement, engagement_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Engagement not found")
+        if not existing.get("healthNote"):
+            raise HTTPException(status_code=422, detail="amber/red health requires healthNote (the why)")
+    out: dict = {}
+
+    def _mut(eng):
+        for field in ("title", "customer", "stage", "health", "healthNote",
+                      "startDate", "targetDate", "notes"):
+            val = getattr(req, field)
+            if val is not None:
+                eng[field] = val.strip() if isinstance(val, str) else val
+        if req.health == "green" and req.healthNote is None:
+            eng["healthNote"] = ""  # green clears a stale why unless a new one is given
+        out.update(eng)
+    await _mutate_engagement(engagement_id, _mut)
+    return out
+
+
+@app.delete("/sessions/{session_id}/engagements/{engagement_id}", status_code=204)
+async def delete_engagement(session_id: str, engagement_id: str):
+    await _require_session(session_id)
+    existed = await asyncio.to_thread(appdb.delete_engagement, engagement_id)
+    if not existed:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+
+
+@app.post("/sessions/{session_id}/engagements/{engagement_id}/{kind_path}", status_code=201)
+async def add_engagement_item(session_id: str, engagement_id: str, kind_path: str,
+                              req: EngagementItemCreate) -> dict:
+    await _require_session(session_id)
+    kind = _resolve_item_kind(kind_path)
+    severity = req.severity or ("Medium" if kind == "risk" else "")
+    _check_item_enums(kind, None, severity if kind == "risk" else req.severity)
+    created: dict = {}
+
+    def _mut(eng):
+        items = eng[kind_path]
+        item = {"id": appdb.new_id(appdb.ENGAGEMENT_ITEM_KINDS[kind][1], items),
+                "title": req.title.strip()}
+        if kind == "milestone":
+            item.update({"dueDate": req.dueDate.strip(), "status": "Planned",
+                         "notes": req.notes.strip()})
+        elif kind == "risk":
+            item.update({"severity": severity, "status": "Open",
+                         "mitigation": req.notes.strip(), "owner": req.owner.strip()})
+        else:
+            item.update({"owner": req.owner.strip(), "dueDate": req.dueDate.strip(),
+                         "status": "Open", "notes": req.notes.strip()})
+        items.append(item)
+        created.update(item)
+    await _mutate_engagement(engagement_id, _mut)
+    return created
+
+
+@app.patch("/sessions/{session_id}/engagements/{engagement_id}/{kind_path}/{item_id}")
+async def update_engagement_item(session_id: str, engagement_id: str, kind_path: str,
+                                 item_id: str, req: EngagementItemUpdate) -> dict:
+    await _require_session(session_id)
+    kind = _resolve_item_kind(kind_path)
+    _check_item_enums(kind, req.status, req.severity)
+    notes_field = "mitigation" if kind == "risk" else "notes"
+    out: dict = {}
+
+    def _mut(eng):
+        item = next((i for i in eng[kind_path] if i["id"] == item_id), None)
+        if item is None:
+            raise _NotFound()
+        for field, val in (("title", req.title), ("status", req.status),
+                           ("severity", req.severity), ("dueDate", req.dueDate),
+                           ("owner", req.owner), (notes_field, req.notes)):
+            if val is not None:
+                item[field] = val.strip() if isinstance(val, str) else val
+        out.update(item)
+    await _mutate_engagement(engagement_id, _mut)
+    return out
+
+
+@app.delete("/sessions/{session_id}/engagements/{engagement_id}/{kind_path}/{item_id}", status_code=204)
+async def delete_engagement_item(session_id: str, engagement_id: str, kind_path: str, item_id: str):
+    await _require_session(session_id)
+    _resolve_item_kind(kind_path)  # 404 on unknown collection
+
+    def _mut(eng):
+        items = eng[kind_path]
+        if not any(i["id"] == item_id for i in items):
+            raise _NotFound()
+        eng[kind_path] = [i for i in items if i["id"] != item_id]
+    await _mutate_engagement(engagement_id, _mut)
+
+
 @app.post("/sessions/{session_id}/upload")
 async def upload_file(session_id: str, file: UploadFile) -> dict:
     """Upload a document to a session's workspace."""

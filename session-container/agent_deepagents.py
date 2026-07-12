@@ -93,12 +93,14 @@ _EXCLUDED_BUILTINS = frozenset(
 # ───────────────────────── System prompt (ported + skills inlined) ──────────
 
 _BASE_PROMPT = """\
-You are the assistant embedded in Personal Assistant — a simple personal-productivity app for managing
-**tasks**, a **calendar**, and **documents**. The app has these pages: Home (today's
-agenda — what's due, what's overdue, the next events), To-Do (tasks grouped into buckets,
-each with a status, priority, group, optional due date, and subtasks), Calendar (events —
-meetings, reminders, focus blocks — by day), and Documents (notes and drafts you read and
-write). You help by acting directly on the app through tools.
+You are the assistant embedded in Personal Assistant — a personal-productivity and engagement
+workspace for managing **tasks**, a **calendar**, **documents**, and shared customer
+**engagements**. The app has these pages: Home (today's agenda — what's due, what's overdue,
+the next events), To-Do (tasks grouped into buckets, each with a status, priority, group,
+optional due date, and subtasks), Calendar (events — meetings, reminders, focus blocks — by
+day), Documents (notes and drafts you read and write), and Engagements (the team's shared
+customer engagements — stage, health, milestones, risks, actions). You help by acting
+directly on the app through tools.
 
 You operate inside the user's own session. The tools you call read and mutate the
 *real* application state, and the user sees the result in the app next to this chat.
@@ -117,6 +119,13 @@ How you work:
   group/due date, `add_subtask` to add a subtask, and `delete_task` to remove one.
 - Events: use `list_events` to review the calendar, `create_event` to schedule one (a date
   is required), `update_event` to move or change it, and `delete_event` to remove one.
+- Engagements are **shared with the whole team** (unlike personal tasks): `list_engagements`
+  reviews health at a glance; `create_engagement` starts one; `update_engagement` changes
+  title/customer/stage/dates/notes; `set_engagement_health` sets green/amber/red — amber and
+  red REQUIRE a `note` saying why, so ask for the reason if the user didn't give one;
+  `add_engagement_item` / `update_engagement_item` manage milestones, risks, and actions
+  (`kind` = 'milestone' | 'risk' | 'action'). For engagement status questions, answer from
+  `list_engagements` — never from memory.
 - For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
   context — never judge dates yourself.
 - To write or revise a document (a brief, notes, a summary), use `write_file` — it appears
@@ -353,10 +362,10 @@ def _build_langchain_tools(working_dir: str) -> list:
             return None, f"AMBIGUOUS event '{ref}': {opts}. Ask which one."
         return matches[0], None
 
-    @tool("navigate", description="Navigate the Personal Assistant app to a page, a task, or a calendar event.")
+    @tool("navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or an engagement.")
     def navigate(destination: str) -> str:
         data = _load()
-        result = appdb.resolve_destination(data, destination)
+        result = appdb.resolve_destination(data, destination, appdb.list_engagements())
         if result["status"] == "resolved":
             data["currentRoute"] = result["path"]
             _save(data)
@@ -615,12 +624,214 @@ def _build_langchain_tools(working_dir: str) -> list:
             return "QUERY_REQUIRED: provide what to search for."
         return _search_documents_query(query)
 
+    # ── Engagement tools (shared scope — separate Cosmos docs, see appdb) ────
+    # Engagement writes go through appdb.create/update/delete_engagement, which are
+    # ETag-safe by construction — the deep-agents last-write-wins `_save` shortcut
+    # never touches them. Only the cosmetic currentRoute follow-up uses _load/_save.
+
+    def _set_route(path: str) -> None:
+        data = _load()
+        data["currentRoute"] = path
+        _save(data)
+
+    def _resolve_engagement_strict(ref: str):
+        r = (ref or "").strip().lower()
+        if not r:
+            return None, "ENGAGEMENT_REQUIRED: say which engagement."
+        engs = appdb.list_engagements()
+        exact = [g for g in engs if g["id"].lower() == r or g["title"].lower() == r]
+        matches = exact if exact else [g for g in engs if r in g["title"].lower()]
+        if not matches:
+            return None, f"ENGAGEMENT_NOT_FOUND: '{ref}'."
+        if len(matches) > 1:
+            opts = "; ".join(f"[{g['id']}] {g['title']}" for g in matches)
+            return None, f"AMBIGUOUS engagement '{ref}': {opts}. Ask which one."
+        return matches[0], None
+
+    def _normalize_kind(kind: str):
+        k = (kind or "").strip().lower()
+        if k.endswith("s") and k[:-1] in appdb.ENGAGEMENT_ITEM_KINDS:
+            k = k[:-1]
+        if k not in appdb.ENGAGEMENT_ITEM_KINDS:
+            return None, "INVALID_KIND: kind must be 'milestone', 'risk', or 'action'."
+        return k, None
+
+    @tool("list_engagements", description="List the team's shared customer engagements: stage, health (with the why), milestone progress, open risks and actions.")
+    def list_engagements() -> str:
+        engs = appdb.list_engagements()
+        if not engs:
+            return "No engagements yet."
+        lines = [f"{len(engs)} engagement(s):"]
+        for g in engs:
+            ms = g["milestones"]
+            done = sum(1 for m in ms if m.get("status") == "Done")
+            open_risks = sum(1 for r in g["risks"] if r.get("status") != "Closed")
+            open_actions = sum(1 for a in g["actions"] if a.get("status") != "Done")
+            why = f" ({g['healthNote']})" if g.get("healthNote") else ""
+            lines.append(
+                f"- [{g['id']}] {g['title']} | customer={g['customer'] or 'n/a'} | stage={g['stage']} | "
+                f"health={g['health']}{why} | milestones={done}/{len(ms)} | open risks={open_risks} | "
+                f"open actions={open_actions} | target={g['targetDate'] or 'n/a'}"
+            )
+        return "\n".join(lines)
+
+    @tool("create_engagement", description="Create a shared customer engagement (visible to the whole team).")
+    def create_engagement(title: str, customer: str = "", stage: str = "", target_date: str = "", notes: str = "") -> str:
+        if not title.strip():
+            return "TITLE_REQUIRED: an engagement needs a title."
+        stage = stage.strip() or appdb.ENGAGEMENT_STAGES[0]
+        if stage not in appdb.ENGAGEMENT_STAGES:
+            return f"INVALID_STAGE: stage must be one of {', '.join(appdb.ENGAGEMENT_STAGES)}."
+        eng = appdb.create_engagement(title=title, customer=customer, stage=stage,
+                                      target_date=target_date, notes=notes)
+        _set_route(appdb.engagement_route(eng["id"]))
+        return (
+            f"CREATED engagement [{eng['id']}] '{eng['title']}' | customer={eng['customer'] or 'n/a'} | "
+            f"stage={eng['stage']} | health={eng['health']} | target={eng['targetDate'] or 'n/a'}."
+        )
+
+    @tool("update_engagement", description="Update an engagement's title, customer, stage, dates, or notes.")
+    def update_engagement(engagement: str, title: str = "", customer: str = "", stage: str = "",
+                          start_date: str = "", target_date: str = "", notes: str = "") -> str:
+        if stage.strip() and stage.strip() not in appdb.ENGAGEMENT_STAGES:
+            return f"INVALID_STAGE: stage must be one of {', '.join(appdb.ENGAGEMENT_STAGES)}."
+        eng, err = _resolve_engagement_strict(engagement)
+        if err:
+            return err
+        def _mut(g):
+            changed = []
+            for field, value in (("title", title), ("customer", customer), ("stage", stage),
+                                 ("startDate", start_date), ("targetDate", target_date), ("notes", notes)):
+                if value.strip():
+                    g[field] = value.strip()
+                    changed.append(f"{field}={g[field]}")
+            if not changed:
+                raise appdb.AbortWrite("NO_CHANGES: specify a title, customer, stage, start_date, target_date, or notes to update.")
+            return f"UPDATED engagement [{g['id']}] '{g['title']}': {', '.join(changed)}."
+        try:
+            result = appdb.update_engagement(eng["id"], _mut)
+        except KeyError:
+            return f"ENGAGEMENT_NOT_FOUND: '{engagement}'."
+        _set_route(appdb.engagement_route(eng["id"]))
+        return result
+
+    @tool("delete_engagement", description="Delete an engagement and everything in it (milestones, risks, actions).")
+    def delete_engagement(engagement: str) -> str:
+        eng, err = _resolve_engagement_strict(engagement)
+        if err:
+            return err
+        if not appdb.delete_engagement(eng["id"]):
+            return f"ENGAGEMENT_NOT_FOUND: '{engagement}'."
+        _set_route("/engagements")
+        return f"DELETED engagement [{eng['id']}] '{eng['title']}'."
+
+    @tool("set_engagement_health", description="Set an engagement's health (green/amber/red). Amber and red REQUIRE a note saying why.")
+    def set_engagement_health(engagement: str, health: str, note: str = "") -> str:
+        h = health.strip().lower()
+        if h not in appdb.HEALTH_LEVELS:
+            return f"INVALID_HEALTH: health must be one of {', '.join(appdb.HEALTH_LEVELS)}."
+        note = note.strip()
+        if h in ("amber", "red") and not note:
+            return "NOTE_REQUIRED: amber/red health needs a why — pass `note` (a red with no reason is noise)."
+        eng, err = _resolve_engagement_strict(engagement)
+        if err:
+            return err
+        def _mut(g):
+            if g["health"] == h and (not note or g["healthNote"] == note):
+                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{g['id']}] health is already {h}.")
+            g["health"] = h
+            g["healthNote"] = note  # green with no note clears the stale why
+            why = f" — {note}" if note else ""
+            return f"UPDATED engagement [{g['id']}] '{g['title']}' health={h}{why}."
+        try:
+            result = appdb.update_engagement(eng["id"], _mut)
+        except KeyError:
+            return f"ENGAGEMENT_NOT_FOUND: '{engagement}'."
+        _set_route(appdb.engagement_route(eng["id"]))
+        return result
+
+    @tool("add_engagement_item", description="Add a milestone, risk, or action to an engagement (kind = 'milestone' | 'risk' | 'action').")
+    def add_engagement_item(engagement: str, kind: str, title: str, due_date: str = "",
+                            severity: str = "", owner: str = "", notes: str = "") -> str:
+        k, err = _normalize_kind(kind)
+        if err:
+            return err
+        if not title.strip():
+            return f"TITLE_REQUIRED: a {k} needs a title."
+        sev = severity.strip() or "Medium"
+        if k == "risk" and sev not in appdb.RISK_SEVERITIES:
+            return f"INVALID_SEVERITY: severity must be one of {', '.join(appdb.RISK_SEVERITIES)}."
+        eng, err = _resolve_engagement_strict(engagement)
+        if err:
+            return err
+        field, prefix = appdb.ENGAGEMENT_ITEM_KINDS[k]
+        def _mut(g):
+            items = g[field]
+            item = {"id": appdb.new_id(prefix, items), "title": title.strip()}
+            if k == "milestone":
+                item.update({"dueDate": due_date.strip(), "status": "Planned", "notes": notes.strip()})
+            elif k == "risk":
+                item.update({"severity": sev, "status": "Open", "mitigation": notes.strip(),
+                             "owner": owner.strip()})
+            else:  # action
+                item.update({"owner": owner.strip(), "dueDate": due_date.strip(), "status": "Open",
+                             "notes": notes.strip()})
+            items.append(item)
+            return f"CREATED {k} [{item['id']}] '{item['title']}' on engagement [{g['id']}] '{g['title']}'."
+        try:
+            result = appdb.update_engagement(eng["id"], _mut)
+        except KeyError:
+            return f"ENGAGEMENT_NOT_FOUND: '{engagement}'."
+        _set_route(appdb.engagement_route(eng["id"]))
+        return result
+
+    @tool("update_engagement_item", description="Update a milestone, risk, or action on an engagement — status, title, severity, owner, due date, or notes.")
+    def update_engagement_item(engagement: str, kind: str, item: str, title: str = "",
+                               status: str = "", severity: str = "", due_date: str = "",
+                               owner: str = "", notes: str = "") -> str:
+        k, err = _normalize_kind(kind)
+        if err:
+            return err
+        status = status.strip()
+        valid_statuses = {"milestone": appdb.MILESTONE_STATUSES, "risk": appdb.RISK_STATUSES,
+                          "action": appdb.ACTION_STATUSES}[k]
+        if status and status not in valid_statuses:
+            return f"INVALID_STATUS: a {k} status must be one of {', '.join(valid_statuses)}."
+        severity = severity.strip()
+        if severity and (k != "risk" or severity not in appdb.RISK_SEVERITIES):
+            return f"INVALID_SEVERITY: severity applies to risks and must be one of {', '.join(appdb.RISK_SEVERITIES)}."
+        eng, err = _resolve_engagement_strict(engagement)
+        if err:
+            return err
+        notes_field = "mitigation" if k == "risk" else "notes"
+        def _mut(g):
+            it = appdb.find_engagement_item(g, k, item)
+            if it is None:
+                raise appdb.AbortWrite(f"ITEM_NOT_FOUND: no {k} matches '{item}' on engagement [{g['id']}].")
+            changed = []
+            for field, value in (("title", title), ("status", status), ("severity", severity),
+                                 ("owner", owner), ("dueDate", due_date), (notes_field, notes)):
+                if value.strip():
+                    it[field] = value.strip()
+                    changed.append(f"{field}={it[field]}")
+            if not changed:
+                raise appdb.AbortWrite("NO_CHANGES: specify a title, status, severity, owner, due_date, or notes to update.")
+            return f"UPDATED {k} [{it['id']}] '{it['title']}' on [{g['id']}]: {', '.join(changed)}."
+        try:
+            result = appdb.update_engagement(eng["id"], _mut)
+        except KeyError:
+            return f"ENGAGEMENT_NOT_FOUND: '{engagement}'."
+        _set_route(appdb.engagement_route(eng["id"]))
+        return result
+
     return [
         navigate,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,
         search_documents,
+        list_engagements, create_engagement, update_engagement, delete_engagement,
+        set_engagement_health, add_engagement_item, update_engagement_item,
     ]
 
 
