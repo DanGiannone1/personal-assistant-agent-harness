@@ -173,8 +173,16 @@ def resolve(personal: dict, projects: list[dict], visits: list[dict],
     if len(ranked) == 1:
         return {"status": "resolved", **_pub(ranked[0])}
     top, second = ranked[0], ranked[1]
-    # Clear-winner margin: decisive when the top candidate meaningfully outscores #2.
-    if top["score"] >= second["score"] + 12.0 or (second["score"] > 0 and top["score"] / second["score"] >= 1.6):
+    # Two-stage decision (deterministic first, context as tie-break — never the reverse):
+    # 1. A clear LEXICAL winner resolves outright — relevance beats familiarity, so a
+    #    strong wording match can't be overridden by "you visit that other page a lot".
+    if top["lex"] >= second["lex"] + 12.0 or (second["lex"] > 0 and top["lex"] / second["lex"] >= 1.6):
+        return {"status": "resolved", **_pub(top)}
+    # 2. Lexically tied (the "two Launch projects" case): user context settles it with a
+    #    much smaller margin — recency/salience exist exactly to break these ties. This
+    #    is the decide-don't-interrogate rule; genuinely context-less ties stay honest
+    #    and return candidates.
+    if abs(top["lex"] - second["lex"]) < 12.0 and top["score"] >= second["score"] + 3.0:
         return {"status": "resolved", **_pub(top)}
     close = [r for r in ranked if r["score"] >= top["score"] - 12.0]
     return {"status": "ambiguous", "candidates": _strip(close)}
