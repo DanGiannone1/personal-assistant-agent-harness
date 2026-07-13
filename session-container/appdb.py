@@ -184,6 +184,37 @@ def update_user(user_id: str, mutator) -> dict | None:
     return _update_raw(_USERS_DOC_ID, _mut)
 
 
+def ensure_entra_user(oid: str, username: str, display_name: str) -> dict:
+    """Idempotently provision the app user for a validated Entra principal.
+
+    Keyed `u-<oid>` so the same person always maps to the same record; no password
+    hash — this account can only ever be reached through a validated Entra token.
+    Starts with no engagement memberships (they create or get invited like anyone).
+    """
+    uid = _valid_user(f"u-{oid}")
+    existing = get_user(uid)
+    if existing is not None:
+        return existing
+
+    record = {
+        "id": uid,
+        "username": (username or uid).strip().lower(),
+        "displayName": (display_name or username or uid).strip(),
+        "identity": "entra",
+        "persona": {"role": "", "tone": "", "outputPrefs": "", "language": "English"},
+    }
+
+    def _mut(doc):
+        if any(u["id"] == uid for u in doc["users"]):
+            raise AbortWrite(None)  # lost a provisioning race — the winner's record stands
+        doc["users"].append(record)
+        return record
+
+    _update_raw(_USERS_DOC_ID, _mut)
+    _ensure_space_seeded(uid)
+    return get_user(uid)
+
+
 # ── Personal spaces ──────────────────────────────────────────────────────────
 
 def _space_id(user_id: str) -> str:

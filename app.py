@@ -314,7 +314,7 @@ async def auth_me(uid: str = Depends(current_user)) -> dict:
     user = await asyncio.to_thread(appdb.get_user, uid)
     if user is None:
         raise HTTPException(status_code=401, detail="Unknown user")
-    return user
+    return {**user, "identity": user.get("identity", "demo")}
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,16 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { KeyRound, LogIn } from "lucide-react";
 
-import { AppUser, getAppToken, getStoredUser, login, logout } from "@/lib/appAuth";
+import { AppUser, fetchMe, getAppToken, getStoredUser, login, logout } from "@/lib/appAuth";
+import {
+  isBrowserAuthEnabled,
+  signIn as entraSignIn,
+  signOut as entraSignOut,
+} from "@/lib/auth";
+
+// Demo accounts stay available for automated tests unless explicitly disabled
+// at build time (mirrors the orchestrator's DEMO_LOGIN_ENABLED runtime flag).
+const demoLoginEnabled = (process.env.NEXT_PUBLIC_DEMO_LOGIN || "true").toLowerCase() !== "false";
 
 interface AppAuthValue {
   user: AppUser;
@@ -18,28 +27,44 @@ export function useAppAuth(): AppAuthValue {
   return ctx;
 }
 
-// Gate the whole app behind the app-account sign-in. Children (including the
-// SessionProvider that auto-creates agent sessions) render ONLY once signed in,
-// so no unauthenticated requests ever fire.
+// Gate the whole app behind sign-in. Children (including the SessionProvider
+// that auto-creates agent sessions) render ONLY once signed in, so no
+// unauthenticated requests ever fire. Two paths resolve a user: the demo
+// token (X-Auth-Token) and, when Entra auth is enabled, the MSAL bearer.
 export default function AppAuthProvider({ children }: Readonly<{ children: React.ReactNode }>) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    // Restore a stored token on load; server 401s will evict it via app-auth-expired.
-    if (getAppToken()) setUser(getStoredUser());
-    setHydrated(true);
+    // Demo path first: synchronous restore, identical to the pre-Entra behavior.
+    if (getAppToken()) {
+      setUser(getStoredUser());
+      setHydrated(true);
+    } else if (isBrowserAuthEnabled()) {
+      // Entra path: this also completes a pending MSAL redirect. If a signed-in
+      // account exists, /auth/me resolves (auto-provisioning on first sight).
+      fetchMe()
+        .then((me) => setUser(me))
+        .finally(() => setHydrated(true));
+    } else {
+      setHydrated(true);
+    }
     const onExpired = () => setUser(null);
     window.addEventListener("app-auth-expired", onExpired);
     return () => window.removeEventListener("app-auth-expired", onExpired);
   }, []);
 
   const signOut = useCallback(async () => {
+    if (user?.identity === "entra") {
+      await logout(); // clears local storage; server call is a no-op without a demo token
+      await entraSignOut(); // MSAL redirect tears the SPA down and returns signed out
+      return;
+    }
     await logout();
     // Full reload: tears down the agent session, per-user storage reads, and any
     // in-flight streams in one deterministic step.
     window.location.reload();
-  }, []);
+  }, [user]);
 
   if (!hydrated) return null;
   if (!user) return <SignIn onSignedIn={setUser} />;
@@ -48,10 +73,13 @@ export default function AppAuthProvider({ children }: Readonly<{ children: React
 }
 
 function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
+  const entraEnabled = isBrowserAuthEnabled();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // With Entra enabled the demo form is a secondary, collapsed option.
+  const [showDemo, setShowDemo] = useState(!entraEnabled);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,6 +95,59 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
       setBusy(false);
     }
   };
+
+  const microsoft = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await entraSignIn(); // redirect flow — navigates away
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Microsoft sign-in failed.");
+      setBusy(false);
+    }
+  };
+
+  const demoForm = (
+    <>
+      <label className="mt-8 block text-[11px] font-bold uppercase tracking-[0.14em] text-text-muted">
+        Username
+        <input
+          data-testid="signin-username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          autoFocus={!entraEnabled}
+          autoComplete="username"
+          className="mt-2 w-full rounded-xl border border-border-subtle bg-surface-2 px-4 py-3 text-[15px] font-medium normal-case tracking-normal text-text-primary outline-none focus:border-brand-primary"
+        />
+      </label>
+      <label className="mt-4 block text-[11px] font-bold uppercase tracking-[0.14em] text-text-muted">
+        Password
+        <input
+          data-testid="signin-password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
+          className="mt-2 w-full rounded-xl border border-border-subtle bg-surface-2 px-4 py-3 text-[15px] font-medium normal-case tracking-normal text-text-primary outline-none focus:border-brand-primary"
+        />
+      </label>
+
+      <button
+        type="submit"
+        data-testid="signin-submit"
+        disabled={busy || !username.trim() || !password}
+        className="interactive-control mt-6 inline-flex w-full items-center justify-center rounded-xl bg-brand-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.18em] text-white shadow-[0_12px_32px_rgba(0,115,234,0.3)] transition hover:bg-brand-strong disabled:opacity-50"
+      >
+        <LogIn size={14} strokeWidth={2.5} className="mr-2" />
+        {busy ? "Signing in…" : "Sign in"}
+      </button>
+
+      <p className="mt-6 text-center text-xs text-text-muted">
+        Demo accounts: <code>dan</code> · <code>ava</code> · <code>sam</code> (password <code>demo1234</code>)
+      </p>
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-app px-6 py-10 text-text-primary">
@@ -84,48 +165,37 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
             Your workspace is personal — sign in to load it.
           </p>
 
-          <label className="mt-8 block text-[11px] font-bold uppercase tracking-[0.14em] text-text-muted">
-            Username
-            <input
-              data-testid="signin-username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoFocus
-              autoComplete="username"
-              className="mt-2 w-full rounded-xl border border-border-subtle bg-surface-2 px-4 py-3 text-[15px] font-medium normal-case tracking-normal text-text-primary outline-none focus:border-brand-primary"
-            />
-          </label>
-          <label className="mt-4 block text-[11px] font-bold uppercase tracking-[0.14em] text-text-muted">
-            Password
-            <input
-              data-testid="signin-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              className="mt-2 w-full rounded-xl border border-border-subtle bg-surface-2 px-4 py-3 text-[15px] font-medium normal-case tracking-normal text-text-primary outline-none focus:border-brand-primary"
-            />
-          </label>
+          {entraEnabled && (
+            <button
+              type="button"
+              data-testid="signin-microsoft"
+              onClick={microsoft}
+              disabled={busy}
+              className="interactive-control mt-8 inline-flex w-full items-center justify-center rounded-xl bg-brand-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.18em] text-white shadow-[0_12px_32px_rgba(0,115,234,0.3)] transition hover:bg-brand-strong disabled:opacity-50"
+            >
+              <LogIn size={14} strokeWidth={2.5} className="mr-2" />
+              {busy ? "Redirecting…" : "Sign in with Microsoft"}
+            </button>
+          )}
+
+          {entraEnabled && demoLoginEnabled && !showDemo && (
+            <button
+              type="button"
+              data-testid="signin-show-demo"
+              onClick={() => setShowDemo(true)}
+              className="mt-4 w-full text-center text-xs text-text-muted underline-offset-2 hover:underline"
+            >
+              Use a demo account
+            </button>
+          )}
+
+          {(!entraEnabled || (demoLoginEnabled && showDemo)) && demoForm}
 
           {error && (
             <p data-testid="signin-error" className="mt-4 rounded-xl border border-red-400/40 bg-red-400/10 px-4 py-3 text-sm">
               {error}
             </p>
           )}
-
-          <button
-            type="submit"
-            data-testid="signin-submit"
-            disabled={busy || !username.trim() || !password}
-            className="interactive-control mt-6 inline-flex w-full items-center justify-center rounded-xl bg-brand-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.18em] text-white shadow-[0_12px_32px_rgba(0,115,234,0.3)] transition hover:bg-brand-strong disabled:opacity-50"
-          >
-            <LogIn size={14} strokeWidth={2.5} className="mr-2" />
-            {busy ? "Signing in…" : "Sign in"}
-          </button>
-
-          <p className="mt-6 text-center text-xs text-text-muted">
-            Demo accounts: <code>dan</code> · <code>ava</code> · <code>sam</code> (password <code>demo1234</code>)
-          </p>
         </form>
       </div>
     </div>
