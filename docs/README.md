@@ -7,6 +7,8 @@ deeper:
   reality, and the engagement is the unit of the job.
 - **[engagements.md](engagements.md)** — the first-class entity: one doc per engagement, membership
   as authorization, the delivery record (stage, health-with-a-why, milestones/risks/actions).
+- **[mvp-requirements.md](mvp-requirements.md)** — the v1 bar: multi-user on Azure, deepagents-first,
+  a slim engagement (G/Y/R + artifacts), the MVP context layer — requirements and success criteria only.
 - **[use-cases.md](use-cases.md)** — the core use cases with concrete, runnable examples (manual +
   assistant path for each capability). Start here to see what it does.
 - **[spec.md](spec.md)** — the product: capabilities, surfaces, data model, agent tools, skills, theme.
