@@ -2,7 +2,7 @@
 
 Implements the bare-bones design from docs/navigation-reference-architecture.md:
 
-- A **route registry** in code: static personal pages + parameterized project pages +
+- A **route registry** in code: static personal pages + parameterized engagement pages +
   individual records. Destinations are always derived from live state — never stored.
 - ``rank_destinations(context, utterance?)`` — ONE scoring function, two consumers:
   with an utterance it powers the navigate tool's resolution; without one it powers
@@ -31,11 +31,11 @@ _STATIC = [
     {"path": "/calendar", "title": "Calendar", "keywords": ["calendar", "schedule", "events", "event", "meetings", "agenda"]},
     {"path": "/documents", "title": "Documents", "keywords": ["documents", "docs", "notes", "files", "drafts", "library"]},
     {"path": "/reminders", "title": "Reminders", "keywords": ["reminders", "reminder", "schedules", "scheduled", "recurring", "digest", "summary email"]},
-    {"path": "/projects", "title": "Projects", "keywords": ["projects", "project list", "workspaces", "shared"]},
+    {"path": "/engagements", "title": "Engagements", "keywords": ["engagements", "engagement list", "workspaces", "shared"]},
 ]
 
-_PROJECT_PAGES = [
-    ("", "{name}", ["project", "overview"]),
+_ENGAGEMENT_PAGES = [
+    ("", "{name}", ["engagement", "overview"]),
     ("/tasks", "{name} · Tasks", ["tasks", "todo", "to-do", "checklist"]),
     ("/calendar", "{name} · Calendar", ["calendar", "events", "meetings", "schedule"]),
     ("/documents", "{name} · Documents", ["documents", "docs", "files"]),
@@ -43,9 +43,9 @@ _PROJECT_PAGES = [
 ]
 
 
-def destinations(personal: dict, projects: list[dict]) -> list[dict]:
+def destinations(personal: dict, engagements: list[dict]) -> list[dict]:
     """Every real destination for this user, derived live: static pages, personal
-    records, each member project's pages and records."""
+    records, each member engagement's pages and records."""
     dests: list[dict] = [dict(d, kind="page") for d in _STATIC]
     for t in personal.get("tasks", []):
         dests.append({"path": appdb.task_route(t["id"]), "title": t["title"], "kind": "task",
@@ -53,22 +53,22 @@ def destinations(personal: dict, projects: list[dict]) -> list[dict]:
     for e in personal.get("events", []):
         dests.append({"path": appdb.event_route(e["id"]), "title": e["title"], "kind": "event",
                       "keywords": [], "record": e})
-    for p in projects:
-        base = f"/projects/{p['id']}"
+    for p in engagements:
+        base = f"/engagements/{p['id']}"
         pname = p["name"]
-        for suffix, title_tpl, kws in _PROJECT_PAGES:
+        for suffix, title_tpl, kws in _ENGAGEMENT_PAGES:
             dests.append({
                 "path": base + suffix, "title": title_tpl.format(name=pname),
-                "kind": "project-page", "keywords": [*kws, pname.lower()],
-                "projectId": p["id"], "projectName": pname,
+                "kind": "engagement-page", "keywords": [*kws, pname.lower()],
+                "engagementId": p["id"], "engagementName": pname,
             })
         for t in p.get("tasks", []):
             dests.append({"path": f"{base}/tasks/{t['id']}", "title": f"{t['title']} ({pname})",
-                          "kind": "task", "keywords": [pname.lower()], "projectId": p["id"],
+                          "kind": "task", "keywords": [pname.lower()], "engagementId": p["id"],
                           "record": t, "bareTitle": t["title"]})
         for e in p.get("events", []):
             dests.append({"path": f"{base}/calendar", "title": f"{e['title']} ({pname})",
-                          "kind": "event", "keywords": [pname.lower()], "projectId": p["id"],
+                          "kind": "event", "keywords": [pname.lower()], "engagementId": p["id"],
                           "record": e, "bareTitle": e["title"]})
     return dests
 
@@ -77,7 +77,8 @@ def destinations(personal: dict, projects: list[dict]) -> list[dict]:
 
 _STOPWORDS = {"my", "the", "a", "an", "to", "go", "goto", "take", "me", "please",
               "page", "section", "view", "tab", "screen", "area", "open", "show",
-              "of", "for", "in", "on", "into", "us", "back", "project", "projects"}
+              "of", "for", "in", "on", "into", "us", "back",
+              "engagement", "engagements", "project", "projects"}
 
 
 def _tokens(text: str) -> set[str]:
@@ -97,7 +98,7 @@ def _lexical_score(dest: dict, q: str, q_tokens: set[str]) -> float:
     kw_tokens = set()
     for kw in kws:
         kw_tokens |= _tokens(kw)
-    title_tokens = _tokens(title) | _tokens(dest.get("projectName", ""))
+    title_tokens = _tokens(title) | _tokens(dest.get("engagementName", ""))
     matchable = title_tokens | kw_tokens
     content = q_tokens - _STOPWORDS
     if not content:
@@ -136,7 +137,7 @@ def _context_boost(dest: dict, visits: list[dict], today: str) -> float:
     return boost
 
 
-def rank_destinations(personal: dict, projects: list[dict], visits: list[dict],
+def rank_destinations(personal: dict, engagements: list[dict], visits: list[dict],
                       utterance: str | None = None, today: str | None = None,
                       limit: int = 8) -> list[dict]:
     """The one scoring layer, two consumers.
@@ -145,7 +146,7 @@ def rank_destinations(personal: dict, projects: list[dict], visits: list[dict],
     Without: the quick-links ranking (context only — recency, salience).
     """
     today = today or datetime.now(timezone.utc).date().isoformat()
-    dests = destinations(personal, projects)
+    dests = destinations(personal, engagements)
     q = (utterance or "").strip().lower()
     q_tokens = _tokens(q)
     scored = []
@@ -161,7 +162,7 @@ def rank_destinations(personal: dict, projects: list[dict], visits: list[dict],
     return scored[:limit]
 
 
-def resolve(personal: dict, projects: list[dict], visits: list[dict],
+def resolve(personal: dict, engagements: list[dict], visits: list[dict],
             utterance: str, today: str | None = None) -> dict:
     """Grounded resolution with a decisive bias (decide, don't interrogate).
 
@@ -169,9 +170,9 @@ def resolve(personal: dict, projects: list[dict], visits: list[dict],
     ambiguous — top candidates are genuinely close (the tool may LLM-tie-break or chip)
     not_found — nothing plausible; returns real fallback options
     """
-    ranked = rank_destinations(personal, projects, visits, utterance, today, limit=8)
+    ranked = rank_destinations(personal, engagements, visits, utterance, today, limit=8)
     if not ranked:
-        fallback = rank_destinations(personal, projects, visits, None, today, limit=8)
+        fallback = rank_destinations(personal, engagements, visits, None, today, limit=8)
         return {"status": "not_found", "candidates": _strip(fallback)}
     if len(ranked) == 1:
         return {"status": "resolved", **_pub(ranked[0])}
@@ -181,7 +182,7 @@ def resolve(personal: dict, projects: list[dict], visits: list[dict],
     #    strong wording match can't be overridden by "you visit that other page a lot".
     if top["lex"] >= second["lex"] + 12.0 or (second["lex"] > 0 and top["lex"] / second["lex"] >= 1.6):
         return {"status": "resolved", **_pub(top)}
-    # 2. Lexically tied (the "two Launch projects" case): user context settles it with a
+    # 2. Lexically tied (the "two Launch engagements" case): user context settles it with a
     #    much smaller margin — recency/salience exist exactly to break these ties. This
     #    is the decide-don't-interrogate rule; genuinely context-less ties stay honest
     #    and return candidates.

@@ -13,7 +13,7 @@ import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
 import CsvTable from "../CsvTable";
 import WorkbenchNav from "./WorkbenchNav";
-import { ProjectScreen, ProjectsList } from "./ProjectScreens";
+import { EngagementScreen, EngagementsList } from "./EngagementScreens";
 import SettingsScreen from "./SettingsScreen";
 import type { QuickLink } from "@/lib/types";
 
@@ -168,13 +168,13 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   else if (viewRoute === "/calendar") trail = "Calendar";
   else if (viewRoute === "/documents") trail = "Documents";
   else if (viewRoute === "/reminders") trail = "Reminders";
-  else if (viewRoute === "/projects") trail = "Projects";
+  else if (viewRoute === "/engagements") trail = "Engagements";
   else if (viewRoute === "/settings") trail = "Settings";
-  else if (viewRoute.startsWith("/projects/")) {
+  else if (viewRoute.startsWith("/engagements/")) {
     const pid = viewRoute.split("/")[2];
-    const proj = (appState.projects ?? []).find((p) => p.id === pid);
+    const eng = (appState.engagements ?? []).find((p) => p.id === pid);
     const sub = viewRoute.split("/")[3];
-    trail = `Projects › ${proj?.name ?? ""}${sub ? ` › ${sub[0].toUpperCase()}${sub.slice(1)}` : ""}`;
+    trail = `Engagements › ${eng?.name ?? ""}${sub ? ` › ${sub[0].toUpperCase()}${sub.slice(1)}` : ""}`;
   }
   return <div className="tw-breadcrumb" data-testid="breadcrumb">{trail}</div>;
 }
@@ -199,12 +199,12 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     return <SettingsScreen appState={appState} onRefresh={onRefresh} />;
   }
 
-  // ── Projects (/projects, /projects/{id}/…) — shared workspaces ────────────
-  if (viewRoute === "/projects") {
-    return <ProjectsList appState={appState} onNavigate={onNavigate} onRefresh={onRefresh} />;
+  // ── Engagements (/engagements, /engagements/{id}/…) — shared workspaces ────────────
+  if (viewRoute === "/engagements") {
+    return <EngagementsList appState={appState} onNavigate={onNavigate} onRefresh={onRefresh} />;
   }
-  if (viewRoute.startsWith("/projects/")) {
-    return <ProjectScreen appState={appState} viewRoute={viewRoute} onNavigate={onNavigate} onRefresh={onRefresh} />;
+  if (viewRoute.startsWith("/engagements/")) {
+    return <EngagementScreen appState={appState} viewRoute={viewRoute} onNavigate={onNavigate} onRefresh={onRefresh} />;
   }
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────

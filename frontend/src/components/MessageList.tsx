@@ -19,7 +19,7 @@ const SUGGESTIONS = [
   { icon: "gauge", label: "What's overdue?", description: "Review tasks past their due date", prompt: "Which tasks are overdue right now?" },
   { icon: "strategy", label: "Add a task", description: "Create a high-priority task", prompt: "Add a high-priority task 'Draft Q3 plan' due Friday in Work." },
   { icon: "checklist", label: "Schedule a meeting", description: "Put it on the calendar", prompt: "Schedule a 3pm team sync tomorrow." },
-  { icon: "doc", label: "Draft a doc", description: "Generate and save a draft", prompt: "Draft a project kickoff doc and save it as kickoff.md." },
+  { icon: "doc", label: "Draft a doc", description: "Generate and save a draft", prompt: "Draft an engagement kickoff doc and save it as kickoff.md." },
 ];
 
 function SuggestionIcon({ icon }: { icon: string }) {

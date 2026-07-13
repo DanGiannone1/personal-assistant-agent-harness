@@ -11,11 +11,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "session-container"))
 import navsvc  # noqa: E402
 
-web = {"id": "proj-website-launch", "name": "Website Launch",
+web = {"id": "eng-website-launch", "name": "Website Launch",
        "tasks": [{"id": "t-1", "title": "Draft launch checklist", "status": "In progress",
                   "priority": "High", "dueDate": "2026-07-16"}],
        "events": []}
-prod = {"id": "proj-product-launch", "name": "Product Launch",
+prod = {"id": "eng-product-launch", "name": "Product Launch",
         "tasks": [{"id": "t-1", "title": "Finalize pricing tiers", "status": "To do",
                    "priority": "High", "dueDate": "2026-07-15"}],
         "events": []}
@@ -32,8 +32,8 @@ def check(name, cond, extra=""):
     if not cond:
         fails += 1
 
-dan_visits = [{"path": "/projects/proj-website-launch/tasks", "title": "Website Launch · Tasks", "ts": "t"}]
-ava_visits = [{"path": "/projects/proj-product-launch/tasks", "title": "Product Launch · Tasks", "ts": "t"}]
+dan_visits = [{"path": "/engagements/eng-website-launch/tasks", "title": "Website Launch · Tasks", "ts": "t"}]
+ava_visits = [{"path": "/engagements/eng-product-launch/tasks", "title": "Product Launch · Tasks", "ts": "t"}]
 
 r_dan = navsvc.resolve(personal, [web, prod], dan_visits, "take me to the launch tasks")
 r_ava = navsvc.resolve(personal, [web, prod], ava_visits, "take me to the launch tasks")
@@ -50,10 +50,10 @@ r_cal = navsvc.resolve(personal, [web, prod], [], "calendar")
 check("'calendar' resolves instantly", r_cal["status"] == "resolved" and r_cal["path"] == "/calendar")
 
 r_pricing = navsvc.resolve(personal, [web, prod], [], "finalize pricing tiers")
-check("unique project task title resolves", r_pricing["status"] == "resolved" and "product-launch" in r_pricing["path"])
+check("unique engagement task title resolves", r_pricing["status"] == "resolved" and "product-launch" in r_pricing["path"])
 
 # Relevance must still beat familiarity: dan visits Website Launch constantly, but an
-# exact ask for the OTHER project's page goes there, not to the familiar one.
+# exact ask for the OTHER engagement's page goes there, not to the familiar one.
 r_exact = navsvc.resolve(personal, [web, prod], dan_visits, "product launch settings")
 check("exact wording beats recency", r_exact["status"] == "resolved" and "product-launch/settings" in r_exact["path"], str(r_exact)[:90])
 
@@ -66,15 +66,15 @@ check("overdue records boosted into quick links", any(d.get("record") for d in q
 # Mixed-recency regression (the E2E contamination case): user worked in Product a few
 # clicks ago but is IN Website now — most recent must still win decisively.
 mixed_visits = [
-    {"path": "/projects/proj-website-launch/tasks", "title": "", "ts": "t"},
-    {"path": "/projects/proj-website-launch", "title": "", "ts": "t"},
-    {"path": "/projects", "title": "", "ts": "t"},
+    {"path": "/engagements/eng-website-launch/tasks", "title": "", "ts": "t"},
+    {"path": "/engagements/eng-website-launch", "title": "", "ts": "t"},
+    {"path": "/engagements", "title": "", "ts": "t"},
     {"path": "/home", "title": "", "ts": "t"},
     {"path": "/todo", "title": "", "ts": "t"},
-    {"path": "/projects/proj-product-launch/tasks", "title": "", "ts": "t"},
+    {"path": "/engagements/eng-product-launch/tasks", "title": "", "ts": "t"},
 ]
 r_mixedrec = navsvc.resolve(personal, [web, prod], mixed_visits, "take me to the launch tasks")
-check("mixed recency: most recent project wins", r_mixedrec["status"] == "resolved" and "website" in r_mixedrec["path"], str(r_mixedrec)[:90])
+check("mixed recency: most recent engagement wins", r_mixedrec["status"] == "resolved" and "website" in r_mixedrec["path"], str(r_mixedrec)[:90])
 
 personal2 = dict(personal, tasks=[{"id": "t-9", "title": "Launch day prep", "status": "To do", "dueDate": ""}])
 r_mixed = navsvc.resolve(personal2, [web, prod], [], "launch")

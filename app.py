@@ -350,7 +350,7 @@ async def get_app_state(session_id: str, uid: str = Depends(current_user)) -> di
     """Return the signed-in user's application state (rendered by the app pane)."""
     await _require_owned_session(session_id, uid)
     state = await asyncio.to_thread(appdb.load_state, uid)
-    state["projects"] = await asyncio.to_thread(appdb.list_projects_for, uid)
+    state["engagements"] = await asyncio.to_thread(appdb.list_engagements_for, uid)
     state["user"] = await asyncio.to_thread(appdb.get_user, uid)
     state["context"] = await asyncio.to_thread(appdb.load_context, uid)
     return state
@@ -780,13 +780,13 @@ async def upload_file(session_id: str, file: UploadFile, uid: str = Depends(curr
 
 
 
-# ── Projects — shared workspaces (membership-gated at this layer AND in tools) ──
-class ProjectCreate(BaseModel):
+# ── Engagements — shared workspaces (membership-gated at this layer AND in tools) ──
+class EngagementCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     description: str = Field("", max_length=500)
 
 
-class ProjectPatch(BaseModel):
+class EngagementPatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=120)
     description: str | None = Field(None, max_length=500)
 
@@ -800,19 +800,19 @@ class ConventionCreate(BaseModel):
     text: str = Field(..., min_length=1, max_length=300)
 
 
-async def _load_project_authed(project_id: str, uid: str, minimum: str = "viewer") -> dict:
-    """Project doc if the user holds at least `minimum` role. Non-members get 404
+async def _load_engagement_authed(engagement_id: str, uid: str, minimum: str = "viewer") -> dict:
+    """Engagement doc if the user holds at least `minimum` role. Non-members get 404
     (membership isn't revealed); under-privileged members get 403 (explicit)."""
-    project = await asyncio.to_thread(appdb.load_project, project_id)
-    if project is None or appdb.member_role(project, uid) is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if not appdb.role_at_least(project, uid, minimum):
+    engagement = await asyncio.to_thread(appdb.load_engagement, engagement_id)
+    if engagement is None or appdb.member_role(engagement, uid) is None:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    if not appdb.role_at_least(engagement, uid, minimum):
         raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
-    return project
+    return engagement
 
 
-async def _mutate_project(project_id: str, uid: str, minimum: str, mutator) -> None:
-    """ETag-safe project mutation with the role re-checked INSIDE the mutator (fresh
+async def _mutate_engagement(engagement_id: str, uid: str, minimum: str, mutator) -> None:
+    """ETag-safe engagement mutation with the role re-checked INSIDE the mutator (fresh
     read each retry, so a concurrent role revocation can't be raced past)."""
     def _mut(doc):
         if appdb.member_role(doc, uid) is None:
@@ -820,45 +820,45 @@ async def _mutate_project(project_id: str, uid: str, minimum: str, mutator) -> N
         if not appdb.role_at_least(doc, uid, minimum):
             raise appdb.AbortWrite("forbidden")
         return mutator(doc)
-    result = await asyncio.to_thread(appdb.update_project, project_id, _mut)
+    result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _mut)
     if result == "forbidden":
         raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
 
 
-@app.get("/projects")
-async def list_projects(uid: str = Depends(current_user)) -> list[dict]:
-    return await asyncio.to_thread(appdb.list_projects_for, uid)
+@app.get("/engagements")
+async def list_engagements(uid: str = Depends(current_user)) -> list[dict]:
+    return await asyncio.to_thread(appdb.list_engagements_for, uid)
 
 
-@app.post("/projects", status_code=201)
-async def create_project(req: ProjectCreate, uid: str = Depends(current_user)) -> dict:
-    project = await asyncio.to_thread(appdb.new_project, uid, req.name, req.description)
-    trace_event("orchestrator", "project.created", user=uid, project=project["id"])
-    return project
+@app.post("/engagements", status_code=201)
+async def create_engagement(req: EngagementCreate, uid: str = Depends(current_user)) -> dict:
+    engagement = await asyncio.to_thread(appdb.new_engagement, uid, req.name, req.description)
+    trace_event("orchestrator", "engagement.created", user=uid, engagement=engagement["id"])
+    return engagement
 
 
-@app.get("/projects/{project_id}")
-async def get_project(project_id: str, uid: str = Depends(current_user)) -> dict:
-    return await _load_project_authed(project_id, uid)
+@app.get("/engagements/{engagement_id}")
+async def get_engagement(engagement_id: str, uid: str = Depends(current_user)) -> dict:
+    return await _load_engagement_authed(engagement_id, uid)
 
 
-@app.patch("/projects/{project_id}")
-async def patch_project(project_id: str, req: ProjectPatch, uid: str = Depends(current_user)) -> dict:
+@app.patch("/engagements/{engagement_id}")
+async def patch_engagement(engagement_id: str, req: EngagementPatch, uid: str = Depends(current_user)) -> dict:
     def _mut(doc):
         if req.name is not None:
             doc["name"] = req.name.strip()
         if req.description is not None:
             doc["description"] = req.description.strip()
-        appdb.log_activity(doc, uid, "project.updated", doc["name"])
-    await _mutate_project(project_id, uid, "owner", _mut)
-    return await _load_project_authed(project_id, uid)
+        appdb.log_activity(doc, uid, "engagement.updated", doc["name"])
+    await _mutate_engagement(engagement_id, uid, "owner", _mut)
+    return await _load_engagement_authed(engagement_id, uid)
 
 
-@app.post("/projects/{project_id}/members", status_code=201)
-async def add_member(project_id: str, req: MemberAdd, uid: str = Depends(current_user)) -> dict:
+@app.post("/engagements/{engagement_id}/members", status_code=201)
+async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(current_user)) -> dict:
     role = req.role.strip().lower()
-    if role not in appdb.PROJECT_ROLES:
-        raise HTTPException(status_code=422, detail=f"role must be one of {appdb.PROJECT_ROLES}")
+    if role not in appdb.ENGAGEMENT_ROLES:
+        raise HTTPException(status_code=422, detail=f"role must be one of {appdb.ENGAGEMENT_ROLES}")
     target = await asyncio.to_thread(appdb.get_user, req.userId.strip().lower())
     if target is None:
         raise HTTPException(status_code=422, detail="No such user")
@@ -870,12 +870,12 @@ async def add_member(project_id: str, req: MemberAdd, uid: str = Depends(current
         else:
             doc["members"].append({"userId": target["id"], "role": role})
         appdb.log_activity(doc, uid, "member.added", f"{target['id']} as {role}")
-    await _mutate_project(project_id, uid, "owner", _mut)
+    await _mutate_engagement(engagement_id, uid, "owner", _mut)
     return {"userId": target["id"], "role": role}
 
 
-@app.delete("/projects/{project_id}/members/{member_id}", status_code=204)
-async def remove_member(project_id: str, member_id: str, uid: str = Depends(current_user)):
+@app.delete("/engagements/{engagement_id}/members/{member_id}", status_code=204)
+async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(current_user)):
     def _mut(doc):
         remaining_owners = [m for m in doc["members"]
                             if m["role"] == "owner" and m["userId"] != member_id]
@@ -892,16 +892,16 @@ async def remove_member(project_id: str, member_id: str, uid: str = Depends(curr
         if not appdb.role_at_least(doc, uid, "owner"):
             raise appdb.AbortWrite("forbidden")
         return _mut(doc)
-    result = await asyncio.to_thread(appdb.update_project, project_id, _outer)
+    result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
     if result == "forbidden":
         raise HTTPException(status_code=403, detail="Requires owner access")
     if result == "last-owner":
-        raise HTTPException(status_code=422, detail="A project must keep at least one owner")
+        raise HTTPException(status_code=422, detail="A engagement must keep at least one owner")
 
 
-# Project-scoped record CRUD — same shapes as personal, gated editor+.
-@app.post("/projects/{project_id}/tasks", status_code=201)
-async def create_project_task(project_id: str, req: TaskCreate, uid: str = Depends(current_user)) -> dict:
+# Engagement-scoped record CRUD — same shapes as personal, gated editor+.
+@app.post("/engagements/{engagement_id}/tasks", status_code=201)
+async def create_engagement_task(engagement_id: str, req: TaskCreate, uid: str = Depends(current_user)) -> dict:
     if req.status not in appdb.TASK_STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
     if req.priority not in appdb.TASK_PRIORITIES:
@@ -918,12 +918,12 @@ async def create_project_task(project_id: str, req: TaskCreate, uid: str = Depen
         doc["tasks"].append(task)
         appdb.log_activity(doc, uid, "task.created", task["title"])
         created.update(task)
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
     return created
 
 
-@app.patch("/projects/{project_id}/tasks/{task_id}")
-async def update_project_task(project_id: str, task_id: str, req: TaskUpdate, uid: str = Depends(current_user)) -> dict:
+@app.patch("/engagements/{engagement_id}/tasks/{task_id}")
+async def update_engagement_task(engagement_id: str, task_id: str, req: TaskUpdate, uid: str = Depends(current_user)) -> dict:
     if req.status is not None and req.status not in appdb.TASK_STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
     if req.priority is not None and req.priority not in appdb.TASK_PRIORITIES:
@@ -940,23 +940,23 @@ async def update_project_task(project_id: str, task_id: str, req: TaskUpdate, ui
                 t[field] = val.strip() if isinstance(val, str) else val
         appdb.log_activity(doc, uid, "task.updated", t["title"])
         out.update(t)
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
     return out
 
 
-@app.delete("/projects/{project_id}/tasks/{task_id}", status_code=204)
-async def delete_project_task(project_id: str, task_id: str, uid: str = Depends(current_user)):
+@app.delete("/engagements/{engagement_id}/tasks/{task_id}", status_code=204)
+async def delete_engagement_task(engagement_id: str, task_id: str, uid: str = Depends(current_user)):
     def _mut(doc):
         t = appdb.find_task(doc, task_id)
         if t is None:
             raise _NotFound()
         doc["tasks"] = [x for x in doc["tasks"] if x["id"] != task_id]
         appdb.log_activity(doc, uid, "task.deleted", t["title"])
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
 
 
-@app.post("/projects/{project_id}/events", status_code=201)
-async def create_project_event(project_id: str, req: EventCreate, uid: str = Depends(current_user)) -> dict:
+@app.post("/engagements/{engagement_id}/events", status_code=201)
+async def create_engagement_event(engagement_id: str, req: EventCreate, uid: str = Depends(current_user)) -> dict:
     created: dict = {}
 
     def _mut(doc):
@@ -968,23 +968,23 @@ async def create_project_event(project_id: str, req: EventCreate, uid: str = Dep
         doc["events"].append(event)
         appdb.log_activity(doc, uid, "event.created", event["title"])
         created.update(event)
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
     return created
 
 
-@app.delete("/projects/{project_id}/events/{event_id}", status_code=204)
-async def delete_project_event(project_id: str, event_id: str, uid: str = Depends(current_user)):
+@app.delete("/engagements/{engagement_id}/events/{event_id}", status_code=204)
+async def delete_engagement_event(engagement_id: str, event_id: str, uid: str = Depends(current_user)):
     def _mut(doc):
         e = appdb.find_event(doc, event_id)
         if e is None:
             raise _NotFound()
         doc["events"] = [x for x in doc["events"] if x["id"] != event_id]
         appdb.log_activity(doc, uid, "event.deleted", e["title"])
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
 
 
-@app.post("/projects/{project_id}/conventions", status_code=201)
-async def add_convention(project_id: str, req: ConventionCreate, uid: str = Depends(current_user)) -> dict:
+@app.post("/engagements/{engagement_id}/conventions", status_code=201)
+async def add_convention(engagement_id: str, req: ConventionCreate, uid: str = Depends(current_user)) -> dict:
     created: dict = {}
 
     def _mut(doc):
@@ -993,18 +993,18 @@ async def add_convention(project_id: str, req: ConventionCreate, uid: str = Depe
         doc.setdefault("conventions", []).append(conv)
         appdb.log_activity(doc, uid, "convention.added", conv["text"])
         created.update(conv)
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
     return created
 
 
-@app.delete("/projects/{project_id}/conventions/{conv_id}", status_code=204)
-async def delete_convention(project_id: str, conv_id: str, uid: str = Depends(current_user)):
+@app.delete("/engagements/{engagement_id}/conventions/{conv_id}", status_code=204)
+async def delete_convention(engagement_id: str, conv_id: str, uid: str = Depends(current_user)):
     def _mut(doc):
         if not any(c["id"] == conv_id for c in doc.get("conventions", [])):
             raise _NotFound()
         doc["conventions"] = [c for c in doc["conventions"] if c["id"] != conv_id]
         appdb.log_activity(doc, uid, "convention.removed", conv_id)
-    await _mutate_project(project_id, uid, "editor", _mut)
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
 
 
 
@@ -1026,10 +1026,10 @@ async def quick_links(uid: str = Depends(current_user)) -> list[dict]:
     """rank_destinations(context) — the no-utterance consumer: top destinations now."""
     import navsvc
     personal = await asyncio.to_thread(appdb.load_state, uid)
-    projects = await asyncio.to_thread(appdb.list_projects_for, uid)
+    engagements = await asyncio.to_thread(appdb.list_engagements_for, uid)
     ctx = await asyncio.to_thread(appdb.load_context, uid)
     ranked = await asyncio.to_thread(
-        navsvc.rank_destinations, personal, projects, ctx["visits"], None, None, 5
+        navsvc.rank_destinations, personal, engagements, ctx["visits"], None, None, 5
     )
     return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked]
 
@@ -1115,7 +1115,7 @@ async def delete_memory(memory_id: str, uid: str = Depends(current_user)):
 async def context_bundle(view: str = "", uid: str = Depends(current_user)) -> dict:
     """The per-turn context bundle — what personalizes the next turn, made LEGIBLE.
 
-    Precedence (docs/projects-spec.md F8): turn instruction > project convention >
+    Precedence (docs/projects-spec.md F8): turn instruction > engagement convention >
     user persona > app default. The bundle carries each level separately so the
     inspector can show exactly what applied and why; the frontend renders the same
     bundle into the prompt preamble, so what the user sees IS what the model got.
@@ -1123,22 +1123,22 @@ async def context_bundle(view: str = "", uid: str = Depends(current_user)) -> di
     user = await asyncio.to_thread(appdb.get_user, uid)
     ctx = await asyncio.to_thread(appdb.load_context, uid)
     conventions: list[dict] = []
-    project_name = None
-    # A project's conventions apply when the turn's view is inside that project.
-    if view.startswith("/projects/"):
+    engagement_name = None
+    # A engagement's conventions apply when the turn's view is inside that engagement.
+    if view.startswith("/engagements/"):
         pid = view.split("/")[2] if len(view.split("/")) > 2 else ""
-        project = await asyncio.to_thread(appdb.load_project, pid)
-        if project and appdb.member_role(project, uid) is not None:
-            conventions = project.get("conventions", [])
-            project_name = project["name"]
+        engagement = await asyncio.to_thread(appdb.load_engagement, pid)
+        if engagement and appdb.member_role(engagement, uid) is not None:
+            conventions = engagement.get("conventions", [])
+            engagement_name = engagement["name"]
     return {
         "user": {"id": uid, "displayName": (user or {}).get("displayName", uid)},
         "persona": (user or {}).get("persona", {}),
         "memories": ctx["memories"],
         "conventions": conventions,
-        "projectName": project_name,
+        "engagementName": engagement_name,
         "workingContext": ctx["workingContext"],
-        "precedence": ["turn instruction", "project convention", "user persona", "app default"],
+        "precedence": ["turn instruction", "engagement convention", "user persona", "app default"],
     }
 
 # ---------------------------------------------------------------------------

@@ -491,9 +491,9 @@ export function useAgentSession() {
         const personaBits = [p.role, p.tone, p.outputPrefs, p.language && p.language !== "English" ? `writes in ${p.language}` : ""].filter(Boolean);
         if (personaBits.length) preamble += `\n[Persona: ${personaBits.join("; ")}]`;
         if (bundle.memories.length) preamble += `\n[Workspace memory: ${bundle.memories.map((m) => m.text).join(" | ")}]`;
-        if (bundle.conventions.length) preamble += `\n[Project conventions — ${bundle.projectName}: ${bundle.conventions.map((c) => c.text).join(" | ")}]`;
+        if (bundle.conventions.length) preamble += `\n[Engagement conventions — ${bundle.engagementName}: ${bundle.conventions.map((c) => c.text).join(" | ")}]`;
         if (bundle.memories.length || bundle.conventions.length || personaBits.length) {
-          preamble += `\n[Precedence: the user's instruction in this message overrides project conventions, which override persona defaults.]`;
+          preamble += `\n[Precedence: the user's instruction in this message overrides engagement conventions, which override persona defaults.]`;
         }
       } catch {
         // Bundle unavailable (endpoint down): the turn still runs with date+view; the

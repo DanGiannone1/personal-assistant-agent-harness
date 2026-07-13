@@ -137,7 +137,7 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
                     <span className="ctx-line"><b>Memory</b> {state.lastBundle.memories.map((m) => m.text).join(" | ")}</span>
                   )}
                   {state.lastBundle.conventions.length > 0 && (
-                    <span className="ctx-line"><b>Conventions ({state.lastBundle.projectName})</b> {state.lastBundle.conventions.map((c) => c.text).join(" | ")}</span>
+                    <span className="ctx-line"><b>Conventions ({state.lastBundle.engagementName})</b> {state.lastBundle.conventions.map((c) => c.text).join(" | ")}</span>
                   )}
                   <span className="ctx-line"><b>Precedence</b> {state.lastBundle.precedence.join(" › ")}</span>
                 </div>

@@ -6,7 +6,7 @@ App state lives in **Azure Cosmos DB** as a set of documents in one container:
 - ``space-{userId}``   — one **personal space** per user: the flat workspace
   (currentRoute/tasks/events/routes/schedules/library) that used to be the single
   owner doc. Keyed by the stable user id, so it persists across sessions/tabs/restarts.
-- ``proj-*``           — shared **project** documents (M2+): records + members + conventions.
+- ``eng-*``           — shared **engagement** documents (M2+): records + members + conventions.
 
 Every mutation goes through the optimistic-ETag ``_update_doc`` path, one document at a
 time — concurrent writers (agent tools, manual UI, the reminder scheduler) can never
@@ -141,7 +141,7 @@ def ensure_seeded() -> None:
             users_doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
     for u in users_doc["users"]:
         _ensure_space_seeded(u["id"])
-    _seed_projects()
+    _seed_engagements()
 
 
 def list_users() -> list[dict]:
@@ -346,28 +346,28 @@ def update_state(user_id: str, mutator):
 
 
 
-# ── Projects ─────────────────────────────────────────────────────────────────
-# Shared workspaces: one Cosmos doc per project (records + members + conventions +
+# ── Engagements ─────────────────────────────────────────────────────────────────
+# Shared workspaces: one Cosmos doc per engagement (records + members + conventions +
 # activity), mutated through the same ETag-safe path as personal spaces. Membership is
 # authorization: every read/write checks the caller's role — in the REST layer AND the
 # tool layer, so neither the UI nor the model can cross a membership boundary.
 
-PROJECT_ROLES = ["owner", "editor", "viewer"]
+ENGAGEMENT_ROLES = ["owner", "editor", "viewer"]
 
 
-def _project_doc_id(project_id: str) -> str:
-    pid = (project_id or "").strip()
-    return pid if pid.startswith("proj-") else f"proj-{pid}"
+def _engagement_doc_id(engagement_id: str) -> str:
+    pid = (engagement_id or "").strip()
+    return pid if pid.startswith("eng-") else f"eng-{pid}"
 
 
-def new_project(creator_id: str, name: str, description: str = "") -> dict:
-    """Create a project; the creator is its first owner. Returns the project doc."""
+def new_engagement(creator_id: str, name: str, description: str = "") -> dict:
+    """Create a engagement; the creator is its first owner. Returns the engagement doc."""
     uid = _valid_user(creator_id)
     name = (name or "").strip()
     if not name:
-        raise ValueError("project name is required")
+        raise ValueError("engagement name is required")
     container = _container()
-    pid = f"proj-{secrets.token_hex(4)}"
+    pid = f"eng-{secrets.token_hex(4)}"
     doc = {
         "id": pid, "sessionId": pid,
         "name": name, "description": (description or "").strip(),
@@ -381,9 +381,9 @@ def new_project(creator_id: str, name: str, description: str = "") -> dict:
     return {k: v for k, v in doc.items() if not k.startswith("_")}
 
 
-def load_project(project_id: str) -> dict | None:
+def load_engagement(engagement_id: str) -> dict | None:
     container = _container()
-    pid = _project_doc_id(project_id)
+    pid = _engagement_doc_id(engagement_id)
     try:
         doc = container.read_item(item=pid, partition_key=pid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
@@ -391,17 +391,17 @@ def load_project(project_id: str) -> dict | None:
     return {k: v for k, v in doc.items() if not k.startswith("_")}
 
 
-def update_project(project_id: str, mutator):
-    """ETag-safe read-modify-write of one project doc (same contract as update_state)."""
-    return _update_raw(_project_doc_id(project_id), mutator)
+def update_engagement(engagement_id: str, mutator):
+    """ETag-safe read-modify-write of one engagement doc (same contract as update_state)."""
+    return _update_raw(_engagement_doc_id(engagement_id), mutator)
 
 
-def list_projects_for(user_id: str) -> list[dict]:
-    """Every project where the user is a member (any role), as full docs."""
+def list_engagements_for(user_id: str) -> list[dict]:
+    """Every engagement where the user is a member (any role), as full docs."""
     uid = _valid_user(user_id)
     container = _container()
     rows = container.query_items(
-        query="SELECT * FROM c WHERE STARTSWITH(c.id, 'proj-')",
+        query="SELECT * FROM c WHERE STARTSWITH(c.id, 'eng-')",
         enable_cross_partition_query=True,
     )
     out = []
@@ -412,9 +412,9 @@ def list_projects_for(user_id: str) -> list[dict]:
     return out
 
 
-def member_role(project: dict, user_id: str) -> str | None:
+def member_role(engagement: dict, user_id: str) -> str | None:
     uid = (user_id or "").strip().lower()
-    m = next((m for m in project.get("members", []) if m.get("userId") == uid), None)
+    m = next((m for m in engagement.get("members", []) if m.get("userId") == uid), None)
     return m.get("role") if m else None
 
 
@@ -422,26 +422,26 @@ def member_role(project: dict, user_id: str) -> str | None:
 _ROLE_RANK = {"viewer": 0, "editor": 1, "owner": 2}
 
 
-def role_at_least(project: dict, user_id: str, minimum: str) -> bool:
-    role = member_role(project, user_id)
+def role_at_least(engagement: dict, user_id: str, minimum: str) -> bool:
+    role = member_role(engagement, user_id)
     return role is not None and _ROLE_RANK[role] >= _ROLE_RANK[minimum]
 
 
-def log_activity(project: dict, user_id: str, action: str, detail: str) -> None:
-    """Append to the project's activity feed (call inside an update_project mutator)."""
-    project.setdefault("activity", []).insert(0, {
+def log_activity(engagement: dict, user_id: str, action: str, detail: str) -> None:
+    """Append to the engagement's activity feed (call inside an update_engagement mutator)."""
+    engagement.setdefault("activity", []).insert(0, {
         "ts": _now_iso(), "userId": user_id, "action": action, "detail": detail[:240],
     })
-    del project["activity"][100:]  # bounded feed
+    del engagement["activity"][100:]  # bounded feed
 
 
-def _seed_projects() -> None:
-    """Demo fixture (idempotent): two similarly-named projects for the ambiguity demo,
+def _seed_engagements() -> None:
+    """Demo fixture (idempotent): two similarly-named engagements for the ambiguity demo,
     different membership shapes, one French-deliverables convention."""
     container = _container()
     fixtures = [
         {
-            "id": "proj-website-launch", "name": "Website Launch",
+            "id": "eng-website-launch", "name": "Website Launch",
             "description": "Marketing site refresh and launch",
             "members": [{"userId": "dan", "role": "owner"}, {"userId": "sam", "role": "viewer"}],
             "conventions": [],
@@ -459,7 +459,7 @@ def _seed_projects() -> None:
             ],
         },
         {
-            "id": "proj-product-launch", "name": "Product Launch",
+            "id": "eng-product-launch", "name": "Product Launch",
             "description": "V2 product rollout",
             "members": [{"userId": "ava", "role": "owner"}, {"userId": "dan", "role": "editor"}],
             "conventions": [
@@ -474,7 +474,7 @@ def _seed_projects() -> None:
             "events": [],
         },
         {
-            "id": "proj-q3-budget", "name": "Q3 Budget",
+            "id": "eng-q3-budget", "name": "Q3 Budget",
             "description": "Quarterly budget planning",
             "members": [{"userId": "ava", "role": "owner"}],
             "conventions": [],

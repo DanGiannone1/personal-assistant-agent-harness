@@ -99,15 +99,15 @@ How you work:
   than stopping after one tool.)
 - For "take me to / go to / open / show me <place>" requests, call `navigate` with the
   user's destination words **verbatim**. Don't pre-resolve a vague phrase — pass it and
-  let `navigate` decide (it knows the user's pages, projects, and records, and uses their
+  let `navigate` decide (it knows the user's pages, engagements, and records, and uses their
   recent activity to pick decisively). If it returns AMBIGUOUS, list the candidates and ask
   which one. If NOT_FOUND, say so and list the closest options. Never claim you navigated
   unless the tool resolved a destination.
-- Projects are shared workspaces with members and roles (owner/editor/viewer). Use
-  `list_projects` to see them, `create_project` to add one, `share_project` to grant a
-  user access. Tasks and events can live in a project OR in the personal space: pass the
-  tool's `project` argument when the user names a project or their current view is a
-  project page (see "[Current view: …]"); leave it empty for personal items. If a project
+- Engagements are shared workspaces with members and roles (owner/editor/viewer). Use
+  `list_engagements` to see them, `create_engagement` to add one, `share_engagement` to grant a
+  user access. Tasks and events can live in a engagement OR in the personal space: pass the
+  tool's `engagement` argument when the user names a engagement or their current view is a
+  engagement page (see "[Current view: …]"); leave it empty for personal items. If a engagement
   tool returns FORBIDDEN, tell the user their role doesn't allow it — do not retry.
 - Tasks: use `list_tasks` to review (it returns a computed `overdue` flag and each task's
   subtask progress), `create_task` to add one, `update_task` to change status/priority/
@@ -122,8 +122,8 @@ How you work:
 - When the user states a durable preference or working agreement ("we do reviews on
   Fridays", "always round to thousands"), offer to remember it with `propose_memory`.
   It stores NOTHING until the user confirms; after an explicit yes, call `save_memory`
-  with the same text. Saved memories and project conventions arrive in your context each
-  turn — apply them, with precedence: the user's current instruction beats a project
+  with the same text. Saved memories and engagement conventions arrive in your context each
+  turn — apply them, with precedence: the user's current instruction beats a engagement
   convention, which beats their persona defaults.
 - Deleting things is confirm-first: delete tools return PENDING_CONFIRM with a card the
   user sees. Nothing is deleted until the user confirms — then call the tool again with
@@ -153,7 +153,7 @@ to resolve "here" / "this". The current date is provided as "[Today: …]".
 Style:
 - Be concise and friendly. One or two sentences is usually enough.
 - State concretely what you did ("Added the high-priority task" / "Moved the design review
-  to Thursday" / "Drafted the project brief").
+  to Thursday" / "Drafted the engagement brief").
 - Don't mention tools, routes, file paths, or IDs unless asked. Don't invent data the tools
   didn't return.
 - Stay in your lane: you're this app's assistant. For clearly off-topic requests (general
@@ -343,12 +343,12 @@ class NavigateParams(BaseModel):
 
 
 class ListTasksParams(BaseModel):
-    project: str = Field(default="", description="Project name or id to list tasks from a shared project; empty = the personal space.")
+    engagement: str = Field(default="", description="Engagement name or id to list tasks from a shared engagement; empty = the personal space.")
 
 
 class CreateTaskParams(BaseModel):
     title: str = Field(description="Task title, e.g. 'Draft Q3 planning doc'")
-    project: str = Field(default="", description="Project name or id when the task belongs in a shared project (say the project the user meant, e.g. from '[Current view: …]' or their words); empty = personal space.")
+    engagement: str = Field(default="", description="Engagement name or id when the task belongs in a shared engagement (say the engagement the user meant, e.g. from '[Current view: …]' or their words); empty = personal space.")
     status: str = Field(default="", description="Status: 'To do', 'In progress', 'Blocked', or 'Done' (defaults to 'To do')")
     priority: str = Field(default="", description="Priority: 'Low', 'Medium', or 'High' (defaults to 'Medium')")
     group: str = Field(default="", description="Group/bucket, e.g. 'Work', 'Personal' (defaults to 'General')")
@@ -357,7 +357,7 @@ class CreateTaskParams(BaseModel):
 
 class UpdateTaskParams(BaseModel):
     task: str = Field(description="Task id or a distinctive part of its title")
-    project: str = Field(default="", description="Project name or id when the task lives in a shared project; empty = personal space.")
+    engagement: str = Field(default="", description="Engagement name or id when the task lives in a shared engagement; empty = personal space.")
     status: str = Field(default="", description="New status: 'To do', 'In progress', 'Blocked', or 'Done'")
     priority: str = Field(default="", description="New priority: 'Low', 'Medium', or 'High'")
     group: str = Field(default="", description="New group/bucket")
@@ -366,7 +366,7 @@ class UpdateTaskParams(BaseModel):
 
 class DeleteTaskParams(BaseModel):
     task: str = Field(description="Task id or a distinctive part of its title")
-    project: str = Field(default="", description="Project name or id when the task lives in a shared project; empty = personal space.")
+    engagement: str = Field(default="", description="Engagement name or id when the task lives in a shared engagement; empty = personal space.")
     confirmed: bool = Field(default=False, description="Set true ONLY after the user has explicitly confirmed this deletion (e.g. by replying to the confirmation card).")
 
 
@@ -376,12 +376,12 @@ class AddSubtaskParams(BaseModel):
 
 
 class ListEventsParams(BaseModel):
-    project: str = Field(default="", description="Project name or id to list a shared project's calendar; empty = personal space.")
+    engagement: str = Field(default="", description="Engagement name or id to list a shared engagement's calendar; empty = personal space.")
 
 
 class CreateEventParams(BaseModel):
     title: str = Field(description="Event title, e.g. 'Team standup'")
-    project: str = Field(default="", description="Project name or id when the event belongs to a shared project; empty = personal space.")
+    engagement: str = Field(default="", description="Engagement name or id when the event belongs to a shared engagement; empty = personal space.")
     date: str = Field(description="Event date (YYYY-MM-DD) — required")
     start: str = Field(default="", description="Start time (24h HH:MM), if known")
     end: str = Field(default="", description="End time (24h HH:MM), if known")
@@ -402,17 +402,17 @@ class DeleteEventParams(BaseModel):
     confirmed: bool = Field(default=False, description="Set true ONLY after the user has explicitly confirmed this deletion.")
 
 
-class ListProjectsParams(BaseModel):
+class ListEngagementsParams(BaseModel):
     pass
 
 
-class CreateProjectParams(BaseModel):
-    name: str = Field(description="Project name, e.g. 'Website Launch'")
-    description: str = Field(default="", description="One-line description of the project")
+class CreateEngagementParams(BaseModel):
+    name: str = Field(description="Engagement name, e.g. 'Website Launch'")
+    description: str = Field(default="", description="One-line description of the engagement")
 
 
-class ShareProjectParams(BaseModel):
-    project: str = Field(description="Project name or id to share")
+class ShareEngagementParams(BaseModel):
+    engagement: str = Field(description="Engagement name or id to share")
     user: str = Field(description="Username to add, e.g. 'ava'")
     role: str = Field(default="viewer", description="Role to grant: 'viewer', 'editor', or 'owner'")
 
@@ -498,26 +498,26 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return None, f"AMBIGUOUS event '{ref}': {opts}. Ask which one."
         return matches[0], None
 
-    def _projects() -> list[dict]:
-        return appdb.list_projects_for(user_id)
+    def _engagements() -> list[dict]:
+        return appdb.list_engagements_for(user_id)
 
     def _visits() -> list[dict]:
         return appdb.load_context(user_id)["visits"]
 
-    def _resolve_project_ref(ref: str):
-        """Resolve a project by id, exact name, then unique substring — members only."""
+    def _resolve_engagement_ref(ref: str):
+        """Resolve a engagement by id, exact name, then unique substring — members only."""
         r = (ref or "").strip().lower()
-        projs = _projects()
+        engs = _engagements()
         if not r:
-            return None, "NAME_REQUIRED: which project?"
-        by_id = [p for p in projs if p["id"].lower() == r or p["id"].lower() == f"proj-{r}"]
-        exact = by_id or [p for p in projs if p["name"].lower() == r]
-        matches = exact if exact else [p for p in projs if r in p["name"].lower()]
+            return None, "NAME_REQUIRED: which engagement?"
+        by_id = [p for p in engs if p["id"].lower() == r or p["id"].lower() == f"eng-{r}"]
+        exact = by_id or [p for p in engs if p["name"].lower() == r]
+        matches = exact if exact else [p for p in engs if r in p["name"].lower()]
         if not matches:
-            return None, f"PROJECT_NOT_FOUND: no project of yours matches '{ref}'. Use list_projects."
+            return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
         if len(matches) > 1:
             opts = "; ".join(f"[{p['id']}] {p['name']}" for p in matches)
-            return None, f"AMBIGUOUS project '{ref}': {opts}. Ask which one."
+            return None, f"AMBIGUOUS engagement '{ref}': {opts}. Ask which one."
         return matches[0], None
 
     def _set_route(path: str, title: str) -> None:
@@ -550,22 +550,22 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                 "fields": {k: record.get(k) for k in ("id", "title", "status", "priority", "group", "dueDate", "date", "start", "end", "type") if record.get(k)}}
         return "\nCARD_JSON: " + _json.dumps(card)
 
-    def _mutate_project_scoped(proj: dict, minimum: str, mutator):
-        """ETag-safe project mutation with the role re-checked inside the mutator."""
+    def _mutate_engagement_scoped(eng: dict, minimum: str, mutator):
+        """ETag-safe engagement mutation with the role re-checked inside the mutator."""
         def _outer(doc):
             role = appdb.member_role(doc, user_id)
             if role is None:
-                raise appdb.AbortWrite(f"PROJECT_NOT_FOUND: '{proj['name']}'")
+                raise appdb.AbortWrite(f"ENGAGEMENT_NOT_FOUND: '{eng['name']}'")
             if not appdb.role_at_least(doc, user_id, minimum):
                 raise appdb.AbortWrite(
                     f"FORBIDDEN: you have {role} access on '{doc['name']}' — {minimum} required.")
             return mutator(doc)
-        return appdb.update_project(proj["id"], _outer)
+        return appdb.update_engagement(eng["id"], _outer)
 
-    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a project.")
+    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a engagement.")
     def navigate(params: NavigateParams) -> str:
         personal = _load()
-        result = navsvc.resolve(personal, _projects(), _visits(), params.destination)
+        result = navsvc.resolve(personal, _engagements(), _visits(), params.destination)
         if result["status"] == "resolved":
             _set_route(result["path"], result["title"])
             return f"NAVIGATED to {result['title']} ({result['path']})"
@@ -577,12 +577,12 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     @define_tool(name="list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(params: ListTasksParams) -> str:
         scope_label = "personal"
-        if params.project.strip():
-            proj, err = _resolve_project_ref(params.project)
+        if params.engagement.strip():
+            eng, err = _resolve_engagement_ref(params.engagement)
             if err:
                 return err
-            tasks = proj["tasks"]
-            scope_label = proj["name"]
+            tasks = eng["tasks"]
+            scope_label = eng["name"]
         else:
             data = _load()
             tasks = data["tasks"]
@@ -606,8 +606,8 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     def create_task(params: CreateTaskParams) -> str:
         if not params.title.strip():
             return "TITLE_REQUIRED: a task needs a title."
-        if params.project.strip():
-            proj, err = _resolve_project_ref(params.project)
+        if params.engagement.strip():
+            eng, err = _resolve_engagement_ref(params.engagement)
             if err:
                 return err
             def _pmut(doc):
@@ -623,14 +623,14 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                 doc["tasks"].append(task)
                 appdb.log_activity(doc, user_id, "task.created", task["title"])
                 return task
-            out = _mutate_project_scoped(proj, "editor", _pmut)
+            out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/projects/{proj['id']}/tasks/{out['id']}", out["title"])
+            _set_route(f"/engagements/{eng['id']}/tasks/{out['id']}", out["title"])
             return (
-                f"CREATED task [{out['id']}] '{out['title']}' in project {proj['name']}, "
+                f"CREATED task [{out['id']}] '{out['title']}' in engagement {eng['name']}, "
                 f"status {out['status']}, priority {out['priority']}, due {out['dueDate'] or 'n/a'}."
-                + _record_card("task", out, proj["name"])
+                + _record_card("task", out, eng["name"])
             )
         def _mut(data):
             task = {
@@ -655,8 +655,8 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="update_task", description="Update a task's status, priority, group, or due date.")
     def update_task(params: UpdateTaskParams) -> str:
-        if params.project.strip():
-            proj, perr = _resolve_project_ref(params.project)
+        if params.engagement.strip():
+            eng, perr = _resolve_engagement_ref(params.engagement)
             if perr:
                 return perr
             def _pmut(doc):
@@ -676,12 +676,12 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                     raise appdb.AbortWrite("NO_CHANGES: specify a status, priority, group, or due_date to update.")
                 appdb.log_activity(doc, user_id, "task.updated", t["title"])
                 return (t, changed)
-            out = _mutate_project_scoped(proj, "editor", _pmut)
+            out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
             t, changed = out
-            _set_route(f"/projects/{proj['id']}/tasks/{t['id']}", t["title"])
-            return f"UPDATED task [{t['id']}] '{t['title']}' in {proj['name']}: {', '.join(changed)}."
+            _set_route(f"/engagements/{eng['id']}/tasks/{t['id']}", t["title"])
+            return f"UPDATED task [{t['id']}] '{t['title']}' in {eng['name']}: {', '.join(changed)}."
         def _mut(data):
             t, err = _resolve_task_strict(data, params.task)
             if err:
@@ -708,20 +708,20 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     @define_tool(name="delete_task", description="Delete a task from the to-do list.")
     def delete_task(params: DeleteTaskParams) -> str:
         if not params.confirmed and not _has_standing_approval("delete_task"):
-            data = _load() if not params.project.strip() else None
+            data = _load() if not params.engagement.strip() else None
             scope_data = data
-            if params.project.strip():
-                proj_probe, perr0 = _resolve_project_ref(params.project)
+            if params.engagement.strip():
+                eng_probe, perr0 = _resolve_engagement_ref(params.engagement)
                 if perr0:
                     return perr0
-                scope_data = proj_probe
+                scope_data = eng_probe
             t, terr = _resolve_task_strict(scope_data, params.task)
             if terr:
                 return terr
             return _confirm_card("delete_task", t["title"],
-                                 f"Delete task [{t['id']}] permanently" + (f" from project {scope_data['name']}" if params.project.strip() else ""))
-        if params.project.strip():
-            proj, perr = _resolve_project_ref(params.project)
+                                 f"Delete task [{t['id']}] permanently" + (f" from engagement {scope_data['name']}" if params.engagement.strip() else ""))
+        if params.engagement.strip():
+            eng, perr = _resolve_engagement_ref(params.engagement)
             if perr:
                 return perr
             def _pmut(doc):
@@ -731,11 +731,11 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                 doc["tasks"] = [x for x in doc["tasks"] if x["id"] != t["id"]]
                 appdb.log_activity(doc, user_id, "task.deleted", t["title"])
                 return t
-            out = _mutate_project_scoped(proj, "editor", _pmut)
+            out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/projects/{proj['id']}/tasks", out["title"])
-            return f"DELETED task [{out['id']}] '{out['title']}' from {proj['name']}."
+            _set_route(f"/engagements/{eng['id']}/tasks", out["title"])
+            return f"DELETED task [{out['id']}] '{out['title']}' from {eng['name']}."
         def _mut(data):
             t, err = _resolve_task_strict(data, params.task)
             if err:
@@ -762,12 +762,12 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     @define_tool(name="list_events", description="List the calendar events with their date, time, and type.")
     def list_events(params: ListEventsParams) -> str:
         scope_label = "personal"
-        if params.project.strip():
-            proj, err = _resolve_project_ref(params.project)
+        if params.engagement.strip():
+            eng, err = _resolve_engagement_ref(params.engagement)
             if err:
                 return err
-            events = proj["events"]
-            scope_label = proj["name"]
+            events = eng["events"]
+            scope_label = eng["name"]
         else:
             data = _load()
             events = data["events"]
@@ -792,8 +792,8 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return "TITLE_REQUIRED: an event needs a title."
         if not params.date.strip():
             return "DATE_REQUIRED: an event needs a date (YYYY-MM-DD)."
-        if params.project.strip():
-            proj, err = _resolve_project_ref(params.project)
+        if params.engagement.strip():
+            eng, err = _resolve_engagement_ref(params.engagement)
             if err:
                 return err
             def _pmut(doc):
@@ -806,12 +806,12 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                 doc["events"].append(event)
                 appdb.log_activity(doc, user_id, "event.created", event["title"])
                 return event
-            out = _mutate_project_scoped(proj, "editor", _pmut)
+            out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/projects/{proj['id']}/calendar", out["title"])
+            _set_route(f"/engagements/{eng['id']}/calendar", out["title"])
             when = out["start"] or "all-day"
-            return f"CREATED event [{out['id']}] '{out['title']}' on {out['date']} at {when} in project {proj['name']}."
+            return f"CREATED event [{out['id']}] '{out['title']}' on {out['date']} at {when} in engagement {eng['name']}."
         def _mut(data):
             event = {
                 "id": appdb.new_id("e", data["events"]),
@@ -945,13 +945,13 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         resolved.write_text(params.content, encoding="utf-8")
         return f"WROTE {resolved.name} ({resolved.stat().st_size} bytes)."
 
-    @define_tool(name="list_projects", description="List the shared projects the user belongs to, with their role, members, and record counts.")
-    def list_projects(params: ListProjectsParams) -> str:
-        projs = _projects()
-        if not projs:
-            return "No projects yet. Create one with create_project."
-        lines = [f"{len(projs)} project(s):"]
-        for p in projs:
+    @define_tool(name="list_engagements", description="List the shared engagements the user belongs to, with their role, members, and record counts.")
+    def list_engagements(params: ListEngagementsParams) -> str:
+        engs = _engagements()
+        if not engs:
+            return "No engagements yet. Create one with create_engagement."
+        lines = [f"{len(engs)} engagement(s):"]
+        for p in engs:
             role = appdb.member_role(p, user_id)
             members = ", ".join(f"{m['userId']}({m['role']})" for m in p["members"])
             lines.append(
@@ -960,27 +960,27 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             )
         return "\n".join(lines)
 
-    @define_tool(name="create_project", description="Create a new shared project. The user becomes its owner.")
-    def create_project(params: CreateProjectParams) -> str:
+    @define_tool(name="create_engagement", description="Create a new shared engagement. The user becomes its owner.")
+    def create_engagement(params: CreateEngagementParams) -> str:
         name = params.name.strip()
         if not name:
-            return "NAME_REQUIRED: the project needs a name."
-        existing = [p for p in _projects() if p["name"].lower() == name.lower()]
+            return "NAME_REQUIRED: the engagement needs a name."
+        existing = [p for p in _engagements() if p["name"].lower() == name.lower()]
         if existing:
-            return f"AMBIGUOUS: you already have a project named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
-        proj = appdb.new_project(user_id, name, params.description)
-        _set_route(f"/projects/{proj['id']}", proj["name"])
-        return f"CREATED project [{proj['id']}] '{proj['name']}'. You are its owner."
+            return f"AMBIGUOUS: you already have a engagement named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
+        eng = appdb.new_engagement(user_id, name, params.description)
+        _set_route(f"/engagements/{eng['id']}", eng["name"])
+        return f"CREATED engagement [{eng['id']}] '{eng['name']}'. You are its owner."
 
-    @define_tool(name="share_project", description="Share a project with another user (grant viewer, editor, or owner access). Only a project owner can share.")
-    def share_project(params: ShareProjectParams) -> str:
+    @define_tool(name="share_engagement", description="Share a engagement with another user (grant viewer, editor, or owner access). Only a engagement owner can share.")
+    def share_engagement(params: ShareEngagementParams) -> str:
         role = params.role.strip().lower() or "viewer"
-        if role not in appdb.PROJECT_ROLES:
-            return f"BAD_ROLE: use one of {appdb.PROJECT_ROLES}."
+        if role not in appdb.ENGAGEMENT_ROLES:
+            return f"BAD_ROLE: use one of {appdb.ENGAGEMENT_ROLES}."
         target = appdb.get_user(params.user.strip().lower())
         if target is None:
             return f"USER_REQUIRED: no user named '{params.user}'. Known users: " + ", ".join(u["id"] for u in appdb.list_users())
-        proj, err = _resolve_project_ref(params.project)
+        eng, err = _resolve_engagement_ref(params.engagement)
         if err:
             return err
         def _pmut(doc):
@@ -993,11 +993,11 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                 doc["members"].append({"userId": target["id"], "role": role})
             appdb.log_activity(doc, user_id, "member.added", f"{target['id']} as {role}")
             return role
-        out = _mutate_project_scoped(proj, "owner", _pmut)
-        if isinstance(out, str) and out not in appdb.PROJECT_ROLES:
+        out = _mutate_engagement_scoped(eng, "owner", _pmut)
+        if isinstance(out, str) and out not in appdb.ENGAGEMENT_ROLES:
             return out
-        _set_route(f"/projects/{proj['id']}/settings", proj["name"])
-        return f"SHARED project '{proj['name']}' with {target['id']} as {role}."
+        _set_route(f"/engagements/{eng['id']}/settings", eng["name"])
+        return f"SHARED engagement '{eng['name']}' with {target['id']} as {role}."
 
     @define_tool(name="propose_memory", description="Propose saving a durable fact to the user's workspace memory. NOTHING is stored until the user confirms — the app shows a confirmation card. Use when the user states a lasting preference or working agreement worth remembering.")
     def propose_memory(params: ProposeMemoryParams) -> str:
@@ -1175,7 +1175,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     return [
         navigate,
-        list_projects, create_project, share_project,
+        list_engagements, create_engagement, share_engagement,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,

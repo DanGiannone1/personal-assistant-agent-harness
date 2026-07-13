@@ -1,11 +1,11 @@
 // Full-journey validation for docs/projects-spec.md M1–M5 — real frontend, real users,
 // screenshots at every checkpoint. Run with the dev stack up (uv run dev.py) against
-// the Cosmos emulator. Usage: node scripts/projects_e2e.mjs
+// the Cosmos emulator. Usage: node scripts/engagements_e2e.mjs
 import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
 const APP = "http://localhost:3000";
-const OUT = "screenshots/projects-e2e";
+const OUT = "screenshots/engagements-e2e";
 mkdirSync(OUT, { recursive: true });
 
 const b = await chromium.launch({ headless: true });
@@ -69,31 +69,31 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await c2.close();
 }
 
-// ── M2: projects, roles, viewer can't mutate ────────────────────────────────
+// ── M2: engagements, roles, viewer can't mutate ────────────────────────────────
 {
   const { ctx, p } = await fresh();
   await signIn(p, "dan");
-  await p.locator('[data-testid="nav--projects"]').click();
+  await p.locator('[data-testid="nav--engagements"]').click();
   await p.waitForTimeout(800);
-  await p.screenshot({ path: `${OUT}/m2-dan-projects.png` });
-  ok("M2 dan sees Website Launch", await p.locator('[data-testid="project-row-proj-website-launch"]').count() === 1);
-  ok("M2 dan sees Product Launch", await p.locator('[data-testid="project-row-proj-product-launch"]').count() === 1);
-  ok("M2 dan does NOT see Q3 Budget", await p.locator('[data-testid="project-row-proj-q3-budget"]').count() === 0);
+  await p.screenshot({ path: `${OUT}/m2-dan-engagements.png` });
+  ok("M2 dan sees Website Launch", await p.locator('[data-testid="engagement-row-eng-website-launch"]').count() === 1);
+  ok("M2 dan sees Product Launch", await p.locator('[data-testid="engagement-row-eng-product-launch"]').count() === 1);
+  ok("M2 dan does NOT see Q3 Budget", await p.locator('[data-testid="engagement-row-eng-q3-budget"]').count() === 0);
 
   // Editor adds a task in Product Launch
-  await p.locator('[data-testid="project-row-proj-product-launch"]').click();
+  await p.locator('[data-testid="engagement-row-eng-product-launch"]').click();
   await p.waitForTimeout(700);
-  await p.locator('[data-testid="project-tab-tasks"]').click();
+  await p.locator('[data-testid="engagement-tab-tasks"]').click();
   await p.waitForTimeout(500);
-  await p.locator('[data-testid="project-add-task-btn"]').click();
-  await p.locator('[data-testid="project-task-title-input"]').fill("E2E editor task");
-  await p.locator('[data-testid="project-task-save-btn"]').click();
+  await p.locator('[data-testid="engagement-add-task-btn"]').click();
+  await p.locator('[data-testid="engagement-task-title-input"]').fill("E2E editor task");
+  await p.locator('[data-testid="engagement-task-save-btn"]').click();
   await p.waitForTimeout(1500);
-  ok("M2 editor created project task", await p.locator('[data-testid^="project-task-row-"]').filter({ hasText: "E2E editor task" }).count() >= 1);
+  ok("M2 editor created engagement task", await p.locator('[data-testid^="engagement-task-row-"]').filter({ hasText: "E2E editor task" }).count() >= 1);
   await p.screenshot({ path: `${OUT}/m2-editor-task.png` });
   // Cleanup: remove the probe task (armed two-click delete) so reruns stay net-zero.
-  const row = p.locator('[data-testid^="project-task-row-"]').filter({ hasText: "E2E editor task" }).first();
-  const delBtn = row.locator('[data-testid^="project-task-delete-"]');
+  const row = p.locator('[data-testid^="engagement-task-row-"]').filter({ hasText: "E2E editor task" }).first();
+  const delBtn = row.locator('[data-testid^="engagement-task-delete-"]');
   const delId = await delBtn.getAttribute("data-testid").catch(() => null);
   if (delId) {
     await delBtn.click();
@@ -105,15 +105,15 @@ async function agentTurn(p, msg, maxMs = 150000) {
   // sam is viewer on Website Launch: no add button, viewer note shown
   const { ctx: c2, p: p2 } = await fresh();
   await signIn(p2, "sam");
-  await p2.locator('[data-testid="nav--projects"]').click();
+  await p2.locator('[data-testid="nav--engagements"]').click();
   await p2.waitForTimeout(700);
-  ok("M2 sam sees Website Launch (viewer)", await p2.locator('[data-testid="project-row-proj-website-launch"]').count() === 1);
-  ok("M2 sam does NOT see Product Launch", await p2.locator('[data-testid="project-row-proj-product-launch"]').count() === 0);
-  await p2.locator('[data-testid="project-row-proj-website-launch"]').click();
+  ok("M2 sam sees Website Launch (viewer)", await p2.locator('[data-testid="engagement-row-eng-website-launch"]').count() === 1);
+  ok("M2 sam does NOT see Product Launch", await p2.locator('[data-testid="engagement-row-eng-product-launch"]').count() === 0);
+  await p2.locator('[data-testid="engagement-row-eng-website-launch"]').click();
   await p2.waitForTimeout(600);
-  await p2.locator('[data-testid="project-tab-tasks"]').click();
+  await p2.locator('[data-testid="engagement-tab-tasks"]').click();
   await p2.waitForTimeout(500);
-  ok("M2 viewer has no add-task button", await p2.locator('[data-testid="project-add-task-btn"]').count() === 0);
+  ok("M2 viewer has no add-task button", await p2.locator('[data-testid="engagement-add-task-btn"]').count() === 0);
   ok("M2 viewer sees view-only note", await p2.locator('[data-testid="viewer-note"]').count() === 1);
   await p2.screenshot({ path: `${OUT}/m2-sam-viewer.png` });
   await c2.close();
@@ -124,11 +124,11 @@ async function agentTurn(p, msg, maxMs = 150000) {
   // dan builds recency in Website Launch (clicks), then asks ambiguously.
   const { ctx, p } = await fresh();
   await signIn(p, "dan");
-  await p.locator('[data-testid="nav--projects"]').click();
+  await p.locator('[data-testid="nav--engagements"]').click();
   await p.waitForTimeout(500);
-  await p.locator('[data-testid="project-row-proj-website-launch"]').click();
+  await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
   await p.waitForTimeout(600);
-  await p.locator('[data-testid="project-tab-tasks"]').click();
+  await p.locator('[data-testid="engagement-tab-tasks"]').click();
   await p.waitForTimeout(800); // visits recorded
 
   await agentTurn(p, "take me to the launch tasks");
@@ -150,11 +150,11 @@ async function agentTurn(p, msg, maxMs = 150000) {
   // ava's recency is Product Launch → same words, different landing.
   const { ctx: c2, p: p2 } = await fresh();
   await signIn(p2, "ava");
-  await p2.locator('[data-testid="nav--projects"]').click();
+  await p2.locator('[data-testid="nav--engagements"]').click();
   await p2.waitForTimeout(500);
-  await p2.locator('[data-testid="project-row-proj-product-launch"]').click();
+  await p2.locator('[data-testid="engagement-row-eng-product-launch"]').click();
   await p2.waitForTimeout(600);
-  await p2.locator('[data-testid="project-tab-tasks"]').click();
+  await p2.locator('[data-testid="engagement-tab-tasks"]').click();
   await p2.waitForTimeout(800);
 
   await agentTurn(p2, "take me to the launch tasks");
@@ -212,12 +212,12 @@ async function agentTurn(p, msg, maxMs = 150000) {
   ok("M5 manual memory saved + listed", (await p.locator('[data-testid="memory-list"]').innerText()).includes("Fridays"));
   await p.screenshot({ path: `${OUT}/m5-settings.png` });
 
-  // Turn in a French-convention project: inspector shows convention + precedence.
-  await p.locator('[data-testid="nav--projects"]').click();
+  // Turn in a French-convention engagement: inspector shows convention + precedence.
+  await p.locator('[data-testid="nav--engagements"]').click();
   await p.waitForTimeout(500);
-  await p.locator('[data-testid="project-row-proj-product-launch"]').click();
+  await p.locator('[data-testid="engagement-row-eng-product-launch"]').click();
   await p.waitForTimeout(700);
-  await agentTurn(p, "what tasks are in this project?");
+  await agentTurn(p, "what tasks are in this engagement?");
   await p.locator('[data-testid="context-inspector"] summary').click().catch(() => {});
   await p.waitForTimeout(400);
   const insp = await p.locator('[data-testid="context-inspector"]').innerText().catch(() => "");

@@ -114,7 +114,7 @@ export interface ToolCard {
   title?: string;
   detail?: string;
   recordKind?: string;  // record: task | event | …
-  scope?: string;       // record: personal | project name
+  scope?: string;       // record: personal | engagement name
   fields?: Record<string, string>;
 }
 
@@ -123,16 +123,16 @@ export interface ContextBundle {
   persona: { role?: string; tone?: string; outputPrefs?: string; language?: string };
   memories: { id: string; text: string; scope: string; createdAt: string }[];
   conventions: { id: string; text: string }[];
-  projectName: string | null;
-  workingContext: { activeProjectId?: string; lastRoute?: string };
+  engagementName: string | null;
+  workingContext: { activeEngagementId?: string; lastRoute?: string };
   precedence: string[];
 }
 
-export type ProjectRole = "owner" | "editor" | "viewer";
+export type EngagementRole = "owner" | "editor" | "viewer";
 
-export interface ProjectMember {
+export interface EngagementMember {
   userId: string;
-  role: ProjectRole;
+  role: EngagementRole;
 }
 
 export interface Convention {
@@ -149,11 +149,11 @@ export interface ActivityEntry {
   detail: string;
 }
 
-export interface Project {
+export interface Engagement {
   id: string;
   name: string;
   description: string;
-  members: ProjectMember[];
+  members: EngagementMember[];
   conventions: Convention[];
   tasks: Task[];
   events: CalendarEvent[];
@@ -171,7 +171,7 @@ export interface VisitEntry {
 
 export interface UserContext {
   visits: VisitEntry[];
-  workingContext: { activeProjectId?: string; lastRoute?: string };
+  workingContext: { activeEngagementId?: string; lastRoute?: string };
   memories: { id: string; text: string; scope: string; createdAt: string }[];
   standingApprovals: string[];
 }
@@ -197,7 +197,7 @@ export interface AppState {
   schedules: Schedule[];
   library: LibraryDoc[];
   // Multi-user additions (served by /app/state in one fetch)
-  projects?: Project[];
+  engagements?: Engagement[];
   user?: AppUserRecord;
   context?: UserContext;
 }

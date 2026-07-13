@@ -33,7 +33,7 @@ export default function WorkbenchNav({
     <nav className="tw-nav">
       {navItem("/home", "Home", Home)}
       <div className="tw-nav-section">Workspace</div>
-      {navItem("/projects", "Projects", FolderKanban)}
+      {navItem("/engagements", "Engagements", FolderKanban)}
       {navItem("/todo", "Tasks", CheckSquare)}
       {navItem("/calendar", "Calendar", Calendar)}
       {navItem("/documents", "Documents", Files)}

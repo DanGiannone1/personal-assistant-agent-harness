@@ -12,7 +12,7 @@ function runningLabel(name: string): string {
     list_events: "Reviewing events", search_documents: "Searching documents",
     list_documents: "Browsing documents",
     read_workspace_file: "Reading document", write_file: "Saving document", skill: "Loading skill",
-    list_projects: "Reviewing projects", create_project: "Creating project", share_project: "Sharing project",
+    list_engagements: "Reviewing engagements", create_engagement: "Creating engagement", share_engagement: "Sharing engagement",
     propose_memory: "Proposing memory", save_memory: "Saving memory", delete_schedule: "Deleting reminder",
   };
   return labels[name] || "Working";
@@ -33,7 +33,7 @@ function doneLabel(name: string, outcome: ToolOutcome | undefined): string {
   if (outcome === undefined) return "Done";
   const labels: Record<string, string> = {
     navigate: "Navigated", create_task: "Task created", update_task: "Task updated",
-    list_projects: "Projects reviewed", create_project: "Project created", share_project: "Project shared",
+    list_engagements: "Engagements reviewed", create_engagement: "Engagement created", share_engagement: "Engagement shared",
     save_memory: "Memory saved", delete_schedule: "Reminder deleted",
     delete_task: "Task deleted", add_subtask: "Subtask added", list_tasks: "Tasks reviewed",
     create_event: "Event created", update_event: "Event updated", delete_event: "Event deleted",

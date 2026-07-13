@@ -206,32 +206,32 @@ export const updateSchedule = (sid: string, id: string, body: Partial<{ enabled:
 export const deleteSchedule = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/schedules/${id}`);
 
 
-// ── Projects (shared workspaces) ─────────────────────────────────────────────
-import type { Project, QuickLink } from "./types";
+// ── Engagements (shared workspaces) ─────────────────────────────────────────────
+import type { Engagement, QuickLink } from "./types";
 
-export const listProjects = () => jsonReq<Project[]>("GET", "/projects");
-export const createProject = (body: { name: string; description?: string }) =>
-  jsonReq<Project>("POST", "/projects", body);
-export const getProject = (pid: string) => jsonReq<Project>("GET", `/projects/${pid}`);
-export const addProjectMember = (pid: string, userId: string, role: string) =>
-  jsonReq("POST", `/projects/${pid}/members`, { userId, role });
-export const removeProjectMember = (pid: string, userId: string) =>
-  jsonReq("DELETE", `/projects/${pid}/members/${userId}`);
+export const listEngagements = () => jsonReq<Engagement[]>("GET", "/engagements");
+export const createEngagement = (body: { name: string; description?: string }) =>
+  jsonReq<Engagement>("POST", "/engagements", body);
+export const getEngagement = (pid: string) => jsonReq<Engagement>("GET", `/engagements/${pid}`);
+export const addEngagementMember = (pid: string, userId: string, role: string) =>
+  jsonReq("POST", `/engagements/${pid}/members`, { userId, role });
+export const removeEngagementMember = (pid: string, userId: string) =>
+  jsonReq("DELETE", `/engagements/${pid}/members/${userId}`);
 export const addConvention = (pid: string, text: string) =>
-  jsonReq("POST", `/projects/${pid}/conventions`, { text });
+  jsonReq("POST", `/engagements/${pid}/conventions`, { text });
 export const removeConvention = (pid: string, cid: string) =>
-  jsonReq("DELETE", `/projects/${pid}/conventions/${cid}`);
+  jsonReq("DELETE", `/engagements/${pid}/conventions/${cid}`);
 
-export const createProjectTask = (pid: string, body: { title: string; status?: string; priority?: string; group?: string; dueDate?: string }) =>
-  jsonReq("POST", `/projects/${pid}/tasks`, body);
-export const updateProjectTask = (pid: string, tid: string, body: Partial<{ title: string; status: string; priority: string; group: string; dueDate: string }>) =>
-  jsonReq("PATCH", `/projects/${pid}/tasks/${tid}`, body);
-export const deleteProjectTask = (pid: string, tid: string) =>
-  jsonReq("DELETE", `/projects/${pid}/tasks/${tid}`);
-export const createProjectEvent = (pid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
-  jsonReq("POST", `/projects/${pid}/events`, body);
-export const deleteProjectEvent = (pid: string, eid: string) =>
-  jsonReq("DELETE", `/projects/${pid}/events/${eid}`);
+export const createEngagementTask = (pid: string, body: { title: string; status?: string; priority?: string; group?: string; dueDate?: string }) =>
+  jsonReq("POST", `/engagements/${pid}/tasks`, body);
+export const updateEngagementTask = (pid: string, tid: string, body: Partial<{ title: string; status: string; priority: string; group: string; dueDate: string }>) =>
+  jsonReq("PATCH", `/engagements/${pid}/tasks/${tid}`, body);
+export const deleteEngagementTask = (pid: string, tid: string) =>
+  jsonReq("DELETE", `/engagements/${pid}/tasks/${tid}`);
+export const createEngagementEvent = (pid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
+  jsonReq("POST", `/engagements/${pid}/events`, body);
+export const deleteEngagementEvent = (pid: string, eid: string) =>
+  jsonReq("DELETE", `/engagements/${pid}/events/${eid}`);
 
 // ── Navigation context ───────────────────────────────────────────────────────
 export const recordVisit = (path: string, title: string) =>
