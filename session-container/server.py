@@ -202,9 +202,16 @@ async def app_state(request: Request) -> dict:
     _ensure_documents_seeded(workspace)  # lazy-seed docs for restored/reset sessions
     ctx = appdb.set_current_user(uid)
     try:
-        return appdb.load()
+        personal = appdb.load()
     finally:
         appdb.reset_current_user(ctx)
+    # Compose the user's full world: personal space + every project they're a member of
+    # (role included so the UI can gate affordances). Still ONE payload from the store
+    # the tools mutate — the verifiable-execution invariant carries to shared scopes.
+    projects = appdb.list_projects_for(uid)
+    for p in projects:
+        p["role"] = appdb.project_role(p, uid)
+    return {**personal, "projects": projects}
 
 
 @app.get("/session")

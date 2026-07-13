@@ -297,10 +297,12 @@ class NavigateParams(BaseModel):
 
 
 class ListTasksParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     pass
 
 
 class CreateTaskParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     title: str = Field(description="Task title, e.g. 'Draft Q3 planning doc'")
     status: str = Field(default="", description="Status: 'To do', 'In progress', 'Blocked', or 'Done' (defaults to 'To do')")
     priority: str = Field(default="", description="Priority: 'Low', 'Medium', or 'High' (defaults to 'Medium')")
@@ -309,6 +311,7 @@ class CreateTaskParams(BaseModel):
 
 
 class UpdateTaskParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     task: str = Field(description="Task id or a distinctive part of its title")
     status: str = Field(default="", description="New status: 'To do', 'In progress', 'Blocked', or 'Done'")
     priority: str = Field(default="", description="New priority: 'Low', 'Medium', or 'High'")
@@ -317,19 +320,23 @@ class UpdateTaskParams(BaseModel):
 
 
 class DeleteTaskParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     task: str = Field(description="Task id or a distinctive part of its title")
 
 
 class AddSubtaskParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     task: str = Field(description="Task id or a distinctive part of its title")
     text: str = Field(description="The subtask to add")
 
 
 class ListEventsParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     pass
 
 
 class CreateEventParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     title: str = Field(description="Event title, e.g. 'Team standup'")
     date: str = Field(description="Event date (YYYY-MM-DD) — required")
     start: str = Field(default="", description="Start time (24h HH:MM), if known")
@@ -338,6 +345,7 @@ class CreateEventParams(BaseModel):
 
 
 class UpdateEventParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     event: str = Field(description="Event id or a distinctive part of its title")
     title: str = Field(default="", description="New title")
     date: str = Field(default="", description="New date (YYYY-MM-DD)")
@@ -347,6 +355,7 @@ class UpdateEventParams(BaseModel):
 
 
 class DeleteEventParams(BaseModel):
+    project: str = Field(default="", description="Optional project to act in (name or id). Leave empty for the personal space. Resolution: id, exact name, then unique substring among YOUR projects.")
     event: str = Field(description="Event id or a distinctive part of its title")
 
 
@@ -360,6 +369,21 @@ class SaveToLibraryParams(BaseModel):
 
 class ListLibraryParams(BaseModel):
     pass
+
+
+class ListProjectsParams(BaseModel):
+    pass
+
+
+class CreateProjectParams(BaseModel):
+    name: str = Field(description="Project name, e.g. 'Website Launch'")
+    description: str = Field(default="", description="One-line description of the project")
+
+
+class ShareProjectParams(BaseModel):
+    project: str = Field(description="Project id or a distinctive part of its name")
+    username: str = Field(description="Username of the person to add, e.g. 'ava'")
+    role: str = Field(default="editor", description="owner, editor, or viewer")
 
 
 class CreateScheduleParams(BaseModel):
@@ -397,6 +421,39 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
 
     def _load() -> dict:
         return _as_user(appdb.load)
+
+    def _scope_load(project_ref: str):
+        """(data, error) for a read in the chosen scope: a project (membership-resolved,
+        same record shape) or the personal space when the ref is empty."""
+        ref = (project_ref or "").strip()
+        if not ref:
+            return _load(), None
+        proj = appdb.resolve_project(ref, get_user())
+        if proj is None:
+            names = ", ".join(p["name"] for p in appdb.list_projects_for(get_user())) or "none yet"
+            return None, f"PROJECT_NOT_FOUND: no unique project of yours matches '{ref}'. Your projects: {names}."
+        return proj, None
+
+    def _scope_update(project_ref: str, mutator):
+        """Apply a record mutation in the chosen scope. Project scope is resolved among
+        the SIGNED-IN USER's projects, role-gated (viewers can't write), and the pane is
+        pointed at the project page so the user sees where the record landed."""
+        ref = (project_ref or "").strip()
+        if not ref:
+            return _update(mutator)
+        uid = get_user()
+        proj = appdb.resolve_project(ref, uid)
+        if proj is None:
+            names = ", ".join(p["name"] for p in appdb.list_projects_for(uid)) or "none yet"
+            return f"PROJECT_NOT_FOUND: no unique project of yours matches '{ref}'. Your projects: {names}."
+        if not appdb.can_write(appdb.project_role(proj, uid)):
+            return f"FORBIDDEN: you are a viewer on '{proj['name']}' and can't modify it."
+        result = appdb.update_project(proj["id"], mutator)
+        # Follow-up navigation: land the pane on the project so the change is visible.
+        _as_user(lambda: appdb.update(
+            lambda d: d.__setitem__("currentRoute", f"/projects/{proj['id']}")
+        ))
+        return f"{result} (in project '{proj['name']}')"
 
     def _update(mutator):
         """Concurrency-safe user-doc mutation (ETag + retry, see appdb.update).
@@ -448,7 +505,9 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
 
     @define_tool(name="list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(params: ListTasksParams) -> str:
-        data = _load()
+        data, scope_err = _scope_load(params.project)
+        if scope_err:
+            return scope_err
         tasks = data["tasks"]
         if not tasks:
             return "No tasks yet."
@@ -488,7 +547,7 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
                 f"CREATED task [{task['id']}] '{task['title']}', status {task['status']}, "
                 f"priority {task['priority']}, group {task['group']}, due {task['dueDate'] or 'n/a'}."
             )
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="update_task", description="Update a task's status, priority, group, or due date.")
     def update_task(params: UpdateTaskParams) -> str:
@@ -513,7 +572,7 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
                 raise appdb.AbortWrite("NO_CHANGES: specify a status, priority, group, or due_date to update.")
             data["currentRoute"] = appdb.task_route(t["id"])
             return f"UPDATED task [{t['id']}] '{t['title']}': {', '.join(changed)}."
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="delete_task", description="Delete a task from the to-do list.")
     def delete_task(params: DeleteTaskParams) -> str:
@@ -524,7 +583,7 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             data["tasks"] = [x for x in data["tasks"] if x["id"] != t["id"]]
             data["currentRoute"] = "/todo"
             return f"DELETED task [{t['id']}] '{t['title']}'."
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="add_subtask", description="Add a subtask to a task.")
     def add_subtask(params: AddSubtaskParams) -> str:
@@ -538,11 +597,13 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             t.setdefault("subtasks", []).append({"text": text, "done": False})
             data["currentRoute"] = appdb.task_route(t["id"])
             return f"ADDED subtask to '{t['title']}': {text}."
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="list_events", description="List the calendar events with their date, time, and type.")
     def list_events(params: ListEventsParams) -> str:
-        data = _load()
+        data, scope_err = _scope_load(params.project)
+        if scope_err:
+            return scope_err
         events = data["events"]
         if not events:
             return "No events yet."
@@ -583,7 +644,7 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             return (
                 f"CREATED event [{event['id']}] '{event['title']}' ({event['type']}) on {event['date']} at {when}."
             )
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="update_event", description="Update or move a calendar event's title, date, time, or type.")
     def update_event(params: UpdateEventParams) -> str:
@@ -611,7 +672,7 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
                 raise appdb.AbortWrite("NO_CHANGES: specify a title, date, start, end, or type to update.")
             data["currentRoute"] = appdb.event_route(e["id"])
             return f"UPDATED event [{e['id']}] '{e['title']}': {', '.join(changed)}."
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="delete_event", description="Delete a calendar event.")
     def delete_event(params: DeleteEventParams) -> str:
@@ -622,7 +683,7 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             data["events"] = [x for x in data["events"] if x["id"] != e["id"]]
             data["currentRoute"] = "/calendar"
             return f"DELETED event [{e['id']}] '{e['title']}'."
-        return _update(_mut)
+        return _scope_update(params.project, _mut)
 
     @define_tool(name="list_documents", description="List the documents available in the workspace (provided source documents and generated artifacts) with a one-line descriptor. Use to discover what you can read before answering document questions.")
     def list_documents(params: ListDocumentsParams) -> str:
@@ -841,10 +902,59 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             return f"DELETED reminder [{s['id']}] '{s['title']}'."
         return _update(_mut)
 
+    # ── Projects (spec F2) ────────────────────────────────────────────────
+    @define_tool(name="list_projects", description="List the projects the user belongs to, with their role, member count, and record counts.")
+    def list_projects(params: ListProjectsParams) -> str:
+        projects = appdb.list_projects_for(get_user())
+        if not projects:
+            return "No projects yet. Create one with create_project."
+        lines = [f"{len(projects)} project(s):"]
+        for p in projects:
+            role = appdb.project_role(p, get_user())
+            lines.append(
+                f"- [{p['id']}] {p['name']} | your role={role} | members={len(p['members'])} | "
+                f"tasks={len(p['tasks'])} | events={len(p['events'])}"
+                + (f" | conventions={len(p['conventions'])}" if p.get("conventions") else "")
+            )
+        return "\n".join(lines)
+
+    @define_tool(name="create_project", description="Create a new shared project. The user becomes its owner.")
+    def create_project(params: CreateProjectParams) -> str:
+        name = params.name.strip()
+        if not name:
+            return "NAME_REQUIRED: a project needs a name."
+        project = appdb.create_project(name, get_user(), params.description)
+        _as_user(lambda: appdb.update(
+            lambda d: d.__setitem__("currentRoute", f"/projects/{project['id']}")
+        ))
+        return f"CREATED project [{project['id']}] '{project['name']}'."
+
+    @define_tool(name="share_project", description="Add a user to a project by username, with a role (owner, editor, or viewer). Only a project owner can do this.")
+    def share_project(params: ShareProjectParams) -> str:
+        uid = get_user()
+        proj = appdb.resolve_project(params.project, uid)
+        if proj is None:
+            return f"PROJECT_NOT_FOUND: no unique project of yours matches '{params.project}'."
+        if appdb.project_role(proj, uid) != "owner":
+            return f"FORBIDDEN: only the owner of '{proj['name']}' can manage members."
+        role = params.role.strip().lower() or "editor"
+        if role not in appdb.PROJECT_ROLES:
+            return f"BAD_ROLE: role must be one of {list(appdb.PROJECT_ROLES)}."
+        target = appdb.get_user(params.username)
+        if target is None:
+            return f"USER_NOT_FOUND: no user named '{params.username}'."
+        def _mut(data):
+            if any(m["userId"] == target["id"] for m in data["members"]):
+                raise appdb.AbortWrite(f"NO_CHANGE: {target['displayName']} is already a member of '{proj['name']}'.")
+            data["members"].append({"userId": target["id"], "role": role})
+            return f"SHARED '{proj['name']}' with {target['displayName']} as {role}."
+        return appdb.update_project(proj["id"], _mut)
+
     return [
         navigate,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
+        list_projects, create_project, share_project,
         list_documents, read_workspace_file, write_file,
         search_documents, save_to_library, list_library,
         create_schedule, list_schedules, delete_schedule,

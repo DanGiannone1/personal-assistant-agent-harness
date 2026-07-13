@@ -149,8 +149,11 @@ async def lifespan(app: FastAPI):
         created = await asyncio.to_thread(appdb.ensure_seeded_users)
         if created:
             logger.info("Seeded %d demo user account(s)", created)
+        created = await asyncio.to_thread(appdb.ensure_seeded_projects)
+        if created:
+            logger.info("Seeded %d demo project(s)", created)
     except Exception:
-        logger.warning("Could not seed demo users (Cosmos unreachable?)", exc_info=True)
+        logger.warning("Could not seed demo users/projects (Cosmos unreachable?)", exc_info=True)
 
     # Background reminder scheduler — runs due reminders and emails their output.
     import scheduler
@@ -534,6 +537,143 @@ async def _mutate(mutator) -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+async def _require_project(request: Request, project_id: str, *, write: bool) -> tuple[dict, str]:
+    """Membership-gate a project op. Non-members get a 404 (indistinguishable from absent);
+    viewers get a 403 only on writes. Returns (project, role)."""
+    uid = request.state.user["id"]
+    got = await asyncio.to_thread(appdb.get_project_for, project_id, uid)
+    if got is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    project, role = got
+    if write and not appdb.can_write(role):
+        raise HTTPException(status_code=403, detail="Viewers can't modify this project.")
+    return project, role
+
+
+async def _mutate_scoped(request: Request, project_id: str | None, mutator) -> None:
+    """Apply a record mutator to the chosen scope: a project doc (membership + role
+    gated) or the signed-in user's personal doc. The record shape is identical in both."""
+    if project_id:
+        await _require_project(request, project_id, write=True)
+        try:
+            await asyncio.to_thread(appdb.update_project, project_id, mutator)
+        except _NotFound:
+            raise HTTPException(status_code=404, detail="Not found")
+    else:
+        await _mutate(mutator)
+
+
+# ── Projects (spec F2) ───────────────────────────────────────────────────────
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = Field("", max_length=500)
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=120)
+    description: str | None = Field(None, max_length=500)
+    archived: bool | None = None
+
+
+class MemberAdd(BaseModel):
+    username: str = Field(..., min_length=1, max_length=80)
+    role: str = "editor"
+
+
+class ConventionsPut(BaseModel):
+    conventions: list[str] = Field(default_factory=list, max_length=50)
+
+
+@app.get("/sessions/{session_id}/projects")
+async def list_projects(session_id: str, request: Request) -> dict:
+    await _require_session(session_id)
+    uid = request.state.user["id"]
+    projects = await asyncio.to_thread(appdb.list_projects_for, uid)
+    for p in projects:
+        p["role"] = appdb.project_role(p, uid)
+    return {"projects": projects}
+
+
+@app.post("/sessions/{session_id}/projects", status_code=201)
+async def create_project(session_id: str, req: ProjectCreate, request: Request) -> dict:
+    await _require_session(session_id)
+    project = await asyncio.to_thread(
+        appdb.create_project, req.name, request.state.user["id"], req.description
+    )
+    project["role"] = "owner"
+    return project
+
+
+@app.patch("/sessions/{session_id}/projects/{project_id}")
+async def update_project_meta(session_id: str, project_id: str, req: ProjectUpdate, request: Request) -> dict:
+    await _require_session(session_id)
+    _, role = await _require_project(request, project_id, write=True)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can rename or archive.")
+    out: dict = {}
+
+    def _mut(data):
+        if req.name is not None:
+            data["name"] = req.name.strip()
+        if req.description is not None:
+            data["description"] = req.description.strip()
+        if req.archived is not None:
+            data["archived"] = req.archived
+        out.update(data)
+    await asyncio.to_thread(appdb.update_project, project_id, _mut)
+    return out
+
+
+@app.post("/sessions/{session_id}/projects/{project_id}/members", status_code=201)
+async def add_member(session_id: str, project_id: str, req: MemberAdd, request: Request) -> dict:
+    await _require_session(session_id)
+    _, role = await _require_project(request, project_id, write=True)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can manage members.")
+    if req.role not in appdb.PROJECT_ROLES:
+        raise HTTPException(status_code=422, detail=f"role must be one of {list(appdb.PROJECT_ROLES)}")
+    user = await asyncio.to_thread(appdb.get_user, req.username)
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"No user named '{req.username}'")
+
+    def _mut(data):
+        if any(m["userId"] == user["id"] for m in data["members"]):
+            raise appdb.AbortWrite(None)
+        data["members"].append({"userId": user["id"], "role": req.role})
+    await asyncio.to_thread(appdb.update_project, project_id, _mut)
+    return {"userId": user["id"], "role": req.role}
+
+
+@app.delete("/sessions/{session_id}/projects/{project_id}/members/{member_id}", status_code=204)
+async def remove_member(session_id: str, project_id: str, member_id: str, request: Request):
+    await _require_session(session_id)
+    _, role = await _require_project(request, project_id, write=True)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can manage members.")
+
+    def _mut(data):
+        remaining = [m for m in data["members"] if m["userId"] != member_id]
+        if len(remaining) == len(data["members"]):
+            raise _NotFound()
+        if not any(m["role"] == "owner" for m in remaining):
+            raise appdb.AbortWrite("last-owner")  # can't orphan the project
+        data["members"] = remaining
+    result = await asyncio.to_thread(appdb.update_project, project_id, _mut)
+    if result == "last-owner":
+        raise HTTPException(status_code=422, detail="A project must keep at least one owner.")
+
+
+@app.put("/sessions/{session_id}/projects/{project_id}/conventions")
+async def put_conventions(session_id: str, project_id: str, req: ConventionsPut, request: Request) -> dict:
+    await _require_session(session_id)
+    await _require_project(request, project_id, write=True)
+
+    def _mut(data):
+        data["conventions"] = [c.strip() for c in req.conventions if c.strip()]
+    await asyncio.to_thread(appdb.update_project, project_id, _mut)
+    return {"conventions": req.conventions}
+
+
 class TaskCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
     status: str = "To do"
@@ -559,7 +699,7 @@ class SubtaskToggle(BaseModel):
 
 
 @app.post("/sessions/{session_id}/tasks", status_code=201)
-async def create_task(session_id: str, req: TaskCreate) -> dict:
+async def create_task(session_id: str, req: TaskCreate, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
     if req.status not in appdb.TASK_STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
@@ -576,12 +716,12 @@ async def create_task(session_id: str, req: TaskCreate) -> dict:
         }
         data["tasks"].append(task)
         created.update(task)
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return created
 
 
 @app.patch("/sessions/{session_id}/tasks/{task_id}")
-async def update_task(session_id: str, task_id: str, req: TaskUpdate) -> dict:
+async def update_task(session_id: str, task_id: str, req: TaskUpdate, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
     if req.status is not None and req.status not in appdb.TASK_STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {appdb.TASK_STATUSES}")
@@ -598,23 +738,23 @@ async def update_task(session_id: str, task_id: str, req: TaskUpdate) -> dict:
             if val is not None:
                 t[field] = val.strip() if isinstance(val, str) else val
         out.update(t)
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return out
 
 
 @app.delete("/sessions/{session_id}/tasks/{task_id}", status_code=204)
-async def delete_task(session_id: str, task_id: str):
+async def delete_task(session_id: str, task_id: str, request: Request, project: str | None = None):
     await _require_session(session_id)
 
     def _mut(data):
         if appdb.find_task(data, task_id) is None:
             raise _NotFound()
         data["tasks"] = [t for t in data["tasks"] if t["id"] != task_id]
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
 
 
 @app.post("/sessions/{session_id}/tasks/{task_id}/subtasks", status_code=201)
-async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate) -> dict:
+async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
 
     def _mut(data):
@@ -622,12 +762,12 @@ async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate) -> dict
         if t is None:
             raise _NotFound()
         t.setdefault("subtasks", []).append({"text": req.text.strip(), "done": False})
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return {"status": "added"}
 
 
 @app.patch("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
-async def toggle_subtask(session_id: str, task_id: str, index: int, req: SubtaskToggle) -> dict:
+async def toggle_subtask(session_id: str, task_id: str, index: int, req: SubtaskToggle, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
 
     def _mut(data):
@@ -636,12 +776,12 @@ async def toggle_subtask(session_id: str, task_id: str, index: int, req: Subtask
         if t is None or index < 0 or index >= len(subs):
             raise _NotFound()
         subs[index]["done"] = req.done
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return {"status": "ok"}
 
 
 @app.delete("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
-async def delete_subtask(session_id: str, task_id: str, index: int) -> dict:
+async def delete_subtask(session_id: str, task_id: str, index: int, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
 
     def _mut(data):
@@ -650,7 +790,7 @@ async def delete_subtask(session_id: str, task_id: str, index: int) -> dict:
         if t is None or index < 0 or index >= len(subs):
             raise _NotFound()
         subs.pop(index)
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return {"status": "deleted"}
 
 
@@ -671,7 +811,7 @@ class EventUpdate(BaseModel):
 
 
 @app.post("/sessions/{session_id}/events", status_code=201)
-async def create_event(session_id: str, req: EventCreate) -> dict:
+async def create_event(session_id: str, req: EventCreate, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
     created: dict = {}
 
@@ -683,12 +823,12 @@ async def create_event(session_id: str, req: EventCreate) -> dict:
         }
         data["events"].append(event)
         created.update(event)
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return created
 
 
 @app.patch("/sessions/{session_id}/events/{event_id}")
-async def update_event(session_id: str, event_id: str, req: EventUpdate) -> dict:
+async def update_event(session_id: str, event_id: str, req: EventUpdate, request: Request, project: str | None = None) -> dict:
     await _require_session(session_id)
     out: dict = {}
 
@@ -701,19 +841,19 @@ async def update_event(session_id: str, event_id: str, req: EventUpdate) -> dict
             if val is not None:
                 e[field] = val.strip()
         out.update(e)
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
     return out
 
 
 @app.delete("/sessions/{session_id}/events/{event_id}", status_code=204)
-async def delete_event(session_id: str, event_id: str):
+async def delete_event(session_id: str, event_id: str, request: Request, project: str | None = None):
     await _require_session(session_id)
 
     def _mut(data):
         if appdb.find_event(data, event_id) is None:
             raise _NotFound()
         data["events"] = [e for e in data["events"] if e["id"] != event_id]
-    await _mutate(_mut)
+    await _mutate_scoped(request, project, _mut)
 
 
 class ScheduleCreate(BaseModel):

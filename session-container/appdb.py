@@ -312,33 +312,33 @@ class AbortWrite(Exception):
 _MAX_UPDATE_RETRIES = 10
 
 
-def update(mutator):
-    """Read-modify-write the owner doc with optimistic concurrency (ETag) + retry.
+def _etag_update(container, doc_id: str, mutator, to_state, to_body, on_missing=None):
+    """Read-modify-write ANY doc with optimistic concurrency (ETag) + retry.
 
     `mutator(data)` mutates `data` in place and returns a result. It may raise
     `AbortWrite(result)` to return without writing. If another writer commits between our
     read and write (ETag mismatch), we re-read and re-run the mutator — safe because the
     mutator has no side effects until the commit. Jittered backoff de-correlates retrying
     writers; fails loud (rather than silently dropping the write) if contention persists.
+    `on_missing` (if given) is called when the doc doesn't exist yet, then we retry.
     """
-    oid = _owner_id()
-    container = _container()
     last_exc = None
     for attempt in range(_MAX_UPDATE_RETRIES):
         try:
-            doc = container.read_item(item=oid, partition_key=oid)
+            doc = container.read_item(item=doc_id, partition_key=doc_id)
         except cosmos_exceptions.CosmosResourceNotFoundError:
-            ensure_seeded()
+            if on_missing is None:
+                raise
+            on_missing()
             continue
-        data = _doc_to_state(doc)
+        data = to_state(doc)
         try:
             result = mutator(data)
         except AbortWrite as abort:
             return abort.result
-        body = {"id": oid, "sessionId": oid, **{k: data.get(k) for k in _STATE_KEYS}}
         try:
             container.replace_item(
-                item=oid, body=body,
+                item=doc_id, body=to_body(data),
                 etag=doc["_etag"], match_condition=MatchConditions.IfNotModified,
             )
             return result
@@ -346,8 +346,190 @@ def update(mutator):
             last_exc = exc  # a concurrent writer committed first — back off, re-read, retry
             time.sleep(random.uniform(0.02, 0.08) * (attempt + 1))
     raise RuntimeError(
-        f"owner doc update failed after {_MAX_UPDATE_RETRIES} retries (write contention)"
+        f"doc '{doc_id}' update failed after {_MAX_UPDATE_RETRIES} retries (write contention)"
     ) from last_exc
+
+
+def update(mutator):
+    """ETag-safe read-modify-write of the signed-in user's personal-space doc."""
+    oid = _owner_id()
+    return _etag_update(
+        _container(), oid, mutator,
+        to_state=_doc_to_state,
+        to_body=lambda data: {"id": oid, "sessionId": oid, **{k: data.get(k) for k in _STATE_KEYS}},
+        on_missing=ensure_seeded,
+    )
+
+
+# ── Projects (spec F2/F3): shared scopes with membership ────────────────────
+# One Cosmos document per project — records + conventions + members in one doc, so the
+# same ETag-safe mutation path protects concurrent edits by different members.
+
+_projects_singleton = None
+PROJECT_ROLES = ("owner", "editor", "viewer")
+# Roles that may mutate records / manage members. Viewers only read.
+_WRITE_ROLES = ("owner", "editor")
+
+
+def _projects_container():
+    global _projects_singleton
+    if _projects_singleton is not None:
+        return _projects_singleton
+    with _LOCK:
+        if _projects_singleton is not None:
+            return _projects_singleton
+        endpoint = os.getenv("COSMOS_ENDPOINT")
+        if not endpoint:
+            raise RuntimeError("COSMOS_ENDPOINT is not set — Cosmos is required for projects.")
+        database = os.getenv("COSMOS_DATABASE", "flow")
+        client = CosmosClient(endpoint, credential=DefaultAzureCredential())
+        _projects_singleton = client.get_database_client(database).get_container_client(
+            os.getenv("COSMOS_PROJECTS_CONTAINER", "projects")
+        )
+        return _projects_singleton
+
+
+_PROJECT_KEYS = ("name", "description", "archived", "members", "conventions",
+                 "tasks", "events", "library", "createdAt")
+
+
+def _project_to_state(doc: dict) -> dict:
+    state = {"id": doc["id"], **{k: doc.get(k) for k in _PROJECT_KEYS}}
+    for k in ("members", "conventions", "tasks", "events", "library"):
+        if state.get(k) is None:
+            state[k] = []
+    state["archived"] = bool(state.get("archived"))
+    return state
+
+
+def project_role(project: dict, user_id: str) -> str | None:
+    """The user's role in the project, or None when not a member."""
+    for m in project.get("members", []):
+        if m.get("userId") == user_id:
+            return m.get("role")
+    return None
+
+
+def can_write(role: str | None) -> bool:
+    return role in _WRITE_ROLES
+
+
+def create_project(name: str, user_id: str, description: str = "") -> dict:
+    project = {
+        "id": f"p-{secrets.token_hex(4)}",
+        "name": name.strip(),
+        "description": (description or "").strip(),
+        "archived": False,
+        "members": [{"userId": user_id, "role": "owner"}],
+        "conventions": [],
+        "tasks": [], "events": [], "library": [],
+        "createdAt": _now_iso(),
+    }
+    _projects_container().create_item(project)
+    return _project_to_state(project)
+
+
+def get_project(project_id: str) -> dict | None:
+    """Raw project read WITHOUT membership gating — callers must gate on project_role."""
+    try:
+        return _project_to_state(
+            _projects_container().read_item(item=project_id, partition_key=project_id)
+        )
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return None
+
+
+def get_project_for(project_id: str, user_id: str) -> tuple[dict, str] | None:
+    """Membership-gated read: (project, role), or None when absent OR not a member —
+    deliberately indistinguishable (a non-member gets a 404, not a hidden button)."""
+    project = get_project(project_id)
+    if project is None:
+        return None
+    role = project_role(project, user_id)
+    if role is None:
+        return None
+    return project, role
+
+
+def list_projects_for(user_id: str, include_archived: bool = False) -> list[dict]:
+    """All projects the user is a member of (full docs; demo volumes are tiny)."""
+    rows = _projects_container().query_items(
+        query=("SELECT * FROM c WHERE EXISTS("
+               "SELECT VALUE m FROM m IN c.members WHERE m.userId = @u)"),
+        parameters=[{"name": "@u", "value": user_id}],
+        enable_cross_partition_query=True,
+    )
+    projects = [_project_to_state(doc) for doc in rows]
+    if not include_archived:
+        projects = [p for p in projects if not p["archived"]]
+    return sorted(projects, key=lambda p: p["name"].lower())
+
+
+def update_project(project_id: str, mutator):
+    """ETag-safe read-modify-write of one project doc (missing project raises)."""
+    return _etag_update(
+        _projects_container(), project_id, mutator,
+        to_state=_project_to_state,
+        to_body=lambda data: {"id": project_id, **{k: data.get(k) for k in _PROJECT_KEYS}},
+    )
+
+
+def resolve_project(ref: str, user_id: str) -> dict | None:
+    """Resolve a project by id, exact name, then unique substring — among the USER'S
+    projects only (membership is a query-scope property, not an afterthought filter)."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    projects = list_projects_for(user_id)
+    low = ref.lower()
+    by_id = [p for p in projects if p["id"] == ref]
+    if by_id:
+        return by_id[0]
+    exact = [p for p in projects if p["name"].lower() == low]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [p for p in projects if low in p["name"].lower()]
+    return partial[0] if len(partial) == 1 else None
+
+
+# Demo fixture per the projects spec: two similarly-named "Launch" projects (the M3
+# ambiguity fixture), different membership/roles per user, one French convention (F7/F8).
+def ensure_seeded_projects() -> int:
+    """Create the seeded demo projects if absent (idempotent by name). Returns # created."""
+    existing = {p["name"] for p in list_projects_for("u-dan", include_archived=True)}
+    existing |= {p["name"] for p in list_projects_for("u-ava", include_archived=True)}
+    created = 0
+    if "Website Launch" not in existing:
+        p = create_project("Website Launch", "u-dan", "Marketing site relaunch")
+        def _seed_site(d):
+            d["members"].append({"userId": "u-sam", "role": "viewer"})
+            d["tasks"].append({
+                "id": "t-1", "title": "Draft launch checklist", "status": "In progress",
+                "priority": "High", "group": "General", "dueDate": "",
+                "subtasks": [], "notes": "", "createdAt": _now_iso(),
+            })
+            d["events"].append({
+                "id": "e-1", "title": "Launch go/no-go", "date": "2026-07-17",
+                "start": "10:00", "end": "10:30", "type": "Meeting", "notes": "",
+            })
+        update_project(p["id"], _seed_site)
+        created += 1
+    if "Product Launch" not in existing:
+        p = create_project("Product Launch", "u-ava", "v2 product launch")
+        def _seed_prod(d):
+            d["members"].append({"userId": "u-dan", "role": "editor"})
+            d["conventions"].append("Status docs in French")
+            d["tasks"].append({
+                "id": "t-1", "title": "Finalize launch pricing", "status": "To do",
+                "priority": "High", "group": "General", "dueDate": "",
+                "subtasks": [], "notes": "", "createdAt": _now_iso(),
+            })
+        update_project(p["id"], _seed_prod)
+        created += 1
+    if "Q3 Budget" not in existing:
+        create_project("Q3 Budget", "u-ava", "Quarterly budget planning")
+        created += 1
+    return created
 
 
 # ── Derived helpers ─────────────────────────────────────────────────────────
