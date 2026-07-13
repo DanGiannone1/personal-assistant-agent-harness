@@ -1,44 +1,39 @@
 # Navigation Reference Architecture
 
-> **Status:** target architecture. The final section maps it to the current repo and in-flight
-> work; it is not a claim that every component below is shipped.
+## The simple version
 
-Navigation should feel like app behavior, not agent behavior. **Context personalizes the links
-users see, known destinations open immediately, and only a natural-language destination requires
-AI resolution.** That AI path is one grounded operation: embed the request, search real permitted
-destinations, pick one candidate, revalidate it, and navigate.
+Navigation should feel like using an app, not operating an AI system.
 
-## Navigation at a glance
+1. The app shows quick links based on what the user is working on.
+2. Clicking a link, record, or menu item opens it immediately.
+3. If the user says where they want to go, the assistant searches the places that actually exist
+   and opens the best match.
 
-There are two user-facing paths and one authority:
+For example, someone working on the Website Launch Engagement might see **Risks**, **Next
+milestone**, and **Steering deck** as quick links. Clicking **Risks** opens it immediately. Saying
+"open the launch risks" produces the same result through the assistant.
+
+That is the whole experience. The rest of this document explains how to make it personal, fast,
+and dependable.
+
+> **Architecture status:** this is the target design. The final section explains what already
+> exists in the repo and what still needs to change.
+
+## The two ways navigation happens
 
 | Situation | Path | AI involved? |
 |---|---|---|
 | The UI already has a destination: quick link, sidebar item, record card, or successful CRUD result | Navigate immediately through the client router | No |
-| The user describes a destination in natural language | Call `navigate(intent)`, which performs embed -> search -> pick -> revalidate -> navigate | Only inside the tool |
+| The user describes a destination in natural language | Search the user's real destinations, choose the best match, and open it | Only inside the navigation tool |
 
-```mermaid
-flowchart LR
-    C["Turn context"] --> Q["Rank permitted destinations"]
-    Q --> L["Personalized quick links"]
-    L -->|click| UI["Immediate UI navigation"]
+## The one safety rule
 
-    A["Natural-language request"] --> T["navigate intent"]
-    T --> E["Embed"]
-    E --> S["Search permitted destinations"]
-    S --> P["Pick candidate ID"]
-    P --> R["Revalidate + route effect"]
-    R --> UI
-```
-
-The invariant is simple:
-
-> **A route can only come from the application's current, authorized destination catalog.**
+> **The app only opens places that exist and that the user is allowed to see.**
 
 The UI may use a route supplied by that catalog. A picker may choose an opaque destination ID
 from search results. Neither the main agent nor the picker may invent a URL.
 
-## One contract, not one expensive path
+## Use the shortest path
 
 Everything uses the same **navigation contract**, but not everything uses semantic search.
 

@@ -1,38 +1,38 @@
 # CRUD Reference Architecture
 
-> **Status:** target architecture. The final section maps it to the current repo and in-flight
-> work; it is not a claim that every component below is shipped.
+## The simple version
 
-**Change anything from anywhere.** The assistant uses trusted user context to resolve the intended
-Engagement and record, sends one typed command through MCP to the authoritative backend, and never
-requires the user to open a page first. After the backend confirms an authorized commit, the UI
-refetches truth and navigates directly to the canonical result.
+The user should be able to create, update, or delete something without first finding the right
+screen.
 
-## CRUD at a glance
+1. The app uses the current user, current Engagement, and current work to understand the request.
+2. The backend checks the request and saves the change.
+3. Once the save succeeds, the app opens the new or updated record.
 
-```mermaid
-flowchart LR
-    U["User request"] --> A["Typed CRUD intent"]
-    C["Turn context"] --> S["CRUD application service"]
-    A --> M["MCP adapter"]
-    M --> S
-    S --> R["Resolve + authorize"]
-    R --> V["Validate + approval policy"]
-    V --> W["ETag-safe commit + audit"]
-    W --> O["Structured outcome"]
-    O --> F["Refetch authoritative state"]
-    O -->|committed| N["Navigate to known result"]
-```
+For example, "add a high-priority action to prepare the steering deck" should work from Home,
+chat, or another screen. The user does not need to open the Engagement first. The app works out the
+scope, creates the action, and then opens it.
 
-The central rule is:
+The assistant does not change data itself. It asks the same backend used by the rest of the app,
+through MCP, and reports success only after that backend confirms the save.
 
-> **Context may resolve where and what the user means; only the backend may decide whether and how
-> state changes.**
+> **Architecture status:** this is the target design. The final section explains what already
+> exists in the repo and what still needs to change.
 
-Navigation is not a prerequisite and is not a second agent decision. The committed CRUD result
-already knows its destination.
+## What happens behind the scenes
 
-## The five invariants
+1. The assistant turns the request into a small, typed action.
+2. MCP sends that action to the shared backend service.
+3. The backend uses trusted context to find the right Engagement and record.
+4. The backend checks access, validates the change, and asks for confirmation when needed.
+5. The backend saves the change safely and records who did it.
+6. The result tells the UI exactly which record was changed.
+7. The UI reloads the saved data and opens that record.
+
+Navigation is not a prerequisite and is not another AI decision. The backend already knows the
+destination of the record it just changed.
+
+## Five rules
 
 1. **No pre-navigation.** CRUD commands work from any page. Current view is context, not a workflow
    requirement.
@@ -42,7 +42,7 @@ already knows its destination.
    approval, mutation, and outcome logic.
 4. **Commit before claim.** A record is changed only after an authorized concurrency-safe commit;
    the UI renders records only after re-reading backend state.
-5. **Navigate only after success.** Only `committed` carries a grounded destination. Errors, no-ops,
+5. **Open only after success.** Only `committed` carries a grounded destination. Errors, no-ops,
    ambiguity, and pending confirmations do not move the UI.
 
 ## User experience

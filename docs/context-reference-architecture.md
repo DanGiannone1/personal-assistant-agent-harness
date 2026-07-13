@@ -1,51 +1,51 @@
 # Context Reference Architecture
 
-> **Status:** target architecture assembled from the roadmap, personalized-navigation design,
-> Projects prototype, Engagement work, harness seam, and MCP direction. It is not yet fully built.
+## The simple version
 
-**Context is the application's turn-scoped explanation of who is acting, where their work is
-focused, what durable preferences apply, and which live facts matter now.** Application code
-composes it from authenticated and permission-trimmed sources. The UI, agent, and tools consume
-projections of that same bundle.
+Context is what the app already knows so the user does not have to repeat it.
 
-Context is foundational because it powers both sides of the product:
+It includes simple things such as:
 
-- Without an agent, it ranks quick links, restores working Engagements, applies defaults, and
-  explains personalization.
-- With an agent, it grounds language, selects safe defaults, scopes retrieval and CRUD, applies
-  persona/conventions, and records exactly what influenced a turn.
+- Who the user is
+- Which Engagement and record they are looking at
+- What they have been working on recently
+- Preferences they deliberately saved
+- Rules that apply to the current Engagement
+- Fresh facts such as deadlines, blocked work, and permissions
 
-The defining rule is:
+At the start of each request, the app gathers the relevant pieces. It uses them to personalize quick
+links, understand requests such as "update this risk," choose sensible defaults, and shape the
+assistant's response. The user can open **What I used** to see exactly which pieces mattered.
 
-> **Context shapes behavior; it never grants access and never replaces a live read.**
+Context should reduce repetition without becoming hidden or surprising.
 
-## Context at a glance
+> **Architecture status:** this is the target design assembled from the roadmap, navigation work,
+> Projects prototype, Engagement work, Deep Agents harness, and MCP direction. It is not yet fully
+> built.
 
-```mermaid
-flowchart LR
-    I["Authenticated identity"] --> C["Context composer"]
-    U["Current UI + selected record"] --> C
-    D["Persona + confirmed memory"] --> C
-    W["Visits + working Engagement"] --> C
-    L["Live state + permissions"] --> C
-    R["Retrieval namespaces"] --> C
+## Why context matters
 
-    C --> T["Canonical TurnContext"]
-    T --> P["Prompt projection"]
-    T --> X["Trusted tool projection"]
-    T --> Q["UI ranking projection"]
-    T --> V["Inspector projection"]
+| Without useful context | With useful context |
+|---|---|
+| Everyone sees the same shortcuts | Quick links reflect the user's current work |
+| "Add an action" needs a scope question | The current Engagement supplies a safe default |
+| "Update this risk" is unclear | The selected record makes the reference concrete |
+| The user repeats style preferences | Confirmed preferences apply automatically |
+| Personalization feels hidden | **What I used** explains every applied item |
 
-    P --> A["Deep Agent"]
-    X --> M["MCP/backend tools"]
-    Q --> UI["Quick links + defaults"]
-    V --> IN["What I used"]
-```
+## How it works
 
-One composer creates one immutable `TurnContext` snapshot per turn. Different consumers receive
-least-privilege projections; they do not independently reconstruct context.
+1. The backend confirms the signed-in user and current screen.
+2. It gathers relevant saved preferences, working history, Engagement rules, and fresh app data.
+3. It creates one context snapshot for the request.
+4. The UI, assistant, and backend tools each receive only the part they need.
+5. Tools still check current data and permissions before they act.
+6. The app records a safe explanation for **What I used**.
 
-## The core invariants
+The technical name for that per-request snapshot is `TurnContext`. Different consumers receive
+different views of it so private backend information is never placed in the model prompt.
+
+## Rules that keep context trustworthy
 
 1. **Identity is authenticated, not inferred.** User ID, session ownership, memberships, and
    permissions come from trusted transport and backend state.
