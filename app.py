@@ -6,6 +6,8 @@ Proxies all AI interactions to isolated session containers via SessionManager.
 import asyncio
 import logging
 import os
+import re
+import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -19,10 +21,13 @@ if str(_SC) not in sys.path:
 import appdb  # noqa: E402
 import library  # noqa: E402
 
+import artifact_store
+
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +117,40 @@ def _trace_paths_for_session(session_id: str) -> dict[str, str | None]:
     }
 
 
+_SEED_ARTIFACT_ID = "art-seed0001"
+
+
+def _seed_engagement_artifacts() -> int:
+    """Give every seeded engagement one openable kickoff-notes.md (idempotent)."""
+    seeded = 0
+    for engagement_id in ("eng-website-launch", "eng-product-launch", "eng-q3-budget"):
+        engagement = appdb.load_engagement(engagement_id)
+        if engagement is None:
+            continue
+        if any(a.get("id") == _SEED_ARTIFACT_ID for a in engagement.get("library", [])):
+            continue
+        content = (
+            f"# Kickoff notes — {engagement['name']}\n\n"
+            f"Customer: {engagement.get('customer') or '—'}\n\n"
+            "Seeded demo artifact: agenda, attendees, and next steps live here.\n"
+        ).encode()
+        artifact_store.put(engagement_id, _SEED_ARTIFACT_ID, content, "text/markdown")
+        entry = {
+            "id": _SEED_ARTIFACT_ID, "name": "kickoff-notes.md", "size": len(content),
+            "contentType": "text/markdown", "uploadedBy": engagement["createdBy"],
+            "uploadedAt": appdb._now_iso(),
+        }
+
+        def _mut(doc):
+            if any(a.get("id") == _SEED_ARTIFACT_ID for a in doc.get("library", [])):
+                raise appdb.AbortWrite(None)
+            doc.setdefault("library", []).insert(0, dict(entry))
+
+        appdb.update_engagement(engagement_id, _mut)
+        seeded += 1
+    return seeded
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global session_manager, content_processor, api_authenticator
@@ -141,6 +180,17 @@ async def lifespan(app: FastAPI):
         logger.info("User accounts + personal spaces seeded")
     except Exception:
         logger.error("Could not seed users/spaces — sign-in will fail until Cosmos is reachable", exc_info=True)
+
+    # Seed one real artifact per demo engagement (idempotent, best-effort) so the
+    # Documents tab always has openable content. Bytes go through artifact_store,
+    # so this works identically on the local dir and Azure Blob backends.
+    try:
+        seeded_artifacts = await asyncio.to_thread(_seed_engagement_artifacts)
+        if seeded_artifacts:
+            logger.info("Seeded %d engagement artifact(s) via %s",
+                        seeded_artifacts, artifact_store.describe())
+    except Exception:
+        logger.warning("Could not seed engagement artifacts", exc_info=True)
 
     # Ensure the seeded Library reference docs are actually in the Search index, so the
     # library[] list can't point at content search can't find (idempotent, best-effort).
@@ -1022,6 +1072,96 @@ async def delete_convention(engagement_id: str, conv_id: str, uid: str = Depends
         doc["conventions"] = [c for c in doc["conventions"] if c["id"] != conv_id]
         appdb.log_activity(doc, uid, "convention.removed", conv_id)
     await _mutate_engagement(engagement_id, uid, "editor", _mut)
+
+
+# ── Engagement artifacts — durable files, metadata on the doc (R9/R10) ────────
+# Bytes live in artifact_store (local dir or Azure Blob); any member can add,
+# list, and open; removing needs editor+. Non-members always see 404.
+
+_ARTIFACT_MAX_BYTES = 20 * 1024 * 1024
+_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()-]+")
+
+
+def _safe_artifact_name(raw: str | None) -> str:
+    name = Path(raw or "").name.strip()  # drop any client-supplied path
+    name = _ARTIFACT_NAME_RE.sub("_", name)[:120].strip(" .")
+    return name or "artifact"
+
+
+def _find_artifact(engagement: dict, artifact_id: str) -> dict | None:
+    return next((a for a in engagement.get("library", []) if a.get("id") == artifact_id), None)
+
+
+@app.get("/engagements/{engagement_id}/artifacts")
+async def list_artifacts(engagement_id: str, uid: str = Depends(current_user)) -> dict:
+    engagement = await _load_engagement_authed(engagement_id, uid)
+    return {"artifacts": engagement.get("library", [])}
+
+
+@app.post("/engagements/{engagement_id}/artifacts", status_code=201)
+async def upload_artifact(engagement_id: str, file: UploadFile,
+                          uid: str = Depends(current_user)) -> dict:
+    await _load_engagement_authed(engagement_id, uid)  # any member may add (R10)
+    data = await file.read()
+    if len(data) > _ARTIFACT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Artifact exceeds the 20MB limit")
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+    entry = {
+        "id": f"art-{secrets.token_hex(4)}",
+        "name": _safe_artifact_name(file.filename),
+        "size": len(data),
+        "contentType": file.content_type or "application/octet-stream",
+        "uploadedBy": uid,
+        "uploadedAt": appdb._now_iso(),
+    }
+    # Bytes first, metadata second: a metadata failure leaves an orphan blob
+    # (harmless, cleaned below), never a listed artifact with no bytes.
+    await asyncio.to_thread(
+        artifact_store.put, engagement_id, entry["id"], data, entry["contentType"])
+
+    def _mut(doc):
+        doc.setdefault("library", []).insert(0, dict(entry))
+        appdb.log_activity(doc, uid, "artifact.added", entry["name"])
+
+    try:
+        await _mutate_engagement(engagement_id, uid, "viewer", _mut)
+    except Exception:
+        await asyncio.to_thread(artifact_store.delete, engagement_id, entry["id"])
+        raise
+    return entry
+
+
+@app.get("/engagements/{engagement_id}/artifacts/{artifact_id}")
+async def download_artifact(engagement_id: str, artifact_id: str,
+                            uid: str = Depends(current_user)) -> Response:
+    engagement = await _load_engagement_authed(engagement_id, uid)
+    entry = _find_artifact(engagement, artifact_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    data = await asyncio.to_thread(artifact_store.get, engagement_id, artifact_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Artifact content missing")
+    filename = entry["name"].replace('"', "")
+    return Response(
+        content=data,
+        media_type=entry.get("contentType") or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/engagements/{engagement_id}/artifacts/{artifact_id}", status_code=204)
+async def delete_artifact(engagement_id: str, artifact_id: str,
+                          uid: str = Depends(current_user)):
+    def _mut(doc):
+        entry = _find_artifact(doc, artifact_id)
+        if entry is None:
+            raise _NotFound()
+        doc["library"] = [a for a in doc["library"] if a.get("id") != artifact_id]
+        appdb.log_activity(doc, uid, "artifact.removed", entry["name"])
+
+    await _mutate_engagement(engagement_id, uid, "editor", _mut)
+    await asyncio.to_thread(artifact_store.delete, engagement_id, artifact_id)
 
 
 # ── Navigation context — visit log + quick links (no AI in this path) ─────────

@@ -309,6 +309,72 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await ctx.close();
 }
 
+// ── M7: artifacts — durable files, member visibility, editor-only delete ─────
+{
+  const API = "http://localhost:8000";
+  const { ctx, p } = await fresh();
+  await signIn(p, "dan");
+  await p.locator('[data-testid="nav--engagements"]').click();
+  await p.waitForTimeout(600);
+  await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
+  await p.waitForTimeout(600);
+  await p.locator('[data-testid="engagement-tab-documents"]').click();
+  await p.waitForTimeout(600);
+
+  ok("M7 seeded kickoff-notes.md is listed",
+    (await p.locator('[data-testid="artifact-row-art-seed0001"]').innerText().catch(() => ""))
+      .includes("kickoff-notes.md"));
+
+  // dan uploads a generated file; the row appears with his name.
+  await p.locator('[data-testid="artifact-upload-input"]').setInputFiles({
+    name: "e2e-probe.txt", mimeType: "text/plain",
+    buffer: Buffer.from("engagement artifact e2e probe\n"),
+  });
+  await p.waitForTimeout(1800);
+  const probeRow = p.locator('[data-testid^="artifact-row-"]').filter({ hasText: "e2e-probe.txt" });
+  ok("M7 uploaded artifact appears", (await probeRow.count()) === 1);
+  ok("M7 uploader attributed", (await probeRow.innerText().catch(() => "")).includes("dan"));
+  await p.screenshot({ path: `${OUT}/m7-artifacts-dan.png` });
+
+  // The bytes are openable through the authed API (what the Open button fetches).
+  const danToken = await p.evaluate(() => localStorage.getItem("pa_auth_token"));
+  const dl = await p.request.get(`${API}/engagements/eng-website-launch/artifacts/art-seed0001`,
+    { headers: { "X-Auth-Token": danToken } });
+  ok("M7 seeded artifact downloads (200 + content)",
+    dl.status() === 200 && (await dl.text()).includes("Kickoff notes"));
+
+  // sam (viewer) sees both artifacts, can open, has no delete affordance.
+  const { ctx: c2, p: p2 } = await fresh();
+  await signIn(p2, "sam");
+  await p2.locator('[data-testid="nav--engagements"]').click();
+  await p2.waitForTimeout(600);
+  await p2.locator('[data-testid="engagement-row-eng-website-launch"]').click();
+  await p2.waitForTimeout(600);
+  await p2.locator('[data-testid="engagement-tab-documents"]').click();
+  await p2.waitForTimeout(600);
+  ok("M7 viewer sees both artifacts",
+    (await p2.locator('[data-testid^="artifact-row-"]').count()) >= 2);
+  ok("M7 viewer has no delete affordance",
+    (await p2.locator('[data-testid^="artifact-delete-"]').count()) === 0);
+  const samToken = await p2.evaluate(() => localStorage.getItem("pa_auth_token"));
+  const dl2 = await p2.request.get(`${API}/engagements/eng-website-launch/artifacts/art-seed0001`,
+    { headers: { "X-Auth-Token": samToken } });
+  ok("M7 viewer can open (200)", dl2.status() === 200);
+  await p2.screenshot({ path: `${OUT}/m7-artifacts-viewer.png` });
+  await c2.close();
+
+  // dan (owner) deletes the probe; the seeded artifact remains.
+  const delBtn = probeRow.locator('[data-testid^="artifact-delete-"]');
+  const delId = await delBtn.getAttribute("data-testid");
+  await delBtn.click();
+  await p.locator(`[data-testid="${delId}-confirm"]`).click();
+  await p.waitForTimeout(1500);
+  ok("M7 probe artifact deleted", (await probeRow.count()) === 0);
+  ok("M7 seeded artifact remains",
+    (await p.locator('[data-testid="artifact-row-art-seed0001"]').count()) === 1);
+  await ctx.close();
+}
+
 await b.close();
 console.log(failures === 0 ? "\nALL CHECKPOINTS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

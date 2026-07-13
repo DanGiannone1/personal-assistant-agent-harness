@@ -231,6 +231,24 @@ export const updateEngagementTask = (pid: string, tid: string, body: Partial<{ t
 export const deleteEngagementTask = (pid: string, tid: string) =>
   jsonReq("DELETE", `/engagements/${pid}/tasks/${tid}`);
 
+// ── Engagement artifacts (bytes stream through the authed API — R9/R10) ──────
+export async function uploadEngagementArtifact(pid: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await apiFetch(`/engagements/${pid}/artifacts`, { method: "POST", body: form });
+  if (!res.ok) {
+    const detail = await res.json().then((d) => d?.detail).catch(() => null);
+    throw new Error(detail || `Upload failed (${res.status})`);
+  }
+}
+export async function openEngagementArtifact(pid: string, aid: string): Promise<Blob> {
+  const res = await apiFetch(`/engagements/${pid}/artifacts/${aid}`);
+  if (!res.ok) throw new Error(`Open failed (${res.status})`);
+  return res.blob();
+}
+export const deleteEngagementArtifact = (pid: string, aid: string) =>
+  jsonReq("DELETE", `/engagements/${pid}/artifacts/${aid}`);
+
 // ── Navigation context ───────────────────────────────────────────────────────
 export const recordVisit = (path: string, title: string) =>
   jsonReq("POST", "/visits", { path, title }).catch(() => undefined); // fire-and-forget

@@ -159,6 +159,17 @@ export interface ActivityEntry {
 // why. (Stage, milestones, risks, and actions are parked — docs/mvp-requirements.md R7.)
 export type EngagementStatus = "green" | "yellow" | "red";
 
+// Artifact metadata (bytes live in the orchestrator's artifact store; open/download
+// always goes through the authed API, never a public URL).
+export interface Artifact {
+  id: string;
+  name: string;
+  size: number;
+  contentType: string;
+  uploadedBy: string;
+  uploadedAt: string;
+}
+
 export interface Engagement {
   id: string;
   name: string;
@@ -171,7 +182,7 @@ export interface Engagement {
   members: EngagementMember[];
   conventions: Convention[];
   tasks: Task[];
-  library: LibraryDoc[];
+  library: Artifact[];
   activity: ActivityEntry[];
   createdAt: string;
   createdBy: string;

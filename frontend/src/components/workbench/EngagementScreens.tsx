@@ -7,18 +7,19 @@
 // v1 delivery record is deliberately slim: a G/Y/R status that always carries a why
 // (stage, milestones, risks, and actions are parked — docs/mvp-requirements.md R7).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
-  ArrowLeft, CheckSquare, Files, FolderKanban,
-  Plus, Settings as SettingsIcon, Trash2, Users,
+  ArrowLeft, CheckSquare, Download, Files, FolderKanban,
+  Plus, Settings as SettingsIcon, Trash2, Upload, Users,
 } from "lucide-react";
 import type {
-  AppState, Engagement, EngagementStatus, EngagementRole, Task,
+  AppState, Artifact, Engagement, EngagementStatus, EngagementRole, Task,
 } from "@/lib/types";
 import {
   addConvention, addEngagementMember, createEngagement,
-  createEngagementTask, deleteEngagementTask,
-  removeConvention, removeEngagementMember, updateEngagement, updateEngagementTask,
+  createEngagementTask, deleteEngagementArtifact, deleteEngagementTask,
+  openEngagementArtifact, removeConvention, removeEngagementMember,
+  updateEngagement, updateEngagementTask, uploadEngagementArtifact,
 } from "@/lib/api";
 import { friendlyError } from "@/lib/utils";
 
@@ -225,18 +226,7 @@ export function EngagementScreen({ appState, viewRoute, onNavigate, onRefresh }:
     return (
       <div className="tw-screen" data-testid="engagement-documents-screen">
         {header}
-        <section className="tw-section">
-          <h2 className="tw-h2">Engagement documents</h2>
-          {engagement.library.length === 0 ? (
-            <div className="tw-empty-sm">No documents saved to this engagement yet.</div>
-          ) : (
-            <div className="tw-doclist">
-              {engagement.library.map((d) => (
-                <div key={d.id} className="tw-docitem"><Files size={15} /> <span className="tw-td-title">{d.filename}</span></div>
-              ))}
-            </div>
-          )}
-        </section>
+        <EngagementDocuments engagement={engagement} editable={editable} onRefresh={onRefresh} />
       </div>
     );
   }
@@ -548,6 +538,99 @@ function EngagementSettings({ engagement, myRole, onRefresh }: {
 }
 
 // Two-click delete (armed pattern shared with the personal screens).
+function humanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Artifacts: durable files on the engagement. Any member can add and open (R10);
+// removing needs editor+. Open streams through the authed API into an object URL —
+// bytes never travel on an unauthenticated path.
+function EngagementDocuments({ engagement, editable, onRefresh }: {
+  engagement: Engagement; editable: boolean; onRefresh: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const artifacts: Artifact[] = engagement.library ?? [];
+
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true); setError("");
+    try {
+      await uploadEngagementArtifact(engagement.id, file);
+      await onRefresh();
+    } catch (e) {
+      setError(friendlyError(e, "Artifact action failed."));
+    } finally {
+      setBusy(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  };
+
+  const open = async (a: Artifact) => {
+    setError("");
+    try {
+      const blob = await openEngagementArtifact(engagement.id, a.id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      setError(friendlyError(e, "Artifact action failed."));
+    }
+  };
+
+  const remove = async (a: Artifact) => {
+    setError("");
+    try {
+      await deleteEngagementArtifact(engagement.id, a.id);
+      await onRefresh();
+    } catch (e) {
+      setError(friendlyError(e, "Artifact action failed."));
+    }
+  };
+
+  return (
+    <section className="tw-section">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 className="tw-h2">Artifacts</h2>
+        <div>
+          <input ref={fileInput} type="file" data-testid="artifact-upload-input"
+            style={{ display: "none" }} onChange={(e) => upload(e.target.files?.[0])} />
+          <button type="button" className="tw-btn" data-testid="artifact-upload-btn" disabled={busy}
+            onClick={() => fileInput.current?.click()}>
+            <Upload size={13} /> {busy ? "Uploading…" : "Upload"}
+          </button>
+        </div>
+      </div>
+      {error && <div className="tw-error" data-testid="artifact-error">{error}</div>}
+      {artifacts.length === 0 ? (
+        <div className="tw-empty-sm">No artifacts on this engagement yet.</div>
+      ) : (
+        <div className="tw-doclist">
+          {artifacts.map((a) => (
+            <div key={a.id} className="tw-docitem" data-testid={`artifact-row-${a.id}`}>
+              <Files size={15} />
+              <span className="tw-td-title" style={{ flex: 1 }}>{a.name}</span>
+              <span className="tw-td-sub">{humanSize(a.size)}</span>
+              <span className="tw-td-sub">{a.uploadedBy}</span>
+              <span className="tw-td-sub">{(a.uploadedAt || "").slice(0, 10)}</span>
+              <button type="button" className="tw-btn-ghost" data-testid={`artifact-open-${a.id}`}
+                title="Open" onClick={() => open(a)}>
+                <Download size={13} />
+              </button>
+              {editable && (
+                <ArmedDelete testid={`artifact-delete-${a.id}`} onConfirm={() => remove(a)} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ArmedDelete({ onConfirm, testid }: { onConfirm: () => void; testid: string }) {
   const [armed, setArmed] = useState(false);
   if (!armed) {

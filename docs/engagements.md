@@ -33,6 +33,14 @@ the ETag-safe read-modify-write path, and it carries two layers:
 
 Delivery-record mutations are **editor-level**; renames and membership stay **owner-level**.
 
+### Artifacts
+
+Every engagement carries durable artifacts: metadata (name, size, uploader) on the
+engagement doc, bytes in a storage adapter (local directory in dev, Azure Blob via managed
+identity in prod) that outlives any agent session. Any member can add, list, and open
+artifacts; removing one requires editor or above. Bytes always stream through the
+orchestrator's membership-gated API — there is no public or key-based path to them.
+
 ## The two scopes
 
 The personal space ("your stuff": tasks, calendar, documents, reminders) stays private per user.

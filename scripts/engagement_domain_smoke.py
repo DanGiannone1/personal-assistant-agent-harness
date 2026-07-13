@@ -5,11 +5,14 @@
 # end via the raw container (no delete API exists by design).
 import os
 import sys
+import tempfile
 import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "session-container"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import appdb  # noqa: E402
+import artifact_store  # noqa: E402
 
 FAILURES = 0
 
@@ -106,6 +109,34 @@ def main() -> None:
     check("role helpers gate writes",
           appdb.role_at_least(fresh, "dan", "editor")
           and not appdb.role_at_least(fresh, "sam", "viewer"))
+
+    # 8. Artifacts: bytes roundtrip through the adapter, metadata via the ETag mutator.
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["ARTIFACTS_DIR"] = tmp
+        payload = b"# smoke artifact\n" * 100
+        artifact_store.put(eid, "art-smoke01", payload, "text/markdown")
+        check("artifact bytes roundtrip", artifact_store.get(eid, "art-smoke01") == payload)
+
+        def _add_meta(doc):
+            doc.setdefault("library", []).insert(0, {
+                "id": "art-smoke01", "name": "smoke.md", "size": len(payload),
+                "contentType": "text/markdown", "uploadedBy": "dan",
+                "uploadedAt": appdb._now_iso()})
+            appdb.log_activity(doc, "dan", "artifact.added", "smoke.md")
+        appdb.update_engagement(eid, _add_meta)
+        after = appdb.load_engagement(eid)
+        check("artifact metadata lands with activity",
+              any(a["id"] == "art-smoke01" for a in after["library"])
+              and after["activity"][0]["action"] == "artifact.added")
+        try:
+            artifact_store.put("../evil", "art-x", b"x", "text/plain")
+            check("path-shaped ids are refused", False)
+        except ValueError:
+            check("path-shaped ids are refused", True)
+        check("artifact delete removes bytes",
+              artifact_store.delete(eid, "art-smoke01")
+              and artifact_store.get(eid, "art-smoke01") is None)
+        os.environ.pop("ARTIFACTS_DIR", None)
 
     # Cleanup: raw container delete (there is deliberately no delete API).
     appdb._container().delete_item(item=eid, partition_key=eid)
