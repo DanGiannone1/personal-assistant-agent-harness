@@ -63,6 +63,19 @@ check("quick links exclude Home", all(d["path"] != "/home" for d in ql))
 check("quick links lead with the visited page", "website" in ql[0]["path"], ql[0]["path"])
 check("overdue records boosted into quick links", any(d.get("record") for d in ql))
 
+# Mixed-recency regression (the E2E contamination case): user worked in Product a few
+# clicks ago but is IN Website now — most recent must still win decisively.
+mixed_visits = [
+    {"path": "/projects/proj-website-launch/tasks", "title": "", "ts": "t"},
+    {"path": "/projects/proj-website-launch", "title": "", "ts": "t"},
+    {"path": "/projects", "title": "", "ts": "t"},
+    {"path": "/home", "title": "", "ts": "t"},
+    {"path": "/todo", "title": "", "ts": "t"},
+    {"path": "/projects/proj-product-launch/tasks", "title": "", "ts": "t"},
+]
+r_mixedrec = navsvc.resolve(personal, [web, prod], mixed_visits, "take me to the launch tasks")
+check("mixed recency: most recent project wins", r_mixedrec["status"] == "resolved" and "website" in r_mixedrec["path"], str(r_mixedrec)[:90])
+
 personal2 = dict(personal, tasks=[{"id": "t-9", "title": "Launch day prep", "status": "To do", "dueDate": ""}])
 r_mixed = navsvc.resolve(personal2, [web, prod], [], "launch")
 check("three-way 'launch' tie stays honest", r_mixed["status"] in ("ambiguous", "not_found"), r_mixed["status"])

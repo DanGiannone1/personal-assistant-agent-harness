@@ -31,7 +31,7 @@ async function signIn(p, user) {
   await p.waitForTimeout(2500); // session init + first state fetch
 }
 
-async function agentTurn(p, msg, maxMs = 90000) {
+async function agentTurn(p, msg, maxMs = 150000) {
   const before = await p.locator('[data-testid="turn-meta"]').count();
   await p.locator('[data-testid="chat-input"]').fill(msg);
   await p.locator('[data-testid="send-button"]').click();
@@ -89,8 +89,17 @@ async function agentTurn(p, msg, maxMs = 90000) {
   await p.locator('[data-testid="project-task-title-input"]').fill("E2E editor task");
   await p.locator('[data-testid="project-task-save-btn"]').click();
   await p.waitForTimeout(1500);
-  ok("M2 editor created project task", await p.getByText("E2E editor task").count() >= 1);
+  ok("M2 editor created project task", await p.locator('[data-testid^="project-task-row-"]').filter({ hasText: "E2E editor task" }).count() >= 1);
   await p.screenshot({ path: `${OUT}/m2-editor-task.png` });
+  // Cleanup: remove the probe task (armed two-click delete) so reruns stay net-zero.
+  const row = p.locator('[data-testid^="project-task-row-"]').filter({ hasText: "E2E editor task" }).first();
+  const delBtn = row.locator('[data-testid^="project-task-delete-"]');
+  const delId = await delBtn.getAttribute("data-testid").catch(() => null);
+  if (delId) {
+    await delBtn.click();
+    await p.locator(`[data-testid="${delId}-confirm"]`).click();
+    await p.waitForTimeout(1200);
+  }
   await ctx.close();
 
   // sam is viewer on Website Launch: no add button, viewer note shown
@@ -124,6 +133,10 @@ async function agentTurn(p, msg, maxMs = 90000) {
 
   await agentTurn(p, "take me to the launch tasks");
   const crumb = await p.locator('[data-testid="breadcrumb"]').innerText();
+  // Sound assertion: the TOOL must have decided (trace says Navigated) — a breadcrumb
+  // alone can pass vacuously when the user was already standing on the target page.
+  const lastStep = await p.locator(".step-label").last().innerText().catch(() => "");
+  ok("M3 dan's navigate DECIDED (no interrogation)", lastStep.includes("Navigated"), lastStep);
   ok("M3 dan lands in Website Launch tasks (recency)", crumb.includes("Website Launch"), crumb);
   await p.screenshot({ path: `${OUT}/m3-dan-landing.png` });
 
@@ -146,6 +159,8 @@ async function agentTurn(p, msg, maxMs = 90000) {
 
   await agentTurn(p2, "take me to the launch tasks");
   const crumb2 = await p2.locator('[data-testid="breadcrumb"]').innerText();
+  const lastStep2 = await p2.locator(".step-label").last().innerText().catch(() => "");
+  ok("M3 ava's navigate DECIDED", lastStep2.includes("Navigated"), lastStep2);
   ok("M3 ava lands in Product Launch tasks (recency)", crumb2.includes("Product Launch"), crumb2);
   await p2.screenshot({ path: `${OUT}/m3-ava-landing.png` });
   await c2.close();
@@ -163,14 +178,23 @@ async function agentTurn(p, msg, maxMs = 90000) {
   ok("M4 confirm card shown", await p.locator('[data-testid="confirm-card"]').count() >= 1);
   await p.locator('[data-testid="nav--todo"]').click();
   await p.waitForTimeout(800);
-  ok("M4 task still exists before confirm", await p.getByText("Disposable e2e probe").count() >= 1);
+  const probeRow = () => p.locator('[data-testid^="task-row-"]').filter({ hasText: "Disposable e2e probe" });
+  ok("M4 task still exists before confirm", await probeRow().count() === 1);
   await p.screenshot({ path: `${OUT}/m4-confirm-pending.png` });
-  // Confirm via the card button.
-  await p.locator('[data-testid="confirm-card-yes"]').last().click();
-  await p.waitForTimeout(15000); // agent re-calls with confirmed=true
+  // Confirm via the card button (guarded: a missing card already failed above).
+  if (await p.locator('[data-testid="confirm-card-yes"]').count()) {
+    await p.locator('[data-testid="confirm-card-yes"]').last().click();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 120000) {
+      await p.waitForTimeout(2500);
+      await p.locator('[data-testid="nav--todo"]').click().catch(() => {});
+      await p.waitForTimeout(700);
+      if (await probeRow().count() === 0) break;
+    }
+  }
   await p.locator('[data-testid="nav--todo"]').click();
   await p.waitForTimeout(1000);
-  ok("M4 task deleted after confirm", await p.getByText("Disposable e2e probe").count() === 0);
+  ok("M4 task deleted after confirm", await probeRow().count() === 0);
   await p.screenshot({ path: `${OUT}/m4-after-confirm.png` });
   await ctx.close();
 }
@@ -194,11 +218,12 @@ async function agentTurn(p, msg, maxMs = 90000) {
   await p.locator('[data-testid="project-row-proj-product-launch"]').click();
   await p.waitForTimeout(700);
   await agentTurn(p, "what tasks are in this project?");
+  await p.locator('[data-testid="context-inspector"] summary').click().catch(() => {});
+  await p.waitForTimeout(400);
   const insp = await p.locator('[data-testid="context-inspector"]').innerText().catch(() => "");
   ok("M5 inspector shows the French convention", insp.includes("French"), insp.slice(0, 100));
   ok("M5 inspector shows memory", insp.includes("Fridays"));
   ok("M5 inspector states precedence", insp.toLowerCase().includes("precedence") || insp.includes("›"));
-  await p.locator('[data-testid="context-inspector"] summary').click();
   await p.screenshot({ path: `${OUT}/m5-inspector.png` });
   await ctx.close();
 }

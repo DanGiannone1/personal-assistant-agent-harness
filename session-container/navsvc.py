@@ -122,7 +122,10 @@ def _context_boost(dest: dict, visits: list[dict], today: str) -> float:
     path = dest["path"]
     for i, v in enumerate(visits[:30]):
         if v.get("path") == path:
-            boost += max(6.0 - i * 0.4, 0.5)     # more recent visits weigh more
+            # Steep, most-recent-heavy decay ("start with last visited"): the page the
+            # user is coming FROM must decisively out-rank one they touched a few
+            # clicks earlier, or lexically-tied asks degrade into interrogation.
+            boost += max(6.0 - i * 1.0, 0.5)
             break
     rec = dest.get("record")
     if rec is not None and "status" in rec and appdb.is_overdue(rec, today):
