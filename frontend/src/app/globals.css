@@ -591,6 +591,7 @@ html, body {
 }
 .step-candidate:hover { border-color: var(--brand-primary); color: var(--brand-primary); }
 .step-candidate:disabled { opacity: 0.5; cursor: default; }
+.step-candidates-label { font-size: 0.72rem; color: var(--text-muted); align-self: center; margin-right: 0.1rem; }
 
 /* Per-turn summary — makes the single-tool-call efficiency concrete */
 .turn-meta {

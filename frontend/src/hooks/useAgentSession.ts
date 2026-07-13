@@ -1,5 +1,5 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, ToolCard, ToolOutcome } from "@/lib/types";
+import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, NavCandidate, ToolCard, ToolOutcome } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
 import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getContextBundle, getQuickLinks, recordVisit } from "@/lib/api";
 import type { QuickLink } from "@/lib/types";
@@ -35,7 +35,7 @@ type Action =
   | { type: "REASONING_DELTA"; delta: string }
   | { type: "TOOL_START"; toolCallId: string; toolCallName: string }
   | { type: "TOOL_ARGS"; toolCallId: string; delta: string }
-  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: string[]; card?: ToolCard }
+  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard }
   | { type: "TOOL_END"; toolCallId: string }
   | { type: "SET_TURN_META"; steps: number; durationMs: number }
   | { type: "DONE" }

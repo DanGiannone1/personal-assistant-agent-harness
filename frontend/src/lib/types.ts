@@ -5,7 +5,7 @@ export type AGUIEvent =
   | { type: "TEXT_MESSAGE_END"; message_id: string }
   | { type: "TOOL_CALL_START"; tool_call_id: string; tool_call_name: string; parent_message_id?: string }
   | { type: "TOOL_CALL_ARGS"; tool_call_id: string; delta: string }
-  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: string[]; card?: ToolCard }
+  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard }
   | { type: "TOOL_CALL_END"; tool_call_id: string }
   | { type: "RUN_FINISHED"; thread_id: string; run_id: string }
   | { type: "RUN_ERROR"; message: string }
@@ -15,10 +15,17 @@ export type AGUIEvent =
 
 export type ToolOutcome = "ok" | "noop" | "error";
 
+// A navigate chip, fully bound to a real route by the resolver. Clicking one is a
+// plain manual navigation — no second resolution pass, no chat round-trip.
+export interface NavCandidate {
+  title: string;
+  path: string;
+}
+
 export type MessagePart =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: string[]; card?: ToolCard };
+  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard };
 
 export interface TurnMeta {
   steps: number;       // tool calls in the turn

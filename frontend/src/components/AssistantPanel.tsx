@@ -107,6 +107,7 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
               onSuggestion={state.isStreaming || state.isInitializing ? undefined : handleSend}
               quickNav={quickNav}
               onQuickNav={navigateView}
+              onNavigate={navigateView}
               attention={attention}
             />
             {statusMessage && <div className="px-5 pb-1 text-[11px] text-text-muted">{statusMessage}</div>}

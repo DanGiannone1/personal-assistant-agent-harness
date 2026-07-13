@@ -40,6 +40,13 @@ r_ava = navsvc.resolve(personal, [web, prod], ava_visits, "take me to the launch
 check("dan → Website Launch tasks", r_dan["status"] == "resolved" and "website" in r_dan.get("path", ""), str(r_dan)[:90])
 check("ava → Product Launch tasks", r_ava["status"] == "resolved" and "product" in r_ava.get("path", ""), str(r_ava)[:90])
 
+# A context-decided (stage-2) resolve carries the beaten rival as an escape-hatch
+# alternate — the "Did you mean" chips. Fully bound: every alternate has a path.
+check("context tie-break carries alternates",
+      any("product" in a["path"] for a in r_dan.get("alternates", []))
+      and all(a.get("path", "").startswith("/") for a in r_dan.get("alternates", [])),
+      str(r_dan.get("alternates"))[:90])
+
 r_cold = navsvc.resolve(personal, [web, prod], [], "take me to the launch tasks")
 check("cold start → honest ambiguity", r_cold["status"] == "ambiguous" and len(r_cold["candidates"]) >= 2)
 
@@ -56,6 +63,8 @@ check("unique engagement task title resolves", r_pricing["status"] == "resolved"
 # exact ask for the OTHER engagement's page goes there, not to the familiar one.
 r_exact = navsvc.resolve(personal, [web, prod], dan_visits, "product launch settings")
 check("exact wording beats recency", r_exact["status"] == "resolved" and "product-launch/settings" in r_exact["path"], str(r_exact)[:90])
+# ... and a clear lexical win needs no escape hatch: the user's own words picked it.
+check("clear lexical win carries no alternates", not r_exact.get("alternates"), str(r_exact.get("alternates"))[:60])
 
 today = "2026-07-20"
 ql = navsvc.rank_destinations(personal, [web, prod], dan_visits, None, today, 5)

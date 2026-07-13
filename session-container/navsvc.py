@@ -187,7 +187,11 @@ def resolve(personal: dict, engagements: list[dict], visits: list[dict],
     #    is the decide-don't-interrogate rule; genuinely context-less ties stay honest
     #    and return candidates.
     if abs(top["lex"] - second["lex"]) < 12.0 and top["score"] >= second["score"] + 3.0:
-        return {"status": "resolved", **_pub(top)}
+        # Context (not wording) decided — carry the beaten rivals as `alternates`, the
+        # escape hatch the UI renders as "Did you mean" chips. A stage-1 lexical win
+        # deliberately carries none: the user's own words picked it.
+        ties = [r for r in ranked[1:] if abs(top["lex"] - r["lex"]) < 12.0]
+        return {"status": "resolved", **_pub(top), "alternates": _strip(ties[:5])}
     close = [r for r in ranked if r["score"] >= top["score"] - 12.0]
     return {"status": "ambiguous", "candidates": _strip(close)}
 

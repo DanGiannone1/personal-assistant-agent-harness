@@ -107,7 +107,7 @@ function CardView({ card, onPick }: { card: ToolCard; onPick?: (text: string) =>
   );
 }
 
-function Step({ part, onPick }: { part: MessagePart & { type: "tool_call" }; onPick?: (text: string) => void }) {
+function Step({ part, onPick, onNavigate }: { part: MessagePart & { type: "tool_call" }; onPick?: (text: string) => void; onNavigate?: (route: string) => void }) {
   const running = part.status === "running";
   const isSkill = part.tool === "skill";
   const label = running ? runningLabel(part.tool) : doneLabel(part.tool, part.outcome);
@@ -123,10 +123,20 @@ function Step({ part, onPick }: { part: MessagePart & { type: "tool_call" }; onP
       {!running && part.card && <CardView card={part.card} onPick={onPick} />}
       {candidates.length > 0 && (
         <div className="step-candidates">
+          {/* On an ok outcome the nav already happened — these are alternates ("Did you mean:").
+              On ambiguous/not-found the chips ARE the picker, so no lead-in label. */}
+          {part.outcome === "ok" && (
+            <span className="step-candidates-label" data-testid="did-you-mean">
+              Did you mean:
+            </span>
+          )}
+          {/* Candidates are fully bound (path) — click navigates directly, no chat round-trip.
+              onPick is a fallback for any caller that doesn't wire onNavigate. */}
           {candidates.map((c) => (
-            <button key={c} type="button" className="step-candidate" disabled={!onPick}
-              onClick={() => onPick?.(`Take me to ${c}`)} data-testid={`nav-candidate-${c.replace(/\s+/g, "-")}`}>
-              {c}
+            <button key={c.path} type="button" className="step-candidate" disabled={!onNavigate && !onPick}
+              onClick={() => (onNavigate ? onNavigate(c.path) : onPick?.(`Take me to ${c.title}`))}
+              data-testid={`nav-candidate-${c.title.replace(/\s+/g, "-")}`}>
+              {c.title}
             </button>
           ))}
         </div>
@@ -135,13 +145,13 @@ function Step({ part, onPick }: { part: MessagePart & { type: "tool_call" }; onP
   );
 }
 
-export default function ToolTrace({ parts, isStreaming, onPick }: { parts: (MessagePart & { type: "tool_call" })[]; isStreaming?: boolean; onPick?: (text: string) => void }) {
+export default function ToolTrace({ parts, isStreaming, onPick, onNavigate }: { parts: (MessagePart & { type: "tool_call" })[]; isStreaming?: boolean; onPick?: (text: string) => void; onNavigate?: (route: string) => void }) {
   const [collapsed, setCollapsed] = useState(false);
   if (parts.length === 0) return null;
 
   const steps = (
     <div className="step-trace" data-testid="tool-trace">
-      {parts.map((p) => <Step key={p.toolCallId} part={p} onPick={onPick} />)}
+      {parts.map((p) => <Step key={p.toolCallId} part={p} onPick={onPick} onNavigate={onNavigate} />)}
     </div>
   );
 

@@ -102,7 +102,9 @@ How you work:
   let `navigate` decide (it knows the user's pages, engagements, and records, and uses their
   recent activity to pick decisively). If it returns AMBIGUOUS, list the candidates and ask
   which one. If NOT_FOUND, say so and list the closest options. Never claim you navigated
-  unless the tool resolved a destination.
+  unless the tool resolved a destination. Tool results may end with a `CHIPS: …` or
+  `CARD_JSON: …` trailer line — that is a wire format the app renders as clickable chips or
+  a card; never repeat those lines in your reply.
 - Engagements are shared customer-delivery workspaces with members and roles
   (owner/editor/viewer). Use `list_engagements` to see them, `create_engagement` to add one,
   `update_engagement` to change name/customer/stage/dates, `share_engagement` to grant a
@@ -290,19 +292,20 @@ def _extract_card(result) -> dict | None:
     return None
 
 
-def _nav_candidates(result) -> list[str]:
-    """Pull candidate destination titles out of a navigate AMBIGUOUS/NOT_FOUND result
-    so the UI can offer them as one-click chips."""
+def _nav_candidates(result) -> list[dict]:
+    """Pull FULLY-BOUND candidates ({title, path}) from a navigate result's CHIPS line —
+    picker chips (ambiguous/not-found) and escape-hatch chips (decided-with-alternates)
+    both ride this channel; a chip click is a plain manual nav, no second resolution."""
     text = _result_text(result)
-    marker = "destinations: " if "destinations: " in text else ("options: " if "options: " in text else None)
-    if not marker:
+    if "\nCHIPS: " not in text:
         return []
-    tail = text.split(marker, 1)[1]
-    tail = tail.split(". ", 1)[0].rstrip(".")
-    # Candidates are joined with "; " by the navigate tool — split on that only
-    # (splitting on the word "and" would fragment titles like "Research and Development").
-    parts = [p.strip() for p in tail.split(";") if p.strip()]
-    return [p for p in parts if p and not p.lower().startswith("ask ")][:6]
+    tail = text.rsplit("\nCHIPS: ", 1)[1].strip()
+    chips = []
+    for part in tail.split(";"):
+        title, _, path = part.strip().partition("|")
+        if title and path.startswith("/"):
+            chips.append({"title": title, "path": path})
+    return chips[:6]
 
 
 def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
@@ -619,17 +622,33 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return mutator(doc)
         return appdb.update_engagement(eng["id"], _outer)
 
+    def _chips(items: list[dict]) -> str:
+        """CHIPS trailer: fully-bound {title|path} pairs the UI renders as one-click
+        manual navs (no second resolution pass). Picker chips (ambiguous/not-found)
+        and escape-hatch chips (decided-with-alternates) both ride this one channel.
+        The model sees the trailer too — harmless; routes can still only be SET
+        through this tool's resolution."""
+        return "\nCHIPS: " + "; ".join(f"{c['title']}|{c['path']}" for c in items[:6])
+
     @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a engagement.")
     def navigate(params: NavigateParams) -> str:
         personal = _load()
         result = navsvc.resolve(personal, _engagements(), _visits(), params.destination)
         if result["status"] == "resolved":
             _set_route(result["path"], result["title"])
+            alternates = result.get("alternates") or []
+            if alternates:
+                opts = "; ".join(a["title"] for a in alternates)
+                return (f"NAVIGATED to {result['title']} ({result['path']}). "
+                        f"Decided by your context — alternatives if wrong: {opts}"
+                        + _chips(alternates))
             return f"NAVIGATED to {result['title']} ({result['path']})"
         opts = "; ".join(c["title"] for c in result["candidates"])
         if result["status"] == "ambiguous":
-            return f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. Ask the user which one."
-        return f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}."
+            return (f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. "
+                    f"Ask the user which one." + _chips(result["candidates"]))
+        return (f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}."
+                + _chips(result["candidates"]))
 
     @define_tool(name="list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(params: ListTasksParams) -> str:
@@ -1641,7 +1660,10 @@ class AgentSession:
                 # Carry the real outcome so the UI trace reflects what happened
                 # (e.g. an ambiguous navigation is NOT shown as a success).
                 payload = {"type": "TOOL_CALL_RESULT", "tool_call_id": call_id, "outcome": outcome}
-                if tool == "navigate" and outcome != "ok":
+                if tool == "navigate":
+                    # Attach chips whenever the CHIPS line exists — including on an "ok"
+                    # outcome, where they are the decided-with-alternates escape hatch
+                    # ("Did you mean"). Gating on outcome != ok silently dropped those.
                     cands = _nav_candidates(result)
                     if cands:
                         payload["candidates"] = cands
