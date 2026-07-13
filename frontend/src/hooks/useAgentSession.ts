@@ -16,6 +16,12 @@ const ROUTE_SETTING_TOOLS = new Set([
   "create_event",  // lands the user on the calendar
   "update_event",  // lands the user on the calendar
   "delete_event",  // returns the user to the calendar
+  "create_engagement",      // lands the user on the new engagement's detail page
+  "update_engagement",      // lands the user on the updated engagement
+  "delete_engagement",      // returns the user to the engagements list
+  "set_engagement_health",  // lands the user on the engagement whose health changed
+  "add_engagement_item",    // lands the user on the engagement it added an item to
+  "update_engagement_item", // lands the user on the engagement it updated an item on
 ]);
 
 type Action =
@@ -296,6 +302,11 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (route === "/todo") return "Tasks";
   if (route === "/calendar") return "Calendar";
   if (route === "/documents") return "Documents";
+  if (route.startsWith("/engagements/")) {
+    const e = (appState.engagements ?? []).find((x) => x.id === route.split("/").pop());
+    return e ? `the "${e.title}" engagement` : "Engagements";
+  }
+  if (route === "/engagements") return "Engagements";
   return "Home";
 }
 

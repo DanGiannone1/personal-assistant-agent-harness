@@ -106,6 +106,51 @@ export interface LibraryDoc {
   source?: string;          // "reference" (seeded) | "upload" (promoted)
 }
 
+// ── Engagements (customer delivery projects) ────────────────────────────────
+export interface EngagementMilestone {
+  id: string;
+  title: string;
+  dueDate: string;          // YYYY-MM-DD
+  status: "Planned" | "In progress" | "Done" | "Slipped";
+  notes: string;
+}
+
+export interface EngagementRisk {
+  id: string;
+  title: string;
+  severity: "Low" | "Medium" | "High";
+  status: "Open" | "Mitigating" | "Closed";
+  mitigation: string;
+  owner: string;
+}
+
+export interface EngagementAction {
+  id: string;
+  title: string;
+  owner: string;
+  dueDate: string;          // YYYY-MM-DD
+  status: "Open" | "Done";
+  notes: string;
+}
+
+export interface Engagement {
+  id: string;
+  title: string;
+  customer: string;
+  stage: "Discovery" | "Design" | "Build" | "Deploy" | "Live" | "Closed";
+  health: "green" | "amber" | "red";
+  healthNote: string;
+  members: { name: string; role?: string }[];
+  startDate: string;        // YYYY-MM-DD
+  targetDate: string;       // YYYY-MM-DD
+  notes: string;
+  milestones: EngagementMilestone[];
+  risks: EngagementRisk[];
+  actions: EngagementAction[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppState {
   currentRoute: string;
   tasks: Task[];
@@ -113,4 +158,5 @@ export interface AppState {
   routes: { path: string; title: string; keywords?: string[] }[];
   schedules: Schedule[];
   library: LibraryDoc[];
+  engagements: Engagement[];
 }

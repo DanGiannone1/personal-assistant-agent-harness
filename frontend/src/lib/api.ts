@@ -198,3 +198,18 @@ export const createSchedule = (sid: string, body: { title: string; prompt: strin
 export const updateSchedule = (sid: string, id: string, body: Partial<{ enabled: boolean; title: string; prompt: string }>) =>
   jsonReq("PATCH", `/sessions/${sid}/schedules/${id}`, body);
 export const deleteSchedule = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/schedules/${id}`);
+
+// Sub-item collections on an engagement (milestones/risks/actions share one URL shape).
+export type EngagementItemKind = "milestones" | "risks" | "actions";
+
+export const createEngagement = (sid: string, body: { title: string; customer?: string; stage?: string; health?: string; healthNote?: string; startDate?: string; targetDate?: string; notes?: string }) =>
+  jsonReq("POST", `/sessions/${sid}/engagements`, body);
+export const updateEngagement = (sid: string, id: string, body: Partial<{ title: string; customer: string; stage: string; health: string; healthNote: string; startDate: string; targetDate: string; notes: string }>) =>
+  jsonReq("PATCH", `/sessions/${sid}/engagements/${id}`, body);
+export const deleteEngagement = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/engagements/${id}`);
+export const addEngagementItem = (sid: string, eid: string, kindPath: EngagementItemKind, body: { title: string; dueDate?: string; severity?: string; owner?: string; notes?: string }) =>
+  jsonReq("POST", `/sessions/${sid}/engagements/${eid}/${kindPath}`, body);
+export const updateEngagementItem = (sid: string, eid: string, kindPath: EngagementItemKind, itemId: string, body: Partial<{ title: string; status: string; severity: string; dueDate: string; owner: string; notes: string }>) =>
+  jsonReq("PATCH", `/sessions/${sid}/engagements/${eid}/${kindPath}/${itemId}`, body);
+export const deleteEngagementItem = (sid: string, eid: string, kindPath: EngagementItemKind, itemId: string) =>
+  jsonReq("DELETE", `/sessions/${sid}/engagements/${eid}/${kindPath}/${itemId}`);

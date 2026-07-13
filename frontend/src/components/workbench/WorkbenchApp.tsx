@@ -5,10 +5,11 @@ import {
   FileText, CheckCircle2, Circle, ArrowLeft, Home as HomeIcon, AlertTriangle, Calendar as CalendarIcon, Clock,
   BookMarked, Trash2, Upload, Plus,
 } from "lucide-react";
-import type { AppFile, AppState, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
+import type { AppFile, AppState, Task, Schedule, LibraryDoc, Engagement } from "@/lib/types";
 import { getFileContent, getLibraryContent,
   createTask, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask,
-  createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule } from "@/lib/api";
+  createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule,
+  createEngagement, updateEngagement, deleteEngagement, addEngagementItem, updateEngagementItem, deleteEngagementItem } from "@/lib/api";
 import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
 import CsvTable from "../CsvTable";
@@ -60,6 +61,35 @@ function OverdueBadge() {
   return <span className="tw-badge tw-badge-red"><AlertTriangle size={11} strokeWidth={2.5} />Overdue</span>;
 }
 
+function healthClass(health: string): string {
+  switch (health) {
+    case "green": return "tw-badge-green";
+    case "amber": return "tw-badge-orange";
+    case "red": return "tw-badge-red";
+    default: return "tw-badge-gray";
+  }
+}
+
+function HealthBadge({ health }: { health: string }) {
+  const label = health === "green" ? "Green" : health === "amber" ? "Amber" : health === "red" ? "Red" : health;
+  return <span className={`tw-badge ${healthClass(health)}`}>{label}</span>;
+}
+
+// Engagement sub-item statuses reuse the task badge palette: done-ish → green,
+// in-flight → orange, slipped → red, not-started → gray.
+function engStatusClass(status: string): string {
+  switch (status) {
+    case "Done": case "Closed": case "Live": return "tw-badge-green";
+    case "In progress": case "Mitigating": return "tw-badge-orange";
+    case "Slipped": return "tw-badge-red";
+    default: return "tw-badge-gray"; // Planned / Open
+  }
+}
+
+function EngStatusBadge({ status }: { status: string }) {
+  return <span className={`tw-badge ${engStatusClass(status)}`}>{status}</span>;
+}
+
 export default function WorkbenchApp({
   appState, loading, viewRoute, onNavigate, sessionId, uploadedFiles, generatedFiles, newRecordIds, agentWorking,
   onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh,
@@ -69,20 +99,23 @@ export default function WorkbenchApp({
   const prevRoute = useRef(viewRoute);
 
   // Briefly pulse the app header when the view changes (e.g. agent navigation) so
-  // it's obvious the pane moved.
+  // it's obvious the pane moved. Both flips run from timers (never synchronously in
+  // the effect body) so the effect only schedules work.
   useEffect(() => {
-    if (prevRoute.current !== viewRoute) {
-      prevRoute.current = viewRoute;
-      setPulse(true);
-      const id = setTimeout(() => setPulse(false), 1100);
-      return () => clearTimeout(id);
-    }
+    if (prevRoute.current === viewRoute) return;
+    prevRoute.current = viewRoute;
+    const start = setTimeout(() => setPulse(true), 0);
+    const end = setTimeout(() => setPulse(false), 1100);
+    return () => { clearTimeout(start); clearTimeout(end); };
   }, [viewRoute]);
 
   // Leaving the Documents view closes any open document so returning shows the
-  // list, not a stale previously-opened doc.
+  // list, not a stale previously-opened doc. Deferred to a timer (the render guard
+  // below already hides the doc off-route, so nothing stale can flash meanwhile).
   useEffect(() => {
-    if (viewRoute !== "/documents") setDoc(null);
+    if (viewRoute === "/documents") return;
+    const id = setTimeout(() => setDoc(null), 0);
+    return () => clearTimeout(id);
   }, [viewRoute]);
 
   const openDoc = async (filename: string, fromLibrary = false) => {
@@ -160,6 +193,10 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
     const t = appState.tasks.find((x) => x.id === viewRoute.split("/").pop());
     trail = `Tasks › ${t?.title ?? ""}`;
   } else if (viewRoute === "/todo") trail = "Tasks";
+  else if (viewRoute.startsWith("/engagements/")) {
+    const e = (appState.engagements ?? []).find((x) => x.id === viewRoute.split("/").pop());
+    trail = `Engagements › ${e?.title ?? ""}`;
+  } else if (viewRoute === "/engagements") trail = "Engagements";
   else if (viewRoute === "/calendar") trail = "Calendar";
   else if (viewRoute === "/documents") trail = "Documents";
   else if (viewRoute === "/reminders") trail = "Reminders";
@@ -180,6 +217,94 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const tasks = appState.tasks ?? [];
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
+  const engagements = appState.engagements ?? [];
+
+  // ── Engagement detail (/engagements/{id}) ─────────────────────────────────
+  if (viewRoute.startsWith("/engagements/")) {
+    const e = engagements.find((x) => x.id === viewRoute.split("/").pop());
+    if (!e) {
+      return (
+        <div className="tw-screen" data-testid="engagement-detail">
+          <button type="button" className="tw-back" onClick={() => onNavigate("/engagements")}><ArrowLeft size={14} /> All engagements</button>
+          <div className="tw-empty">Engagement not found.</div>
+        </div>
+      );
+    }
+    const milestones = e.milestones ?? [];
+    const risks = e.risks ?? [];
+    const actions = e.actions ?? [];
+    const msDone = milestones.filter((m) => m.status === "Done").length;
+    return (
+      <div className="tw-screen" data-testid="engagement-detail">
+        <button type="button" className="tw-back" onClick={() => onNavigate("/engagements")}><ArrowLeft size={14} /> All engagements</button>
+        <h1 className="tw-h1">{e.title}</h1>
+        <div className="flex flex-wrap items-center gap-2 mt-1">
+          <HealthBadge health={e.health} />
+          <span className="tw-badge tw-badge-gray">{e.stage}</span>
+          {e.healthNote && <span className="tw-td-sub" style={{ marginTop: 0 }}>{e.healthNote}</span>}
+        </div>
+
+        <div className="tw-stats" style={{ marginTop: 18 }}>
+          <Stat label="Customer" value={e.customer || "—"} />
+          <Stat label="Milestones done" value={`${msDone}/${milestones.length}`} />
+          <Stat label="Open risks" value={risks.filter((r) => r.status !== "Closed").length} />
+          <Stat label="Open actions" value={actions.filter((a) => a.status !== "Done").length} />
+        </div>
+
+        <EngagementDetailEditor engagement={e} sessionId={sessionId} onRefresh={onRefresh} onNavigate={onNavigate} />
+        <MilestoneSection engagement={e} sessionId={sessionId} onRefresh={onRefresh} today={today} />
+        <RiskSection engagement={e} sessionId={sessionId} onRefresh={onRefresh} />
+        <ActionSection engagement={e} sessionId={sessionId} onRefresh={onRefresh} today={today} />
+      </div>
+    );
+  }
+
+  // ── Engagements (/engagements) — customer delivery portfolio ──────────────
+  if (viewRoute === "/engagements") {
+    const openRisks = engagements.reduce((n, e) => n + (e.risks ?? []).filter((r) => r.status !== "Closed").length, 0);
+    return (
+      <div className="tw-screen" data-testid="engagements-screen">
+        <h1 className="tw-h1">Engagements</h1>
+        <p className="tw-subtle">Customer engagements — stage, health, and delivery risk.</p>
+        <div className="tw-stats">
+          <Stat label="Engagements" value={engagements.length} />
+          <Stat label="Red" value={engagements.filter((e) => e.health === "red").length} />
+          <Stat label="Amber" value={engagements.filter((e) => e.health === "amber").length} />
+          <Stat label="Open risks" value={openRisks} />
+        </div>
+        <AddEngagementBar sessionId={sessionId} onRefresh={onRefresh} />
+        {engagements.length === 0 ? (
+          <section className="tw-section"><div className="tw-empty-sm">No engagements yet. Add one above, or ask the assistant.</div></section>
+        ) : (
+          <section className="tw-section">
+            <table className="tw-table" data-testid="engagements-table">
+              <thead><tr><th>Engagement</th><th>Customer</th><th>Stage</th><th>Health</th><th>Milestones</th><th>Risks</th><th>Actions</th><th>Target</th><th></th></tr></thead>
+              <tbody>
+                {engagements.map((e) => {
+                  const milestones = e.milestones ?? [];
+                  const msDone = milestones.filter((m) => m.status === "Done").length;
+                  const note = e.healthNote || "";
+                  return (
+                    <tr key={e.id} data-testid={`engagement-row-${e.id}`} className={`tw-rowlink ${isNew(e.id) ? "tw-row-new" : ""}`} onClick={() => onNavigate(`/engagements/${e.id}`)}>
+                      <td className="tw-td-title"><button type="button" style={rowTitleBtn} onClick={(ev) => { ev.stopPropagation(); onNavigate(`/engagements/${e.id}`); }}>{e.title}</button>{isNew(e.id) && <span className="tw-new">New</span>}</td>
+                      <td>{e.customer || "—"}</td>
+                      <td>{e.stage}</td>
+                      <td><HealthBadge health={e.health} />{note && <span className="tw-td-sub">{note.length > 48 ? `${note.slice(0, 48)}…` : note}</span>}</td>
+                      <td className="tw-td-mono">{msDone}/{milestones.length}</td>
+                      <td className="tw-td-mono">{(e.risks ?? []).filter((r) => r.status !== "Closed").length}</td>
+                      <td className="tw-td-mono">{(e.actions ?? []).filter((a) => a.status !== "Done").length}</td>
+                      <td>{e.targetDate ? dayLabel(e.targetDate.slice(0, 10), today) : "—"}</td>
+                      <td onClick={(ev) => ev.stopPropagation()}><RowDelete onDelete={() => deleteEngagement(sessionId!, e.id)} onRefresh={onRefresh} testid={`engagement-delete-${e.id}`} label={e.title} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+        )}
+      </div>
+    );
+  }
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────
   if (viewRoute.startsWith("/todo/")) {
@@ -876,5 +1001,270 @@ function ReminderActions({ schedule, sessionId, onRefresh }: { schedule: Schedul
       )}
       {err && <span role="alert" title={err} style={{ fontSize: 11, color: "#c0344d", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{err}</span>}
     </span>
+  );
+}
+
+const ENGAGEMENT_STAGES = ["Discovery", "Design", "Build", "Deploy", "Live", "Closed"];
+
+function AddEngagementBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [customer, setCustomer] = useState("");
+  const [stage, setStage] = useState("Discovery");
+  const [target, setTarget] = useState("");
+  const { busy, err, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-engagement-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add engagement</button>;
+  const submit = () => { if (!sessionId || !title.trim()) return; run(async () => { await createEngagement(sessionId, { title: title.trim(), customer: customer.trim(), stage, targetDate: target }); setTitle(""); setCustomer(""); setTarget(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
+  return (
+    <div style={formCard} data-testid="add-engagement-form" onKeyDown={onKey}>
+      <Field label="Title" grow><input autoFocus aria-label="Engagement title" placeholder="e.g. Contoso rollout" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="engagement-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+      <Field label="Customer"><input aria-label="Customer" placeholder="e.g. Contoso" value={customer} style={{ ...inputStyle, width: 150 }} data-testid="engagement-customer-input" onChange={(e) => setCustomer(e.target.value)} /></Field>
+      <Field label="Stage"><select aria-label="Stage" value={stage} style={selectStyle} data-testid="engagement-stage-select" onChange={(e) => setStage(e.target.value)}>{ENGAGEMENT_STAGES.map((s) => <option key={s}>{s}</option>)}</select></Field>
+      <Field label="Target date" grow><input type="date" aria-label="Target date" value={target} style={{ ...inputStyle, width: "100%" }} data-testid="engagement-target-input" onChange={(e) => setTarget(e.target.value)} /></Field>
+      <span style={{ display: "inline-flex", gap: 6 }}>
+        <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="engagement-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
+        <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+      </span>
+      <FormErr msg={err} />
+    </div>
+  );
+}
+
+function EngagementDetailEditor({ engagement, sessionId, onRefresh, onNavigate }: { engagement: Engagement; sessionId: string | null; onRefresh: () => Promise<void>; onNavigate: (r: string) => void }) {
+  const { busy, err, run } = useMut(onRefresh);
+  const [saved, setSaved] = useState(false);
+  const [armed, setArmed] = useState(false);
+  // Health edits are coupled to the note: the server 422s an Amber/Red health without a
+  // healthNote, so an Amber/Red pick is held locally until the note is non-empty, then both save together.
+  const [pendingHealth, setPendingHealth] = useState<string | null>(null);
+  const [note, setNote] = useState(engagement.healthNote || "");
+  const [healthErr, setHealthErr] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  // Auto-save on change (no Save button); show a Saving…/Saved indicator instead of freezing the pane.
+  const patch = (body: Partial<{ title: string; customer: string; stage: string; health: string; healthNote: string; startDate: string; targetDate: string; notes: string }>) => { if (sessionId) { setSaved(false); run(async () => { await updateEngagement(sessionId, engagement.id, body); setSaved(true); }); } };
+  const saveHealth = (health: string, noteVal: string) => {
+    if ((health === "amber" || health === "red") && !noteVal.trim()) {
+      setHealthErr("Add a health note explaining why before saving an Amber or Red health.");
+      return;
+    }
+    setHealthErr(null);
+    if (sessionId) { setSaved(false); run(async () => { await updateEngagement(sessionId, engagement.id, health === "green" ? { health } : { health, healthNote: noteVal.trim() }); setPendingHealth(null); setSaved(true); }); }
+  };
+  // Transient "Saved ✓" — clear it a couple seconds after a save settles.
+  useEffect(() => { if (!saved) return; const id = setTimeout(() => setSaved(false), 2200); return () => clearTimeout(id); }, [saved]);
+  // Move focus to Confirm when the delete is armed (consistent with RowDelete/TaskDetailEditor).
+  useEffect(() => { if (armed) confirmRef.current?.focus(); }, [armed]);
+  return (
+    <section className="tw-section" data-testid="engagement-edit">
+      <h2 className="tw-h2">Edit{" "}
+        <span aria-live="polite" style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary,#676879)" }}>
+          {busy ? "Saving…" : saved ? "Saved ✓" : ""}
+        </span>
+      </h2>
+      <div style={{ ...formRow, gap: 14, alignItems: "flex-end" }}>
+        <Field label="Title" grow><input aria-label="Engagement title" defaultValue={engagement.title} style={{ ...inputStyle, width: "100%", minWidth: 220 }} data-testid="eng-edit-title"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== engagement.title) patch({ title: v }); }} /></Field>
+        <Field label="Customer"><input aria-label="Customer" defaultValue={engagement.customer || ""} style={{ ...inputStyle, width: 150 }} data-testid="eng-edit-customer"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v !== (engagement.customer || "")) patch({ customer: v }); }} /></Field>
+        <Field label="Stage"><select value={engagement.stage} style={selectStyle} data-testid="eng-edit-stage" onChange={(e) => patch({ stage: e.target.value })}>{ENGAGEMENT_STAGES.map((s) => <option key={s}>{s}</option>)}</select></Field>
+        <Field label="Health"><select value={pendingHealth ?? engagement.health} style={selectStyle} data-testid="eng-edit-health"
+          onChange={(e) => { const v = e.target.value; setPendingHealth(v); saveHealth(v, note); }}>
+          <option value="green">Green</option><option value="amber">Amber</option><option value="red">Red</option>
+        </select></Field>
+        <Field label="Health note" grow><input aria-label="Health note" placeholder="Required for Amber/Red" value={note} style={{ ...inputStyle, width: "100%", minWidth: 180 }} data-testid="eng-edit-health-note"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onChange={(e) => setNote(e.target.value)}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (pendingHealth) { saveHealth(pendingHealth, v); return; }
+            if (v === (engagement.healthNote || "")) return;
+            if (!v && engagement.health !== "green") { setHealthErr("A health note is required while health is Amber or Red."); return; }
+            setHealthErr(null);
+            patch({ healthNote: v });
+          }} /></Field>
+        <Field label="Start date"><input type="date" value={(engagement.startDate || "").slice(0, 10)} style={inputStyle} data-testid="eng-edit-start" onChange={(e) => { if (e.target.value !== (engagement.startDate || "").slice(0, 10)) patch({ startDate: e.target.value }); }} /></Field>
+        <Field label="Target date"><input type="date" value={(engagement.targetDate || "").slice(0, 10)} style={inputStyle} data-testid="eng-edit-target" onChange={(e) => { if (e.target.value !== (engagement.targetDate || "").slice(0, 10)) patch({ targetDate: e.target.value }); }} /></Field>
+      </div>
+      <div style={{ ...formRow, gap: 14, alignItems: "flex-end", marginTop: 10 }}>
+        <Field label="Notes" grow><input aria-label="Notes" defaultValue={engagement.notes || ""} style={{ ...inputStyle, width: "100%", minWidth: 220 }} data-testid="eng-edit-notes"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v !== (engagement.notes || "")) patch({ notes: v }); }} /></Field>
+        {armed ? (
+          <span style={{ marginLeft: "auto", display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <button ref={confirmRef} type="button" style={dangerBtn} data-testid="delete-engagement-confirm" disabled={busy}
+              onClick={() => { if (sessionId) run(async () => { await deleteEngagement(sessionId, engagement.id); onNavigate("/engagements"); }); }}><Trash2 size={13} /> Confirm delete</button>
+            <button type="button" style={docActionBtn} disabled={busy} onClick={() => setArmed(false)}>Cancel</button>
+          </span>
+        ) : (
+          <button type="button" style={{ ...docActionBtn, marginLeft: "auto" }} data-testid="delete-engagement-btn" onClick={() => setArmed(true)}><Trash2 size={13} /> Delete engagement</button>
+        )}
+      </div>
+      <FormErr msg={healthErr ?? err} />
+    </section>
+  );
+}
+
+function MilestoneSection({ engagement, sessionId, onRefresh, today }: { engagement: Engagement; sessionId: string | null; onRefresh: () => Promise<void>; today: string }) {
+  const milestones = engagement.milestones ?? [];
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [due, setDue] = useState("");
+  const { busy, err, run } = useMut(onRefresh);
+  const setStatus = (id: string, status: string) => { if (sessionId) run(() => updateEngagementItem(sessionId, engagement.id, "milestones", id, { status })); };
+  const add = () => { if (!sessionId || !title.trim()) return; run(async () => { await addEngagementItem(sessionId, engagement.id, "milestones", { title: title.trim(), dueDate: due }); setTitle(""); setDue(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") add(); else if (e.key === "Escape") setOpen(false); };
+  return (
+    <section className="tw-section" data-testid="eng-milestones">
+      <h2 className="tw-h2">Milestones <span className="tw-count">{milestones.length}</span></h2>
+      {milestones.length === 0 ? <div className="tw-empty-sm">No milestones yet. Add one below.</div> : (
+        <table className="tw-table" data-testid="eng-milestones-table">
+          <thead><tr><th>Milestone</th><th>Status</th><th>Due</th><th></th></tr></thead>
+          <tbody>
+            {milestones.map((m) => (
+              <tr key={m.id} data-testid={`eng-milestone-row-${m.id}`}>
+                <td className="tw-td-title">{m.title}{m.notes && <span className="tw-td-sub">{m.notes}</span>}</td>
+                <td>
+                  <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    <EngStatusBadge status={m.status} />
+                    <select aria-label={`Status of ${m.title}`} value={m.status} style={selectStyle} data-testid={`eng-milestone-status-${m.id}`} disabled={busy} onChange={(e) => setStatus(m.id, e.target.value)}>
+                      {["Planned", "In progress", "Done", "Slipped"].map((s) => <option key={s}>{s}</option>)}
+                    </select>
+                  </span>
+                </td>
+                <td>{m.dueDate ? dayLabel(m.dueDate.slice(0, 10), today) : "—"}</td>
+                <td><RowDelete onDelete={() => deleteEngagementItem(sessionId!, engagement.id, "milestones", m.id)} onRefresh={onRefresh} testid={`eng-milestone-delete-${m.id}`} label={m.title} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {!open ? (
+        <button type="button" style={{ ...docActionBtn, marginTop: 8 }} data-testid="add-milestone-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add milestone</button>
+      ) : (
+        <div style={formCard} data-testid="add-milestone-form" onKeyDown={onKey}>
+          <Field label="Title" grow><input autoFocus aria-label="Milestone title" placeholder="e.g. Design sign-off" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="milestone-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+          <Field label="Due date"><input type="date" aria-label="Due date" value={due} style={inputStyle} data-testid="milestone-due-input" onChange={(e) => setDue(e.target.value)} /></Field>
+          <span style={{ display: "inline-flex", gap: 6 }}>
+            <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="milestone-save-btn" onClick={add}>{busy ? "Saving…" : "Save"}</button>
+            <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+          </span>
+        </div>
+      )}
+      <FormErr msg={err} />
+    </section>
+  );
+}
+
+function RiskSection({ engagement, sessionId, onRefresh }: { engagement: Engagement; sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const risks = engagement.risks ?? [];
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [severity, setSeverity] = useState("Medium");
+  const [owner, setOwner] = useState("");
+  const [mitigation, setMitigation] = useState("");
+  const { busy, err, run } = useMut(onRefresh);
+  const setStatus = (id: string, status: string) => { if (sessionId) run(() => updateEngagementItem(sessionId, engagement.id, "risks", id, { status })); };
+  const add = () => { if (!sessionId || !title.trim()) return; run(async () => { await addEngagementItem(sessionId, engagement.id, "risks", { title: title.trim(), severity, owner: owner.trim(), notes: mitigation.trim() }); setTitle(""); setOwner(""); setMitigation(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") add(); else if (e.key === "Escape") setOpen(false); };
+  return (
+    <section className="tw-section" data-testid="eng-risks">
+      <h2 className="tw-h2">Risks <span className="tw-count">{risks.length}</span></h2>
+      {risks.length === 0 ? <div className="tw-empty-sm">No risks logged. Add one below.</div> : (
+        <table className="tw-table" data-testid="eng-risks-table">
+          <thead><tr><th>Risk</th><th>Severity</th><th>Status</th><th>Owner</th><th>Mitigation</th><th></th></tr></thead>
+          <tbody>
+            {risks.map((r) => (
+              <tr key={r.id} data-testid={`eng-risk-row-${r.id}`}>
+                <td className="tw-td-title">{r.title}</td>
+                <td><PriorityBadge priority={r.severity} /></td>
+                <td>
+                  <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    <EngStatusBadge status={r.status} />
+                    <select aria-label={`Status of ${r.title}`} value={r.status} style={selectStyle} data-testid={`eng-risk-status-${r.id}`} disabled={busy} onChange={(e) => setStatus(r.id, e.target.value)}>
+                      {["Open", "Mitigating", "Closed"].map((s) => <option key={s}>{s}</option>)}
+                    </select>
+                  </span>
+                </td>
+                <td>{r.owner || "—"}</td>
+                <td>{r.mitigation || "—"}</td>
+                <td><RowDelete onDelete={() => deleteEngagementItem(sessionId!, engagement.id, "risks", r.id)} onRefresh={onRefresh} testid={`eng-risk-delete-${r.id}`} label={r.title} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {!open ? (
+        <button type="button" style={{ ...docActionBtn, marginTop: 8 }} data-testid="add-risk-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add risk</button>
+      ) : (
+        <div style={formCard} data-testid="add-risk-form" onKeyDown={onKey}>
+          <Field label="Title" grow><input autoFocus aria-label="Risk title" placeholder="e.g. Data migration slips" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="risk-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+          <Field label="Severity"><select aria-label="Severity" value={severity} style={selectStyle} data-testid="risk-severity-select" onChange={(e) => setSeverity(e.target.value)}>{["Low", "Medium", "High"].map((s) => <option key={s}>{s}</option>)}</select></Field>
+          <Field label="Owner"><input aria-label="Owner" placeholder="e.g. Dan" value={owner} style={{ ...inputStyle, width: 130 }} data-testid="risk-owner-input" onChange={(e) => setOwner(e.target.value)} /></Field>
+          <Field label="Mitigation" grow><input aria-label="Mitigation" placeholder="How it's being handled" value={mitigation} style={{ ...inputStyle, width: "100%", minWidth: 180 }} data-testid="risk-mitigation-input" onChange={(e) => setMitigation(e.target.value)} /></Field>
+          <span style={{ display: "inline-flex", gap: 6 }}>
+            <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="risk-save-btn" onClick={add}>{busy ? "Saving…" : "Save"}</button>
+            <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+          </span>
+        </div>
+      )}
+      <FormErr msg={err} />
+    </section>
+  );
+}
+
+function ActionSection({ engagement, sessionId, onRefresh, today }: { engagement: Engagement; sessionId: string | null; onRefresh: () => Promise<void>; today: string }) {
+  const actions = engagement.actions ?? [];
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [owner, setOwner] = useState("");
+  const [due, setDue] = useState("");
+  const { busy, err, run } = useMut(onRefresh);
+  const setStatus = (id: string, status: string) => { if (sessionId) run(() => updateEngagementItem(sessionId, engagement.id, "actions", id, { status })); };
+  const add = () => { if (!sessionId || !title.trim()) return; run(async () => { await addEngagementItem(sessionId, engagement.id, "actions", { title: title.trim(), owner: owner.trim(), dueDate: due }); setTitle(""); setOwner(""); setDue(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") add(); else if (e.key === "Escape") setOpen(false); };
+  return (
+    <section className="tw-section" data-testid="eng-actions">
+      <h2 className="tw-h2">Actions <span className="tw-count">{actions.length}</span></h2>
+      {actions.length === 0 ? <div className="tw-empty-sm">No action items yet. Add one below.</div> : (
+        <table className="tw-table" data-testid="eng-actions-table">
+          <thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {actions.map((a) => (
+              <tr key={a.id} data-testid={`eng-action-row-${a.id}`}>
+                <td className="tw-td-title">{a.title}{a.notes && <span className="tw-td-sub">{a.notes}</span>}</td>
+                <td>{a.owner || "—"}</td>
+                <td>{a.dueDate ? dayLabel(a.dueDate.slice(0, 10), today) : "—"}</td>
+                <td>
+                  <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    <EngStatusBadge status={a.status} />
+                    <select aria-label={`Status of ${a.title}`} value={a.status} style={selectStyle} data-testid={`eng-action-status-${a.id}`} disabled={busy} onChange={(e) => setStatus(a.id, e.target.value)}>
+                      {["Open", "Done"].map((s) => <option key={s}>{s}</option>)}
+                    </select>
+                  </span>
+                </td>
+                <td><RowDelete onDelete={() => deleteEngagementItem(sessionId!, engagement.id, "actions", a.id)} onRefresh={onRefresh} testid={`eng-action-delete-${a.id}`} label={a.title} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {!open ? (
+        <button type="button" style={{ ...docActionBtn, marginTop: 8 }} data-testid="add-action-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add action</button>
+      ) : (
+        <div style={formCard} data-testid="add-action-form" onKeyDown={onKey}>
+          <Field label="Title" grow><input autoFocus aria-label="Action title" placeholder="e.g. Send revised SOW" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="action-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+          <Field label="Owner"><input aria-label="Owner" placeholder="e.g. Dan" value={owner} style={{ ...inputStyle, width: 130 }} data-testid="action-owner-input" onChange={(e) => setOwner(e.target.value)} /></Field>
+          <Field label="Due date"><input type="date" aria-label="Due date" value={due} style={inputStyle} data-testid="action-due-input" onChange={(e) => setDue(e.target.value)} /></Field>
+          <span style={{ display: "inline-flex", gap: 6 }}>
+            <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="action-save-btn" onClick={add}>{busy ? "Saving…" : "Save"}</button>
+            <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+          </span>
+        </div>
+      )}
+      <FormErr msg={err} />
+    </section>
   );
 }

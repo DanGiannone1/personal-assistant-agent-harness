@@ -20,16 +20,21 @@ export default function HostApp() {
   const [narrow, setNarrow] = useState(false);
   const prevNarrow = useRef<boolean | null>(null);
   useEffect(() => {
-    const onResize = () => setNarrow(window.innerWidth < 1100);
+    const onResize = () => {
+      const isNarrow = window.innerWidth < 1100;
+      setNarrow(isNarrow);
+      // Only a regime crossing (wide↔narrow) auto-collapses/expands the dock, so
+      // in-regime manual toggles are respected. Handled here in the resize callback
+      // (not a narrow-watching effect) so state isn't set synchronously in an effect.
+      if (prevNarrow.current !== isNarrow) {
+        prevNarrow.current = isNarrow;
+        setDockOpen(!isNarrow);
+      }
+    };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  useEffect(() => {
-    if (prevNarrow.current === narrow) return;
-    prevNarrow.current = narrow;
-    setDockOpen(!narrow);
-  }, [narrow]);
 
   const uploadedFiles = useMemo(() => state.files.filter((f) => f.origin === "uploaded"), [state.files]);
   const generatedFiles = useMemo(() => state.files.filter((f) => f.origin === "generated"), [state.files]);
