@@ -935,6 +935,19 @@ async def delete_schedule(session_id: str, schedule_id: str):
     await _mutate(_mut)
 
 
+class VisitPing(BaseModel):
+    path: str = Field(..., min_length=1, max_length=300)
+    title: str = Field("", max_length=200)
+
+
+@app.post("/sessions/{session_id}/visits", status_code=204)
+async def record_visit(session_id: str, req: VisitPing, request: Request):
+    """Fire-and-forget visit ping from manual navigation — feeds recency priors and
+    quick links, alongside the server-side visits recorded by agent navigation."""
+    await _require_session(session_id)
+    await asyncio.to_thread(appdb.record_visit, req.path, req.title)
+
+
 class SaveContentRequest(BaseModel):
     filename: str
     content: str

@@ -206,12 +206,13 @@ async def app_state(request: Request) -> dict:
     finally:
         appdb.reset_current_user(ctx)
     # Compose the user's full world: personal space + every project they're a member of
-    # (role included so the UI can gate affordances). Still ONE payload from the store
-    # the tools mutate — the verifiable-execution invariant carries to shared scopes.
+    # (role included so the UI can gate affordances) + ranked quick links. Still ONE
+    # payload from the store the tools mutate — verifiable execution carries over.
     projects = appdb.list_projects_for(uid)
     for p in projects:
         p["role"] = appdb.project_role(p, uid)
-    return {**personal, "projects": projects}
+    return {**personal, "projects": projects,
+            "quickLinks": appdb.rank_destinations(personal, projects)}
 
 
 @app.get("/session")

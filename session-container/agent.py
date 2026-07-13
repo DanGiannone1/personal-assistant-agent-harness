@@ -490,12 +490,22 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             return None, f"AMBIGUOUS event '{ref}': {opts}. Ask which one."
         return matches[0], None
 
-    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, or a calendar event.")
+    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a project, a task, or a calendar event. Pass the user's destination words verbatim.")
     def navigate(params: NavigateParams) -> str:
+        projects = appdb.list_projects_for(get_user())
+
         def _mut(data):
-            result = appdb.resolve_destination(data, params.destination)
+            result = appdb.resolve_destination_v2(
+                data, params.destination, projects, current_route=data.get("currentRoute"),
+            )
             if result["status"] == "resolved":
                 data["currentRoute"] = result["path"]
+                appdb.append_visit(data, result["path"], result["title"])
+                alternates = result.get("alternates") or []
+                if alternates:
+                    opts = "; ".join(a["title"] for a in alternates)
+                    return (f"NAVIGATED to {result['title']} ({result['path']}). "
+                            f"Decided by your context — alternatives if wrong: {opts}")
                 return f"NAVIGATED to {result['title']} ({result['path']})"
             opts = "; ".join(c["title"] for c in result["candidates"])
             if result["status"] == "ambiguous":

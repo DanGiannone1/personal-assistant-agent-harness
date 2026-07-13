@@ -42,7 +42,8 @@ _LOCK = threading.Lock()
 # keyed by a STABLE owner id (single-user app), so it persists across sessions/tabs/
 # restarts. Documents/files stay in the per-session workspace folder. AAD-only (no
 # account key): DefaultAzureCredential — az login locally, managed identity in ACA.
-_STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules", "library")
+_STATE_KEYS = ("currentRoute", "tasks", "events", "routes", "schedules", "library",
+               "visits", "workingContext")
 # Multi-user: the owner of app state is the SIGNED-IN USER, bound per request/turn via
 # `set_current_user()` (the orchestrator middleware and the session container both set it
 # from the authenticated caller). `COSMOS_OWNER_ID` remains as an explicit single-user
@@ -255,11 +256,13 @@ def _doc_to_state(doc: dict) -> dict:
     coerced to [] so callers never have to null-check.
     """
     state = {k: doc.get(k) for k in _STATE_KEYS}
-    for k in ("tasks", "events", "routes", "schedules", "library"):
+    for k in ("tasks", "events", "routes", "schedules", "library", "visits"):
         if state.get(k) is None:
             state[k] = []
     if state.get("currentRoute") is None:
         state["currentRoute"] = "/home"
+    if state.get("workingContext") is None:
+        state["workingContext"] = {}
     return state
 
 
@@ -490,6 +493,161 @@ def resolve_project(ref: str, user_id: str) -> dict | None:
         return exact[0]
     partial = [p for p in projects if low in p["name"].lower()]
     return partial[0] if len(partial) == 1 else None
+
+
+# ── Navigation v2 (spec F4): visit log, ranking, and the upgraded resolver ──
+# The destination space is DERIVED live from the route registry × the user's projects ×
+# their records — never stored copies (stored copies drift).
+
+_VISIT_CAP = 50
+
+
+def append_visit(data: dict, path: str, title: str) -> None:
+    """Mutator-side visit append (usable inside another mutation — one write, no nesting)."""
+    path = (path or "").strip()
+    if not path:
+        return
+    visits = data.get("visits") or []
+    # Collapse consecutive repeats of the same path (dwell refreshes, double-fires).
+    if visits and visits[-1].get("path") == path:
+        visits[-1]["ts"] = _now_iso()
+    else:
+        visits.append({"path": path, "title": (title or path)[:120], "ts": _now_iso()})
+    data["visits"] = visits[-_VISIT_CAP:]
+    wc = data.get("workingContext") or {}
+    wc["lastRoute"] = path
+    if path.startswith("/projects/"):
+        wc["activeProjectId"] = path.split("/")[2]
+    data["workingContext"] = wc
+
+
+def record_visit(path: str, title: str) -> None:
+    """Append to the bound user's visit ring buffer + refresh workingContext. Every route
+    change counts — manual click or agent-driven — so recency priors see both."""
+    if not (path or "").strip():
+        return
+    update(lambda data: append_visit(data, path, title))
+
+
+def rank_destinations(data: dict, projects: list[dict], limit: int = 5) -> list[dict]:
+    """Quick links: the destinations this user most plausibly wants NOW.
+    MVP ranking = recency (dedup by path, newest first), with a small salience boost for
+    projects that carry overdue tasks. No AI in the path; improves as context accrues."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    by_path: dict[str, dict] = {}
+    for v in reversed(data.get("visits") or []):   # newest → oldest
+        p = v.get("path")
+        if p and p not in by_path:
+            by_path[p] = {"path": p, "title": v.get("title") or p, "score": len(by_path)}
+    # Salience: a project with overdue tasks jumps ahead of pure recency.
+    for proj in projects:
+        n_over = sum(1 for t in proj.get("tasks", []) if is_overdue(t, today))
+        if n_over:
+            path = f"/projects/{proj['id']}"
+            entry = by_path.setdefault(path, {"path": path, "title": proj["name"], "score": 99})
+            entry["score"] -= 10
+            entry["title"] = f"{proj['name']} · {n_over} overdue"
+    ranked = sorted(by_path.values(), key=lambda e: e["score"])
+    return [{"path": e["path"], "title": e["title"]} for e in ranked[:limit]]
+
+
+def _project_destinations(projects: list[dict]) -> list[dict]:
+    """Each project contributes its page + settings as navigable destinations."""
+    dests = []
+    for p in projects:
+        dests.append({"path": f"/projects/{p['id']}", "title": p["name"],
+                      "kind": "project", "projectId": p["id"]})
+        dests.append({"path": f"/projects/{p['id']}/settings", "title": f"{p['name']} settings",
+                      "kind": "project-settings", "projectId": p["id"]})
+    return dests
+
+
+def resolve_destination_v2(data: dict, destination: str, projects: list[dict],
+                           current_route: str | None = None) -> dict:
+    """The upgraded resolver: registry routes + the user's projects + records, with
+    context ranking and a decide-don't-interrogate policy. Deterministic; returns:
+
+      {"status": "resolved", "path", "title"}
+      {"status": "resolved", "path", "title", "alternates": [...]}   ← decided, with escape hatch
+      {"status": "ambiguous", "question", "candidates": [...]}       ← genuine tie → picker
+      {"status": "not_found", "candidates": [...]}
+
+    Candidates/alternates are fully-bound {path, title, disambiguator} — a chip click is a
+    plain manual nav, no second resolution pass."""
+    q = (destination or "").strip().lower()
+    base = resolve_destination(data, destination)  # personal routes + personal records
+    proj_dests = _project_destinations(projects)
+
+    # Project matches: exact name, then word/substring (≥3 chars), settings-qualified.
+    _SETTINGS_WORDS = ("settings", "members", "sharing", "conventions")
+
+    def _proj_matches() -> list[dict]:
+        hits = []
+        for d in proj_dests:
+            # A qualified subpage only matches when the query carries its qualifier —
+            # "launch" must not sweep in "Website Launch settings" (unexplained words
+            # never match; the navigation analogue of the stopword-residual guard).
+            if d["kind"] == "project-settings" and not any(w in q for w in _SETTINGS_WORDS):
+                continue
+            title = d["title"].lower()
+            if q == title:
+                return [d]
+            if len(q) >= 3 and (q in title or title in q):
+                hits.append(d)
+        return hits
+
+    proj_hits = _proj_matches()
+
+    # Merge decision space: a resolved base route OR project hits (or both → ambiguity
+    # across kinds, e.g. "documents" page vs a project named Documents).
+    if base["status"] == "resolved" and not proj_hits:
+        return base
+    if not proj_hits:
+        return base  # ambiguous / not_found from the personal space, unchanged
+
+    def _chip(d: dict) -> dict:
+        return {"path": d["path"], "title": d["title"],
+                "disambiguator": d.get("disambiguator", "")}
+
+    if len(proj_hits) == 1 and base["status"] != "resolved":
+        return {"status": "resolved", "path": proj_hits[0]["path"], "title": proj_hits[0]["title"]}
+
+    # Multiple candidates → try to DECIDE with context before interrogating.
+    candidates = ([{"path": base["path"], "title": base["title"]}] if base["status"] == "resolved" else []) \
+        + [_chip(d) for d in proj_hits]
+    for c in candidates:
+        if c["path"].startswith("/projects/"):
+            pid = c["path"].split("/")[2]
+            proj = next((p for p in projects if p["id"] == pid), None)
+            if proj:
+                others = [m["userId"] for m in proj.get("members", [])]
+                c["disambiguator"] = f"{len(others)} member(s)"
+
+    # Dominance rule 1: the current project wins ("my tasks" while inside it).
+    if current_route and current_route.startswith("/projects/"):
+        cur_pid = current_route.split("/")[2]
+        dominant = [c for c in candidates if f"/projects/{cur_pid}" in c["path"]]
+        if len(dominant) == 1:
+            alternates = [c for c in candidates if c is not dominant[0]]
+            return {"status": "resolved", **dominant[0], "alternates": alternates}
+
+    # Dominance rule 2: the most recently visited candidate wins.
+    visits = data.get("visits") or []
+    seen_order = {v["path"]: i for i, v in enumerate(visits)}  # later = more recent
+    visited = [c for c in candidates if c["path"] in seen_order]
+    if visited:
+        visited.sort(key=lambda c: seen_order[c["path"]], reverse=True)
+        top = visited[0]
+        rest = [c for c in candidates if c is not top]
+        # Only dominant if strictly more recent than every rival (a genuine tie → picker).
+        rival_recency = [seen_order.get(c["path"], -1) for c in rest]
+        if seen_order[top["path"]] > max(rival_recency, default=-1):
+            return {"status": "resolved", **top, "alternates": rest}
+
+    # Genuine tie → picker chips, pane stays put.
+    return {"status": "ambiguous",
+            "question": f"Which one did you mean for '{destination}'?",
+            "candidates": candidates}
 
 
 # Demo fixture per the projects spec: two similarly-named "Launch" projects (the M3
