@@ -236,19 +236,20 @@ def _tool_outcome(result, success) -> str:
     return "ok"
 
 
-def _nav_candidates(result) -> list[str]:
-    """Pull candidate destination titles out of a navigate AMBIGUOUS/NOT_FOUND result
-    so the UI can offer them as one-click chips."""
+def _nav_candidates(result) -> list[dict]:
+    """Pull FULLY-BOUND candidates ({title, path}) from a navigate result's CHIPS line —
+    picker chips (ambiguous/not-found) and escape-hatch chips (decided-with-alternates)
+    both ride this channel; a chip click is a plain manual nav, no second resolution."""
     text = _result_text(result)
-    marker = "destinations: " if "destinations: " in text else ("options: " if "options: " in text else None)
-    if not marker:
+    if "\nCHIPS: " not in text:
         return []
-    tail = text.split(marker, 1)[1]
-    tail = tail.split(". ", 1)[0].rstrip(".")
-    # Candidates are joined with "; " by the navigate tool — split on that only
-    # (splitting on the word "and" would fragment titles like "Research and Development").
-    parts = [p.strip() for p in tail.split(";") if p.strip()]
-    return [p for p in parts if p and not p.lower().startswith("ask ")][:6]
+    tail = text.rsplit("\nCHIPS: ", 1)[1].strip()
+    chips = []
+    for part in tail.split(";"):
+        title, _, path = part.strip().partition("|")
+        if title and path.startswith("/"):
+            chips.append({"title": title, "path": path})
+    return chips[:6]
 
 
 def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
@@ -498,6 +499,12 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
             result = appdb.resolve_destination_v2(
                 data, params.destination, projects, current_route=data.get("currentRoute"),
             )
+            # CHIPS suffix: fully-bound {title|path} pairs the UI renders as one-click
+            # manual navs (no second resolution pass). The model sees it too — harmless
+            # info; routes still can only be SET through this tool's resolution.
+            def _chips(items):
+                return "\nCHIPS: " + "; ".join(f"{c['title']}|{c['path']}" for c in items)
+
             if result["status"] == "resolved":
                 data["currentRoute"] = result["path"]
                 appdb.append_visit(data, result["path"], result["title"])
@@ -505,12 +512,17 @@ def _build_flow_tools(working_dir: str, get_user) -> list:
                 if alternates:
                     opts = "; ".join(a["title"] for a in alternates)
                     return (f"NAVIGATED to {result['title']} ({result['path']}). "
-                            f"Decided by your context — alternatives if wrong: {opts}")
+                            f"Decided by your context — alternatives if wrong: {opts}"
+                            + _chips(alternates))
                 return f"NAVIGATED to {result['title']} ({result['path']})"
             opts = "; ".join(c["title"] for c in result["candidates"])
             if result["status"] == "ambiguous":
-                raise appdb.AbortWrite(f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. Ask the user which one.")
-            raise appdb.AbortWrite(f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}.")
+                raise appdb.AbortWrite(
+                    f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. "
+                    f"Ask the user which one." + _chips(result["candidates"]))
+            raise appdb.AbortWrite(
+                f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}."
+                + _chips(result["candidates"]))
         return _update(_mut)
 
     @define_tool(name="list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
