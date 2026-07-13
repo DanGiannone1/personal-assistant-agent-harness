@@ -580,20 +580,36 @@ def resolve_destination_v2(data: dict, destination: str, projects: list[dict],
 
     # Project matches: exact name, then word/substring (≥3 chars), settings-qualified.
     _SETTINGS_WORDS = ("settings", "members", "sharing", "conventions")
+    # Section words are *explained* residuals: "the launch tasks" means the tasks section
+    # of a Launch project — "tasks" qualifies, it doesn't disqualify. Everything else
+    # unexplained still fails loud (the stopword-residual guard, applied to projects).
+    _SECTION_WORDS = {"tasks", "task", "todo", "calendar", "events", "event", "documents",
+                      "docs", "files", "overview", "page", "project", "workspace"}
+    _NAV_FILLERS = {"my", "the", "a", "an", "to", "go", "goto", "take", "me", "please",
+                    "open", "show", "of", "for", "in", "on", "into", "back", "view"}
+    q_tokens = set(re.findall(r"[a-z0-9]+", q))
 
     def _proj_matches() -> list[dict]:
         hits = []
         for d in proj_dests:
             # A qualified subpage only matches when the query carries its qualifier —
-            # "launch" must not sweep in "Website Launch settings" (unexplained words
-            # never match; the navigation analogue of the stopword-residual guard).
+            # "launch" must not sweep in "Website Launch settings".
             if d["kind"] == "project-settings" and not any(w in q for w in _SETTINGS_WORDS):
                 continue
             title = d["title"].lower()
             if q == title:
                 return [d]
-            if len(q) >= 3 and (q in title or title in q):
-                hits.append(d)
+            title_tokens = set(re.findall(r"[a-z0-9]+", title))
+            token_hit = bool(title_tokens & q_tokens)
+            sub_hit = len(q) >= 3 and (q in title or title in q)
+            if not (token_hit or sub_hit):
+                continue
+            # Guard: every query word must be explained — by the title, a filler, a
+            # section word, or a settings qualifier. Unexplained words never match.
+            residual = q_tokens - title_tokens - _NAV_FILLERS - _SECTION_WORDS - set(_SETTINGS_WORDS)
+            if residual:
+                continue
+            hits.append(d)
         return hits
 
     proj_hits = _proj_matches()

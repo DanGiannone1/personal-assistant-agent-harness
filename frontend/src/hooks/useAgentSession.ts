@@ -16,6 +16,7 @@ function isAuthError(err: unknown): boolean {
 // these completes with an "ok" outcome, the pane should follow the route.
 const ROUTE_SETTING_TOOLS = new Set([
   "navigate",
+  "create_project", // lands the user on the new project's overview
   "create_task",   // lands the user on the new task's detail page
   "update_task",   // lands the user on the updated task
   "delete_task",   // returns the user to the to-do list
@@ -303,6 +304,11 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (route === "/todo") return "Tasks";
   if (route === "/calendar") return "Calendar";
   if (route === "/documents") return "Documents";
+  if (route === "/projects") return "Projects";
+  if (route.startsWith("/projects/")) {
+    const p = (appState.projects ?? []).find((x) => x.id === route.split("/")[2]);
+    return p ? `the "${p.name}" project` : "Projects";
+  }
   return "Home";
 }
 

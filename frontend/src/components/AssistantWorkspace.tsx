@@ -33,7 +33,7 @@ export default function AssistantWorkspace() {
     if (state.viewRoute === prevRoute.current) return;
     const r = state.viewRoute;
     prevRoute.current = r;
-    const hostContext = r === "/home" || r === "/todo" || r.startsWith("/todo/") || r === "/calendar";
+    const hostContext = r === "/home" || r === "/todo" || r.startsWith("/todo/") || r === "/calendar" || r.startsWith("/projects");
     if (hostContext) router.push("/");
   }, [state.viewRoute, router]);
 

@@ -1,5 +1,5 @@
 import { buildAuthHeaders } from "./auth";
-import type { AppState, AuthUser, FileInfo } from "./types";
+import type { AppState, AuthUser, FileInfo, Project } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -204,22 +204,39 @@ async function jsonReq<T = unknown>(method: string, path: string, body?: unknown
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-export const createTask = (sid: string, body: { title: string; status?: string; priority?: string; group?: string; dueDate?: string }) =>
-  jsonReq("POST", `/sessions/${sid}/tasks`, body);
-export const updateTask = (sid: string, id: string, body: Partial<{ title: string; status: string; priority: string; group: string; dueDate: string }>) =>
-  jsonReq("PATCH", `/sessions/${sid}/tasks/${id}`, body);
-export const deleteTask = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/tasks/${id}`);
-export const addSubtask = (sid: string, id: string, text: string) => jsonReq("POST", `/sessions/${sid}/tasks/${id}/subtasks`, { text });
-export const toggleSubtask = (sid: string, id: string, index: number, done: boolean) =>
-  jsonReq("PATCH", `/sessions/${sid}/tasks/${id}/subtasks/${index}`, { done });
-export const deleteSubtask = (sid: string, id: string, index: number) =>
-  jsonReq("DELETE", `/sessions/${sid}/tasks/${id}/subtasks/${index}`);
+// Record CRUD helpers accept an optional trailing `project` id. When set, the mutation
+// acts on that project's document (?project=…) instead of the caller's personal space.
+const projectQuery = (project?: string) => (project ? `?project=${encodeURIComponent(project)}` : "");
 
-export const createEvent = (sid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
-  jsonReq("POST", `/sessions/${sid}/events`, body);
+export const createTask = (sid: string, body: { title: string; status?: string; priority?: string; group?: string; dueDate?: string }, project?: string) =>
+  jsonReq("POST", `/sessions/${sid}/tasks${projectQuery(project)}`, body);
+export const updateTask = (sid: string, id: string, body: Partial<{ title: string; status: string; priority: string; group: string; dueDate: string }>, project?: string) =>
+  jsonReq("PATCH", `/sessions/${sid}/tasks/${id}${projectQuery(project)}`, body);
+export const deleteTask = (sid: string, id: string, project?: string) => jsonReq("DELETE", `/sessions/${sid}/tasks/${id}${projectQuery(project)}`);
+export const addSubtask = (sid: string, id: string, text: string, project?: string) => jsonReq("POST", `/sessions/${sid}/tasks/${id}/subtasks${projectQuery(project)}`, { text });
+export const toggleSubtask = (sid: string, id: string, index: number, done: boolean, project?: string) =>
+  jsonReq("PATCH", `/sessions/${sid}/tasks/${id}/subtasks/${index}${projectQuery(project)}`, { done });
+export const deleteSubtask = (sid: string, id: string, index: number, project?: string) =>
+  jsonReq("DELETE", `/sessions/${sid}/tasks/${id}/subtasks/${index}${projectQuery(project)}`);
+
+export const createEvent = (sid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }, project?: string) =>
+  jsonReq("POST", `/sessions/${sid}/events${projectQuery(project)}`, body);
 export const updateEvent = (sid: string, id: string, body: Partial<{ title: string; date: string; start: string; end: string; type: string }>) =>
   jsonReq("PATCH", `/sessions/${sid}/events/${id}`, body);
-export const deleteEvent = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/events/${id}`);
+export const deleteEvent = (sid: string, id: string, project?: string) => jsonReq("DELETE", `/sessions/${sid}/events/${id}${projectQuery(project)}`);
+
+// ── Projects (membership-scoped spaces) ──────────────────────────────────────
+export const listProjects = (sid: string) => jsonReq<{ projects: Project[] }>("GET", `/sessions/${sid}/projects`);
+export const createProject = (sid: string, body: { name: string; description?: string }) =>
+  jsonReq<Project>("POST", `/sessions/${sid}/projects`, body);
+export const updateProjectMeta = (sid: string, pid: string, body: Partial<{ name: string; description: string; archived: boolean }>) =>
+  jsonReq<Project>("PATCH", `/sessions/${sid}/projects/${pid}`, body);
+export const addProjectMember = (sid: string, pid: string, body: { username: string; role: string }) =>
+  jsonReq("POST", `/sessions/${sid}/projects/${pid}/members`, body);
+export const removeProjectMember = (sid: string, pid: string, userId: string) =>
+  jsonReq("DELETE", `/sessions/${sid}/projects/${pid}/members/${encodeURIComponent(userId)}`);
+export const putProjectConventions = (sid: string, pid: string, conventions: string[]) =>
+  jsonReq("PUT", `/sessions/${sid}/projects/${pid}/conventions`, { conventions });
 
 export const createSchedule = (sid: string, body: { title: string; prompt: string; frequency: string; time: string; timezone?: string; daysOfWeek?: number[] }) =>
   jsonReq("POST", `/sessions/${sid}/schedules`, body);

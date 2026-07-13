@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   FileText, CheckCircle2, Circle, ArrowLeft, Home as HomeIcon, AlertTriangle, Calendar as CalendarIcon, Clock,
-  BookMarked, Trash2, Upload, Plus, LogOut,
+  BookMarked, Trash2, Upload, Plus, LogOut, FolderKanban, Settings,
 } from "lucide-react";
-import type { AppFile, AppState, AuthUser, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
+import type { AppFile, AppState, AuthUser, Task, Schedule, LibraryDoc, Project } from "@/lib/types";
 import { getFileContent, getLibraryContent, logout,
   createTask, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask,
-  createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule } from "@/lib/api";
+  createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule,
+  createProject, addProjectMember, removeProjectMember, putProjectConventions } from "@/lib/api";
 import { clearUserToken, getUser } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
@@ -59,6 +60,12 @@ function PriorityBadge({ priority }: { priority: string }) {
 
 function OverdueBadge() {
   return <span className="tw-badge tw-badge-red"><AlertTriangle size={11} strokeWidth={2.5} />Overdue</span>;
+}
+
+// The signed-in user's role in a project (owner|editor|viewer) — colour-coded like status.
+function RoleBadge({ role }: { role: string }) {
+  const cls = role === "owner" ? "tw-badge-green" : role === "editor" ? "tw-badge-orange" : "tw-badge-gray";
+  return <span className={`tw-badge ${cls}`}>{role}</span>;
 }
 
 export default function WorkbenchApp({
@@ -189,6 +196,11 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   else if (viewRoute === "/calendar") trail = "Calendar";
   else if (viewRoute === "/documents") trail = "Documents";
   else if (viewRoute === "/reminders") trail = "Reminders";
+  else if (viewRoute === "/projects") trail = "Projects";
+  else if (viewRoute.startsWith("/projects/")) {
+    const name = (appState.projects ?? []).find((p) => p.id === viewRoute.split("/")[2])?.name ?? "";
+    trail = viewRoute.endsWith("/settings") ? `Projects › ${name} › Settings` : `Projects › ${name}`;
+  }
   return <div className="tw-breadcrumb" data-testid="breadcrumb">{trail}</div>;
 }
 
@@ -206,6 +218,9 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const tasks = appState.tasks ?? [];
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
+  const projects = appState.projects ?? [];
+  // Projects the signed-in user may write to — the scope options offered by the personal add-bars.
+  const writableProjects = projects.filter((p) => p.role !== "viewer");
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────
   if (viewRoute.startsWith("/todo/")) {
@@ -243,6 +258,159 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     );
   }
 
+  // ── Projects list (/projects) ─────────────────────────────────────────────
+  if (viewRoute === "/projects") {
+    return (
+      <div className="tw-screen" data-testid="projects-screen">
+        <h1 className="tw-h1">Projects</h1>
+        <p className="tw-subtle">Shared spaces you&apos;re a member of.</p>
+        <AddProjectBar sessionId={sessionId} onRefresh={onRefresh} />
+        {projects.length === 0 ? (
+          <section className="tw-section"><div className="tw-empty-sm">No projects yet. Create one above, or ask the assistant.</div></section>
+        ) : (
+          <section className="tw-section">
+            <div className="tw-doclist">
+              {projects.map((p) => {
+                const open = (p.tasks ?? []).filter((t) => t.status !== "Done").length;
+                return (
+                  <div key={p.id} className="tw-docitem tw-rowlink" data-testid={`project-row-${p.id}`} role="button" tabIndex={0}
+                    onClick={() => onNavigate(`/projects/${p.id}`)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onNavigate(`/projects/${p.id}`); } }}>
+                    <FolderKanban size={16} />
+                    <span className="flex flex-col min-w-0" style={{ flex: 1 }}>
+                      <span className="tw-td-title">{p.name}{p.archived && <span className="tw-td-sub" style={{ marginLeft: 6 }}>archived</span>}</span>
+                      <span className="tw-td-sub">{p.description || "No description"}</span>
+                    </span>
+                    <RoleBadge role={p.role} />
+                    <span className="tw-td-sub" style={{ whiteSpace: "nowrap" }}>{p.members.length} member{p.members.length === 1 ? "" : "s"} · {open} open</span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </div>
+    );
+  }
+
+  // ── Project settings (/projects/{pid}/settings) ───────────────────────────
+  if (viewRoute.startsWith("/projects/") && viewRoute.endsWith("/settings")) {
+    const pid = viewRoute.split("/")[2];
+    const project = projects.find((p) => p.id === pid);
+    if (!project) return <div className="tw-empty">Project not found.</div>;
+    const isOwner = project.role === "owner";
+    const canEditConventions = project.role === "owner" || project.role === "editor";
+    return (
+      <div className="tw-screen" data-testid="project-settings-screen">
+        <button type="button" className="tw-back" onClick={() => onNavigate(`/projects/${pid}`)}><ArrowLeft size={14} /> {project.name}</button>
+        <h1 className="tw-h1">Settings</h1>
+        <p className="tw-subtle">{project.name}</p>
+
+        <section className="tw-section">
+          <h2 className="tw-h2">Members <span className="tw-count">{project.members.length}</span></h2>
+          <table className="tw-table" data-testid="members-table">
+            <thead><tr><th>Member</th><th>Role</th>{isOwner && <th></th>}</tr></thead>
+            <tbody>
+              {project.members.map((m) => (
+                <tr key={m.userId} data-testid={`member-row-${m.userId}`}>
+                  <td className="tw-td-title">{m.userId}</td>
+                  <td><RoleBadge role={m.role} /></td>
+                  {isOwner && <td><RowDelete onDelete={() => removeProjectMember(sessionId!, pid, m.userId)} onRefresh={onRefresh} testid={`member-remove-${m.userId}`} label={m.userId} /></td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {isOwner && <AddMemberBar sessionId={sessionId} projectId={pid} onRefresh={onRefresh} />}
+        </section>
+
+        <section className="tw-section">
+          <h2 className="tw-h2">Conventions <span className="tw-count">{project.conventions.length}</span></h2>
+          <p className="tw-subtle">Rules that shape how the assistant works in this project.</p>
+          {canEditConventions ? (
+            <ConventionsEditor sessionId={sessionId} projectId={pid} conventions={project.conventions} onRefresh={onRefresh} />
+          ) : project.conventions.length === 0 ? (
+            <div className="tw-empty-sm">No conventions set.</div>
+          ) : (
+            <div className="tw-doclist" data-testid="conventions-list">
+              {project.conventions.map((c, i) => <div key={i} className="tw-docitem" style={{ cursor: "default" }}>{c}</div>)}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  // ── Project overview (/projects/{pid}) — scoped tasks + events ─────────────
+  if (viewRoute.startsWith("/projects/")) {
+    const pid = viewRoute.split("/")[2];
+    const project = projects.find((p) => p.id === pid);
+    if (!project) return <div className="tw-empty">Project not found.</div>;
+    const readOnly = project.role === "viewer";
+    const pTasks = project.tasks ?? [];
+    const pEvents = [...(project.events ?? [])].sort((a, b) => (`${a.date}${a.start || ""}` < `${b.date}${b.start || ""}` ? -1 : 1));
+    const pGroups = Array.from(new Set(pTasks.map((t) => t.group || "General")));
+    const openCount = pTasks.filter((t) => t.status !== "Done").length;
+    return (
+      <div className="tw-screen" data-testid="project-screen">
+        <button type="button" className="tw-back" onClick={() => onNavigate("/projects")}><ArrowLeft size={14} /> All projects</button>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="tw-h1" style={{ marginRight: "auto" }}>{project.name}</h1>
+          <button type="button" style={docActionBtn} data-testid="project-settings-btn" onClick={() => onNavigate(`/projects/${pid}/settings`)}><Settings size={13} /> Settings</button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mt-1">
+          <RoleBadge role={project.role} />
+          {project.archived && <span className="tw-badge tw-badge-gray">Archived</span>}
+        </div>
+        {project.description && <p className="tw-subtle">{project.description}</p>}
+
+        <div className="tw-stats" style={{ marginTop: 14 }}>
+          <Stat label="Tasks" value={pTasks.length} />
+          <Stat label="Open" value={openCount} />
+          <Stat label="Events" value={pEvents.length} />
+          <Stat label="Members" value={project.members.length} />
+        </div>
+
+        <section className="tw-section">
+          <h2 className="tw-h2">Tasks <span className="tw-count">{pTasks.length}</span></h2>
+          {!readOnly && <AddTaskBar sessionId={sessionId} onRefresh={onRefresh} groups={pGroups} fixedProjectId={pid} />}
+          {pTasks.length === 0 ? (
+            <div className="tw-empty-sm">No tasks yet.{readOnly ? "" : " Add one above, or ask the assistant."}</div>
+          ) : (
+            <table className="tw-table" data-testid="tasks-table">
+              <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Due</th><th>Subtasks</th><th></th></tr></thead>
+              <tbody>
+                {pTasks.map((t) => (
+                  <TaskRow key={t.id} t={t} today={today} isNew={isNew(t.id)} sessionId={sessionId} onRefresh={onRefresh} onNavigate={onNavigate} link={false} project={pid} readOnly={readOnly} />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        <section className="tw-section">
+          <h2 className="tw-h2">Events <span className="tw-count">{pEvents.length}</span></h2>
+          {!readOnly && <AddEventBar sessionId={sessionId} onRefresh={onRefresh} fixedProjectId={pid} />}
+          {pEvents.length === 0 ? (
+            <div className="tw-empty-sm">Nothing scheduled yet.{readOnly ? "" : " Add an event above, or ask the assistant."}</div>
+          ) : (
+            <div className="tw-doclist">
+              {pEvents.map((e) => (
+                <div key={e.id} className="tw-docitem" style={{ cursor: "default" }} data-testid={`project-event-${e.id}`}>
+                  <Clock size={15} />
+                  <span className="flex flex-col min-w-0">
+                    <span className="tw-td-title">{e.title}</span>
+                    <span className="tw-td-sub">{dayLabel(e.date.slice(0, 10), today)}{e.start ? ` · ${e.start}${e.end ? `–${e.end}` : ""}` : ""}{e.type ? ` · ${e.type}` : ""}</span>
+                  </span>
+                  {!readOnly && <span style={{ marginLeft: "auto" }}><RowDelete onDelete={() => deleteEvent(sessionId!, e.id, pid)} onRefresh={onRefresh} testid={`event-delete-${e.id}`} label={e.title} /></span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   // ── To-Do (/todo) — tasks grouped by bucket ───────────────────────────────
   if (viewRoute === "/todo") {
     const overdueCount = tasks.filter((t) => isOverdue(t, today)).length;
@@ -257,7 +425,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
           <Stat label="Due today" value={tasks.filter((t) => t.status !== "Done" && (t.dueDate || "").slice(0, 10) === today).length} />
           <Stat label="Overdue" value={overdueCount} />
         </div>
-        <AddTaskBar sessionId={sessionId} onRefresh={onRefresh} groups={groups} />
+        <AddTaskBar sessionId={sessionId} onRefresh={onRefresh} groups={groups} scopeProjects={writableProjects} />
         {tasks.length === 0 ? (
           <section className="tw-section"><div className="tw-empty-sm">No tasks yet. Add one above, or ask the assistant.</div></section>
         ) : (
@@ -269,21 +437,9 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
                 <table className="tw-table" data-testid="tasks-table">
                   <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Due</th><th>Subtasks</th><th></th></tr></thead>
                   <tbody>
-                    {rows.map((t) => {
-                      const subtasks = t.subtasks ?? [];
-                      const done = subtasks.filter((c) => c.done).length;
-                      const overdue = isOverdue(t, today);
-                      return (
-                        <tr key={t.id} data-testid={`task-row-${t.id}`} className={`tw-rowlink ${isNew(t.id) ? "tw-row-new" : ""}`} onClick={() => onNavigate(`/todo/${t.id}`)}>
-                          <td className="tw-td-title"><button type="button" style={rowTitleBtn} onClick={(e) => { e.stopPropagation(); onNavigate(`/todo/${t.id}`); }}>{t.title}</button>{isNew(t.id) && <span className="tw-new">New</span>}</td>
-                          <td><StatusBadge status={t.status} /></td>
-                          <td><PriorityBadge priority={t.priority} /></td>
-                          <td className={overdue ? "tw-due-overdue" : ""}>{t.dueDate ? dayLabel(t.dueDate.slice(0, 10), today) : "—"}{overdue && <span style={{ fontSize: 11, fontWeight: 600 }}> · overdue</span>}</td>
-                          <td className="tw-td-mono">{done}/{subtasks.length}</td>
-                          <td onClick={(e) => e.stopPropagation()}><RowDelete onDelete={() => deleteTask(sessionId!, t.id)} onRefresh={onRefresh} testid={`task-delete-${t.id}`} label={t.title} /></td>
-                        </tr>
-                      );
-                    })}
+                    {rows.map((t) => (
+                      <TaskRow key={t.id} t={t} today={today} isNew={isNew(t.id)} sessionId={sessionId} onRefresh={onRefresh} onNavigate={onNavigate} link />
+                    ))}
                   </tbody>
                 </table>
               </section>
@@ -311,7 +467,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
       <div className="tw-screen" data-testid="calendar-screen">
         <h1 className="tw-h1">Calendar</h1>
         <p className="tw-subtle">Events and task deadlines, by day.</p>
-        <AddEventBar sessionId={sessionId} onRefresh={onRefresh} />
+        <AddEventBar sessionId={sessionId} onRefresh={onRefresh} scopeProjects={writableProjects} />
         {items.length === 0 ? (
           <section className="tw-section"><div className="tw-empty-sm">Nothing scheduled yet. Add an event above, or ask the assistant.</div></section>
         ) : (
@@ -491,6 +647,30 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
           </div>
         )}
       </section>
+
+      {projects.length > 0 && (
+        <section className="tw-section">
+          <h2 className="tw-h2">Across your projects <span className="tw-count">{projects.length}</span></h2>
+          <div className="tw-doclist" data-testid="home-projects">
+            {projects.map((p) => {
+              const open = (p.tasks ?? []).filter((t) => t.status !== "Done").length;
+              const next = (p.events ?? []).filter((e) => (e.date || "").slice(0, 10) >= today).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
+              return (
+                <div key={p.id} className="tw-docitem tw-rowlink" data-testid={`home-project-${p.id}`} role="button" tabIndex={0}
+                  onClick={() => onNavigate(`/projects/${p.id}`)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onNavigate(`/projects/${p.id}`); } }}>
+                  <FolderKanban size={15} />
+                  <span className="flex flex-col min-w-0" style={{ flex: 1 }}>
+                    <span className="tw-td-title">{p.name}</span>
+                    <span className="tw-td-sub">{open} open task{open === 1 ? "" : "s"}{next ? ` · next event ${dayLabel(next.date.slice(0, 10), today)}` : ""}</span>
+                  </span>
+                  <RoleBadge role={p.role} />
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -679,15 +859,17 @@ function useMut(onRefresh: () => Promise<void>) {
   return { busy, err, run };
 }
 
-function AddTaskBar({ sessionId, onRefresh, groups }: { sessionId: string | null; onRefresh: () => Promise<void>; groups: string[] }) {
+function AddTaskBar({ sessionId, onRefresh, groups, scopeProjects, fixedProjectId }: { sessionId: string | null; onRefresh: () => Promise<void>; groups: string[]; scopeProjects?: Project[]; fixedProjectId?: string }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState("Medium");
   const [group, setGroup] = useState("General");
   const [due, setDue] = useState("");
+  const [scope, setScope] = useState("personal");   // "personal" or a project id
   const { busy, err, run } = useMut(onRefresh);
+  const showScope = !fixedProjectId && !!scopeProjects && scopeProjects.length > 0;
   if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-task-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add task</button>;
-  const submit = () => { if (!sessionId || !title.trim()) return; run(async () => { await createTask(sessionId, { title: title.trim(), priority, group: group.trim() || "General", dueDate: due }); setTitle(""); setDue(""); setOpen(false); }); };
+  const submit = () => { if (!sessionId || !title.trim()) return; const project = fixedProjectId ?? (scope === "personal" ? undefined : scope); run(async () => { await createTask(sessionId, { title: title.trim(), priority, group: group.trim() || "General", dueDate: due }, project); setTitle(""); setDue(""); setScope("personal"); setOpen(false); }); };
   const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
   return (
     <div style={formCard} data-testid="add-task-form" onKeyDown={onKey}>
@@ -698,6 +880,12 @@ function AddTaskBar({ sessionId, onRefresh, groups }: { sessionId: string | null
         <datalist id="task-group-options">{groups.map((g) => <option key={g} value={g} />)}</datalist>
       </Field>
       <Field label="Due date" grow><input type="date" aria-label="Due date" value={due} style={{ ...inputStyle, width: "100%" }} data-testid="task-due-input" onChange={(e) => setDue(e.target.value)} /></Field>
+      {showScope && (
+        <Field label="Scope"><select aria-label="Scope" value={scope} style={selectStyle} data-testid="task-scope-select" onChange={(e) => setScope(e.target.value)}>
+          <option value="personal">Personal</option>
+          {scopeProjects!.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select></Field>
+      )}
       <span style={{ display: "inline-flex", gap: 6 }}>
         <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="task-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
         <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
@@ -727,6 +915,37 @@ function RowDelete({ onDelete, onRefresh, testid, label }: { onDelete: () => Pro
   }
   return <button type="button" style={{ ...docActionBtn, padding: "3px 7px" }} aria-label={`Delete ${label}`} title={`Delete ${label}`} data-testid={testid}
     onClick={(e) => { e.stopPropagation(); setArmed(true); }}><Trash2 size={13} /></button>;
+}
+
+// One task row, shared by the personal /todo list and project overviews. `link` rows navigate
+// to the task detail (personal only — no per-task route inside projects yet); otherwise the
+// title renders as plain text. `project` scopes the delete; `readOnly` (viewers) hides it.
+function TaskRow({ t, today, isNew, sessionId, onRefresh, onNavigate, link, project, readOnly }: {
+  t: Task; today: string; isNew: boolean; sessionId: string | null;
+  onRefresh: () => Promise<void>; onNavigate: (r: string) => void;
+  link: boolean; project?: string; readOnly?: boolean;
+}) {
+  const subtasks = t.subtasks ?? [];
+  const done = subtasks.filter((c) => c.done).length;
+  const overdue = isOverdue(t, today);
+  return (
+    <tr data-testid={`task-row-${t.id}`} className={`${link ? "tw-rowlink" : ""} ${isNew ? "tw-row-new" : ""}`.trim()}
+      onClick={link ? () => onNavigate(`/todo/${t.id}`) : undefined}>
+      <td className="tw-td-title">
+        {link
+          ? <button type="button" style={rowTitleBtn} onClick={(e) => { e.stopPropagation(); onNavigate(`/todo/${t.id}`); }}>{t.title}</button>
+          : t.title}
+        {isNew && <span className="tw-new">New</span>}
+      </td>
+      <td><StatusBadge status={t.status} /></td>
+      <td><PriorityBadge priority={t.priority} /></td>
+      <td className={overdue ? "tw-due-overdue" : ""}>{t.dueDate ? dayLabel(t.dueDate.slice(0, 10), today) : "—"}{overdue && <span style={{ fontSize: 11, fontWeight: 600 }}> · overdue</span>}</td>
+      <td className="tw-td-mono">{done}/{subtasks.length}</td>
+      <td onClick={(e) => e.stopPropagation()}>
+        {!readOnly && <RowDelete onDelete={() => deleteTask(sessionId!, t.id, project)} onRefresh={onRefresh} testid={`task-delete-${t.id}`} label={t.title} />}
+      </td>
+    </tr>
+  );
 }
 
 function TaskDetailEditor({ task, sessionId, onRefresh, onNavigate, groups }: { task: Task; sessionId: string | null; onRefresh: () => Promise<void>; onNavigate: (r: string) => void; groups: string[] }) {
@@ -809,17 +1028,19 @@ function SubtaskEditor({ task, sessionId, onRefresh }: { task: Task; sessionId: 
   );
 }
 
-function AddEventBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+function AddEventBar({ sessionId, onRefresh, scopeProjects, fixedProjectId }: { sessionId: string | null; onRefresh: () => Promise<void>; scopeProjects?: Project[]; fixedProjectId?: string }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
+  const [scope, setScope] = useState("personal");   // "personal" or a project id
   const { busy, err, run } = useMut(onRefresh);
+  const showScope = !fixedProjectId && !!scopeProjects && scopeProjects.length > 0;
   if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-event-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add event</button>;
   const timeBad = !!(start && end && end <= start);
   const ok = !!(title.trim() && date && !timeBad);
-  const submit = () => { if (!sessionId || !ok) return; run(async () => { await createEvent(sessionId, { title: title.trim(), date, start, end }); setTitle(""); setDate(""); setStart(""); setEnd(""); setOpen(false); }); };
+  const submit = () => { if (!sessionId || !ok) return; const project = fixedProjectId ?? (scope === "personal" ? undefined : scope); run(async () => { await createEvent(sessionId, { title: title.trim(), date, start, end }, project); setTitle(""); setDate(""); setStart(""); setEnd(""); setScope("personal"); setOpen(false); }); };
   const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
   return (
     <div style={formCard} data-testid="add-event-form" onKeyDown={onKey}>
@@ -827,6 +1048,12 @@ function AddEventBar({ sessionId, onRefresh }: { sessionId: string | null; onRef
       <Field label="Date"><input type="date" aria-label="Event date" value={date} style={inputStyle} data-testid="event-date-input" onChange={(e) => setDate(e.target.value)} /></Field>
       <Field label="Start"><input type="time" aria-label="Start time" value={start} style={inputStyle} data-testid="event-start-input" onChange={(e) => setStart(e.target.value)} /></Field>
       <Field label="End"><input type="time" aria-label="End time" value={end} style={inputStyle} data-testid="event-end-input" onChange={(e) => setEnd(e.target.value)} /></Field>
+      {showScope && (
+        <Field label="Scope"><select aria-label="Scope" value={scope} style={selectStyle} data-testid="event-scope-select" onChange={(e) => setScope(e.target.value)}>
+          <option value="personal">Personal</option>
+          {scopeProjects!.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select></Field>
+      )}
       <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
         <button type="button" style={ok && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !ok} data-testid="event-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
         <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
@@ -902,5 +1129,64 @@ function ReminderActions({ schedule, sessionId, onRefresh }: { schedule: Schedul
       )}
       {err && <span role="alert" title={err} style={{ fontSize: 11, color: "#c0344d", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{err}</span>}
     </span>
+  );
+}
+
+// ── Project forms (create project · add member · edit conventions) ────────────
+function AddProjectBar({ sessionId, onRefresh }: { sessionId: string | null; onRefresh: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const { busy, err, run } = useMut(onRefresh);
+  if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-project-btn" onClick={() => setOpen(true)}><Plus size={13} /> New project</button>;
+  const submit = () => { if (!sessionId || !name.trim()) return; run(async () => { await createProject(sessionId, { name: name.trim(), description: description.trim() }); setName(""); setDescription(""); setOpen(false); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
+  return (
+    <div style={formCard} data-testid="add-project-form" onKeyDown={onKey}>
+      <Field label="Name" grow><input autoFocus aria-label="Project name" placeholder="e.g. Website Launch" value={name} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="project-name-input" onChange={(e) => setName(e.target.value)} /></Field>
+      <Field label="Description" grow><input aria-label="Project description" placeholder="What is this project about?" value={description} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="project-description-input" onChange={(e) => setDescription(e.target.value)} /></Field>
+      <span style={{ display: "inline-flex", gap: 6 }}>
+        <button type="button" style={name.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !name.trim()} data-testid="project-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
+        <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
+      </span>
+      <FormErr msg={err} />
+    </div>
+  );
+}
+
+// Owner-only add-member form. Usernames resolve server-side (a bad name fails loud via FormErr);
+// the 422 "last owner" guard on removal surfaces the same way.
+function AddMemberBar({ sessionId, projectId, onRefresh }: { sessionId: string | null; projectId: string; onRefresh: () => Promise<void> }) {
+  const [username, setUsername] = useState("");
+  const [role, setRole] = useState("editor");
+  const { busy, err, run } = useMut(onRefresh);
+  const submit = () => { if (!sessionId || !username.trim()) return; run(async () => { await addProjectMember(sessionId, projectId, { username: username.trim(), role }); setUsername(""); }); };
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); };
+  return (
+    <div style={formCard} data-testid="add-member-form" onKeyDown={onKey}>
+      <Field label="Username" grow><input aria-label="Username" placeholder="dan, ava, sam" value={username} style={{ ...inputStyle, width: "100%", minWidth: 180 }} data-testid="member-username-input" onChange={(e) => setUsername(e.target.value)} /></Field>
+      <Field label="Role"><select aria-label="Role" value={role} style={selectStyle} data-testid="member-role-select" onChange={(e) => setRole(e.target.value)}>{["owner", "editor", "viewer"].map((r) => <option key={r} value={r}>{r}</option>)}</select></Field>
+      <button type="button" style={username.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !username.trim()} data-testid="member-add-btn" onClick={submit}>{busy ? "Adding…" : "Add member"}</button>
+      <FormErr msg={err} />
+    </div>
+  );
+}
+
+// Conventions editor — one convention per line. Owner/editor only; the textarea re-syncs from
+// server state whenever the fetched list identity changes (after a save/refresh).
+function ConventionsEditor({ sessionId, projectId, conventions, onRefresh }: { sessionId: string | null; projectId: string; conventions: string[]; onRefresh: () => Promise<void> }) {
+  const [text, setText] = useState(conventions.join("\n"));
+  const { busy, err, run } = useMut(onRefresh);
+  useEffect(() => { setText(conventions.join("\n")); }, [conventions]);
+  const save = () => { if (!sessionId) return; const list = text.split("\n").map((l) => l.trim()).filter(Boolean); run(async () => { await putProjectConventions(sessionId, projectId, list); }); };
+  return (
+    <div style={{ ...formCard, flexDirection: "column", alignItems: "stretch" }} data-testid="conventions-form">
+      <textarea aria-label="Conventions, one per line" value={text} rows={5} placeholder="One convention per line, e.g. Status docs in French"
+        data-testid="conventions-input" style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }} onChange={(e) => setText(e.target.value)} />
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <button type="button" style={!busy ? primaryBtn : primaryBtnOff} disabled={busy} data-testid="conventions-save-btn" onClick={save}>{busy ? "Saving…" : "Save conventions"}</button>
+      </span>
+      <FormErr msg={err} />
+    </div>
   );
 }

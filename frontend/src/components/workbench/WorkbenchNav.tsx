@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Home, CheckSquare, Calendar, Files, Sparkles, Bell } from "lucide-react";
+import { Home, CheckSquare, Calendar, Files, Sparkles, Bell, FolderKanban } from "lucide-react";
 import { AppState } from "@/lib/types";
 
 // The Personal Assistant left-nav rail, shared by the host app and the Assistant workspace so
@@ -30,6 +30,7 @@ export default function WorkbenchNav({
   return (
     <nav className="tw-nav">
       {navItem("/home", "Home", Home)}
+      {navItem("/projects", "Projects", FolderKanban)}
       <div className="tw-nav-section">Workspace</div>
       {navItem("/todo", "Tasks", CheckSquare)}
       {navItem("/calendar", "Calendar", Calendar)}

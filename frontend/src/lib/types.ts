@@ -113,6 +113,28 @@ export interface LibraryDoc {
   source?: string;          // "reference" (seeded) | "upload" (promoted)
 }
 
+// ── Projects (shared, membership-scoped spaces) ─────────────────────────────
+export type ProjectRole = "owner" | "editor" | "viewer";
+
+export interface ProjectMember {
+  userId: string;
+  role: ProjectRole;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  archived: boolean;
+  members: ProjectMember[];
+  conventions: string[];
+  tasks: Task[];
+  events: CalendarEvent[];
+  library: LibraryDoc[];
+  createdAt?: string;
+  role: ProjectRole;      // the signed-in user's role in this project
+}
+
 export interface AppState {
   currentRoute: string;
   tasks: Task[];
@@ -120,4 +142,5 @@ export interface AppState {
   routes: { path: string; title: string; keywords?: string[] }[];
   schedules: Schedule[];
   library: LibraryDoc[];
+  projects: Project[];
 }
