@@ -17,6 +17,12 @@ const ROUTE_SETTING_TOOLS = new Set([
   "create_event",  // lands the user on the calendar
   "update_event",  // lands the user on the calendar
   "delete_event",  // returns the user to the calendar
+  "create_engagement",      // lands the user on the new engagement
+  "update_engagement",      // lands the user on the engagement it changed
+  "share_engagement",       // lands the user on the engagement's settings
+  "set_engagement_health",  // lands the user on the engagement whose health changed
+  "add_engagement_item",    // lands the user on the engagement it added to
+  "update_engagement_item", // lands the user on the engagement it changed
 ]);
 
 type Action =

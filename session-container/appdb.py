@@ -354,14 +354,65 @@ def update_state(user_id: str, mutator):
 
 ENGAGEMENT_ROLES = ["owner", "editor", "viewer"]
 
+# Delivery-record vocabulary. Health is never just a color: amber/red must carry a
+# non-empty healthNote (the "why") — enforced at the tool, REST, and UI layers.
+ENGAGEMENT_STAGES = ["Discovery", "Design", "Build", "Deploy", "Live", "Closed"]
+HEALTH_LEVELS = ["green", "amber", "red"]
+MILESTONE_STATUSES = ["Planned", "In progress", "Done", "Slipped"]
+RISK_SEVERITIES = ["Low", "Medium", "High"]
+RISK_STATUSES = ["Open", "Mitigating", "Closed"]
+ACTION_STATUSES = ["Open", "Done"]
+# kind → (list field on the doc, id prefix). The item tools take a `kind`
+# argument rather than spawning nine near-identical tools.
+ENGAGEMENT_ITEM_KINDS = {
+    "milestone": ("milestones", "m"),
+    "risk": ("risks", "r"),
+    "action": ("actions", "a"),
+}
+
+# Domain fields added to every engagement doc (older docs get these on read).
+_ENGAGEMENT_DOMAIN_DEFAULTS = {
+    "customer": "", "stage": ENGAGEMENT_STAGES[0], "health": "green", "healthNote": "",
+    "startDate": "", "targetDate": "", "milestones": [], "risks": [], "actions": [],
+}
+
+
+def _with_domain_defaults(eng: dict) -> dict:
+    """Fill missing delivery-record fields so pre-domain docs read uniformly."""
+    for k, v in _ENGAGEMENT_DOMAIN_DEFAULTS.items():
+        if eng.get(k) is None:
+            eng[k] = list(v) if isinstance(v, list) else v
+    return eng
+
+
+def _valid_stage(stage: str) -> str:
+    stage = (stage or "").strip() or ENGAGEMENT_STAGES[0]
+    if stage not in ENGAGEMENT_STAGES:
+        raise ValueError(f"stage must be one of {ENGAGEMENT_STAGES}")
+    return stage
+
+
+def _valid_health(health: str) -> str:
+    health = (health or "").strip().lower() or "green"
+    if health not in HEALTH_LEVELS:
+        raise ValueError(f"health must be one of {HEALTH_LEVELS}")
+    return health
+
 
 def _engagement_doc_id(engagement_id: str) -> str:
     pid = (engagement_id or "").strip()
     return pid if pid.startswith("eng-") else f"eng-{pid}"
 
 
-def new_engagement(creator_id: str, name: str, description: str = "") -> dict:
-    """Create a engagement; the creator is its first owner. Returns the engagement doc."""
+def new_engagement(creator_id: str, name: str, description: str = "",
+                   customer: str = "", stage: str = "", health: str = "",
+                   health_note: str = "", start_date: str = "",
+                   target_date: str = "") -> dict:
+    """Create an engagement; the creator is its first owner. Returns the engagement doc.
+
+    Raises ValueError on bad stage/health. Callers enforce the health-note rule
+    (amber/red need a why) before getting here.
+    """
     uid = _valid_user(creator_id)
     name = (name or "").strip()
     if not name:
@@ -371,6 +422,11 @@ def new_engagement(creator_id: str, name: str, description: str = "") -> dict:
     doc = {
         "id": pid, "sessionId": pid,
         "name": name, "description": (description or "").strip(),
+        "customer": (customer or "").strip(),
+        "stage": _valid_stage(stage), "health": _valid_health(health),
+        "healthNote": (health_note or "").strip(),
+        "startDate": (start_date or "").strip(), "targetDate": (target_date or "").strip(),
+        "milestones": [], "risks": [], "actions": [],
         "members": [{"userId": uid, "role": "owner"}],
         "conventions": [],
         "tasks": [], "events": [], "library": [],
@@ -388,12 +444,15 @@ def load_engagement(engagement_id: str) -> dict | None:
         doc = container.read_item(item=pid, partition_key=pid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
         return None
-    return {k: v for k, v in doc.items() if not k.startswith("_")}
+    return _with_domain_defaults({k: v for k, v in doc.items() if not k.startswith("_")})
 
 
 def update_engagement(engagement_id: str, mutator):
     """ETag-safe read-modify-write of one engagement doc (same contract as update_state)."""
-    return _update_raw(_engagement_doc_id(engagement_id), mutator)
+    def _mut(doc):
+        return mutator(_with_domain_defaults(doc))
+
+    return _update_raw(_engagement_doc_id(engagement_id), _mut)
 
 
 def list_engagements_for(user_id: str) -> list[dict]:
@@ -407,7 +466,7 @@ def list_engagements_for(user_id: str) -> list[dict]:
     out = []
     for doc in rows:
         if member_role(doc, uid) is not None:
-            out.append({k: v for k, v in doc.items() if not k.startswith("_")})
+            out.append(_with_domain_defaults({k: v for k, v in doc.items() if not k.startswith("_")}))
     out.sort(key=lambda d: d.get("name", "").lower())
     return out
 
@@ -435,6 +494,25 @@ def log_activity(engagement: dict, user_id: str, action: str, detail: str) -> No
     del engagement["activity"][100:]  # bounded feed
 
 
+def find_engagement_item(eng: dict, kind: str, ref: str) -> dict | None:
+    """Resolve a milestone/risk/action within an engagement by id, exact title, or
+    unique title substring."""
+    field, _prefix = ENGAGEMENT_ITEM_KINDS[kind]
+    items = eng.get(field) or []
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    by_id = next((i for i in items if i["id"] == ref), None)
+    if by_id:
+        return by_id
+    low = ref.lower()
+    exact = [i for i in items if i["title"].lower() == low]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [i for i in items if low in i["title"].lower()]
+    return partial[0] if len(partial) == 1 else None
+
+
 def _seed_engagements() -> None:
     """Demo fixture (idempotent): two similarly-named engagements for the ambiguity demo,
     different membership shapes, one French-deliverables convention."""
@@ -443,6 +521,25 @@ def _seed_engagements() -> None:
         {
             "id": "eng-website-launch", "name": "Website Launch",
             "description": "Marketing site refresh and launch",
+            "customer": "Contoso Retail", "stage": "Build",
+            "health": "amber",
+            "healthNote": "CMS migration slipped a week; launch date at risk until content freeze lands.",
+            "targetDate": "2026-07-24",
+            "milestones": [
+                {"id": "m-1", "title": "Design sign-off", "dueDate": "2026-07-01",
+                 "status": "Done", "notes": ""},
+                {"id": "m-2", "title": "Content freeze", "dueDate": "2026-07-18",
+                 "status": "In progress", "notes": ""},
+            ],
+            "risks": [
+                {"id": "r-1", "title": "CMS migration overrun", "severity": "Medium",
+                 "status": "Open", "mitigation": "Parallel-run old CMS until cutover.",
+                 "owner": "dan"},
+            ],
+            "actions": [
+                {"id": "a-1", "title": "Confirm CDN contract renewal", "owner": "dan",
+                 "dueDate": "2026-07-15", "status": "Open", "notes": ""},
+            ],
             "members": [{"userId": "dan", "role": "owner"}, {"userId": "sam", "role": "viewer"}],
             "conventions": [],
             "tasks": [
@@ -461,6 +558,12 @@ def _seed_engagements() -> None:
         {
             "id": "eng-product-launch", "name": "Product Launch",
             "description": "V2 product rollout",
+            "customer": "Fabrikam", "stage": "Design",
+            "targetDate": "2026-08-28",
+            "milestones": [
+                {"id": "m-1", "title": "Pricing model approved", "dueDate": "2026-07-22",
+                 "status": "Planned", "notes": ""},
+            ],
             "members": [{"userId": "ava", "role": "owner"}, {"userId": "dan", "role": "editor"}],
             "conventions": [
                 {"id": "c-1", "text": "Status documents are written in French.", "createdBy": "ava",
@@ -484,6 +587,8 @@ def _seed_engagements() -> None:
     ]
     for f in fixtures:
         doc = {
+            **{k: (list(v) if isinstance(v, list) else v)
+               for k, v in _ENGAGEMENT_DOMAIN_DEFAULTS.items()},
             **f, "sessionId": f["id"], "library": [], "activity": [],
             "createdAt": _now_iso(), "createdBy": f["members"][0]["userId"],
         }

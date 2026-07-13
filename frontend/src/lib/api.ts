@@ -206,13 +206,21 @@ export const updateSchedule = (sid: string, id: string, body: Partial<{ enabled:
 export const deleteSchedule = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/schedules/${id}`);
 
 
-// ── Engagements (shared workspaces) ─────────────────────────────────────────────
-import type { Engagement, QuickLink } from "./types";
+// ── Engagements (shared customer-delivery workspaces) ───────────────────────────
+import type { Engagement, EngagementItemKind, QuickLink } from "./types";
 
 export const listEngagements = () => jsonReq<Engagement[]>("GET", "/engagements");
-export const createEngagement = (body: { name: string; description?: string }) =>
+export const createEngagement = (body: { name: string; description?: string; customer?: string; stage?: string; targetDate?: string }) =>
   jsonReq<Engagement>("POST", "/engagements", body);
 export const getEngagement = (pid: string) => jsonReq<Engagement>("GET", `/engagements/${pid}`);
+export const updateEngagement = (pid: string, body: Partial<{ name: string; description: string; customer: string; stage: string; health: string; healthNote: string; startDate: string; targetDate: string }>) =>
+  jsonReq<Engagement>("PATCH", `/engagements/${pid}`, body);
+export const addEngagementItem = (pid: string, kind: EngagementItemKind, body: { title: string; dueDate?: string; severity?: string; owner?: string; status?: string; notes?: string }) =>
+  jsonReq("POST", `/engagements/${pid}/${kind}s`, body);
+export const updateEngagementItem = (pid: string, kind: EngagementItemKind, iid: string, body: Partial<{ title: string; dueDate: string; severity: string; owner: string; status: string; notes: string }>) =>
+  jsonReq("PATCH", `/engagements/${pid}/${kind}s/${iid}`, body);
+export const deleteEngagementItem = (pid: string, kind: EngagementItemKind, iid: string) =>
+  jsonReq("DELETE", `/engagements/${pid}/${kind}s/${iid}`);
 export const addEngagementMember = (pid: string, userId: string, role: string) =>
   jsonReq("POST", `/engagements/${pid}/members`, { userId, role });
 export const removeEngagementMember = (pid: string, userId: string) =>

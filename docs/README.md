@@ -3,6 +3,10 @@
 Start with the [top-level README](../README.md) for the overview and quick start. These docs go
 deeper:
 
+- **[manifesto.md](manifesto.md)** — why this exists: the work lives here, claims never outrun
+  reality, and the engagement is the unit of the job.
+- **[engagements.md](engagements.md)** — the first-class entity: one doc per engagement, membership
+  as authorization, the delivery record (stage, health-with-a-why, milestones/risks/actions).
 - **[use-cases.md](use-cases.md)** — the core use cases with concrete, runnable examples (manual +
   assistant path for each capability). Start here to see what it does.
 - **[spec.md](spec.md)** — the product: capabilities, surfaces, data model, agent tools, skills, theme.

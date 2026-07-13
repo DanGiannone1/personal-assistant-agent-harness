@@ -149,10 +149,49 @@ export interface ActivityEntry {
   detail: string;
 }
 
+export type EngagementStage = "Discovery" | "Design" | "Build" | "Deploy" | "Live" | "Closed";
+export type EngagementHealth = "green" | "amber" | "red";
+export type EngagementItemKind = "milestone" | "risk" | "action";
+
+export interface Milestone {
+  id: string;
+  title: string;
+  dueDate: string;
+  status: "Planned" | "In progress" | "Done" | "Slipped";
+  notes: string;
+}
+
+export interface Risk {
+  id: string;
+  title: string;
+  severity: "Low" | "Medium" | "High";
+  status: "Open" | "Mitigating" | "Closed";
+  mitigation: string;
+  owner: string;
+}
+
+export interface ActionItem {
+  id: string;
+  title: string;
+  owner: string;
+  dueDate: string;
+  status: "Open" | "Done";
+  notes: string;
+}
+
 export interface Engagement {
   id: string;
   name: string;
   description: string;
+  customer: string;
+  stage: EngagementStage;
+  health: EngagementHealth;
+  healthNote: string;
+  startDate: string;
+  targetDate: string;
+  milestones: Milestone[];
+  risks: Risk[];
+  actions: ActionItem[];
   members: EngagementMember[];
   conventions: Convention[];
   tasks: Task[];
