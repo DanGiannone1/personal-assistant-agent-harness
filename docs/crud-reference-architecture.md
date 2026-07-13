@@ -1,166 +1,346 @@
 # CRUD Reference Architecture
 
-How records (tasks, events, subtasks) are created, changed, and deleted — and why the same
-data can be driven by **two callers** (the assistant and the manual UI) without either lying
-about the result.
+## The simple version
 
-The rule: **one state model, two callers, one mutation path.** Agent tools and manual REST
-endpoints both mutate the *same* owner document through the *same* concurrency-safe primitive.
-The UI renders only from that document. Neither caller renders from its own optimism.
+The user should be able to create, update, or delete something without first finding the right
+screen.
 
-This is a reference pattern; the anchors point at this repo, but the contract — a shared
-authoritative store, a single read-modify-write primitive, a status-marker outcome model, and
-UI that re-reads rather than trusts — is portable.
+1. The app uses the current user, current Engagement, and current work to understand the request.
+2. The backend checks the request and saves the change.
+3. Once the save succeeds, the app opens the new or updated record.
 
-## One store, rendered as truth
+For example, "add a high-priority action to prepare the steering deck" should work from Home,
+chat, or another screen. The user does not need to open the Engagement first. The app works out the
+scope, creates the action, and then opens it.
 
-All structured state is a single Cosmos document — `{ currentRoute, tasks[], events[],
-routes[], schedules[], library[] }` — keyed by a stable owner id (see
-[architecture.md](architecture.md#state-and-storage)). Both callers write it; the pane renders
-**only** from `GET /sessions/{id}/app/state`, which reads it back.
+The assistant does not change data itself. It asks the same backend used by the rest of the app,
+through MCP, and reports success only after that backend confirms the save.
 
-This is the [verifiable-execution invariant](architecture.md#anatomy-of-a-turn): a create is
-"done" only when the pane, refetched from the store, shows it. A tool that returns
-`CREATED task …` but failed to commit cannot fool the UI — the refetch won't contain the
-record. **Do not render CRUD results from tool arguments or assistant prose; re-read the
-authoritative state.**
+> **Architecture status:** this is the target design. The final section explains what already
+> exists in the repo and what still needs to change.
 
-## The mutation primitive
+## What happens behind the scenes
 
-Every write goes through [`appdb.update(mutator)`](../session-container/appdb.py)
-(`session-container/appdb.py:194`) — read-modify-write with optimistic concurrency:
+1. The assistant turns the request into a small, typed action.
+2. MCP sends that action to the shared backend service.
+3. The backend uses trusted context to find the right Engagement and record.
+4. The backend checks access, validates the change, and asks for confirmation when needed.
+5. The backend saves the change safely and records who did it.
+6. The result tells the UI exactly which record was changed.
+7. The UI reloads the saved data and opens that record.
 
-1. Read the owner doc (with its ETag).
-2. Run `mutator(data)`, which edits `data` in place and returns a result string.
-3. `replace_item` with `IfNotModified` on the ETag. On an ETag conflict (a concurrent writer
-   committed first), **re-read and re-run the mutator** with jittered backoff, up to
-   `_MAX_UPDATE_RETRIES` (10, `appdb.py:191`).
-4. If contention persists, **raise** — never silently drop the write.
+Navigation is not a prerequisite and is not another AI decision. The backend already knows the
+destination of the record it just changed.
 
-Two invariants make the retry safe and loud:
+## Five rules
 
-- **Side-effect-free until commit.** The mutator only edits the in-memory `data`, so re-running
-  it after a conflicting read is correct — there is nothing to undo.
-- **`AbortWrite` for validation / no-op** (`appdb.py:183`). A mutator raises
-  `AbortWrite(result)` to return a message **without writing** — the path for "task not found",
-  "no changes specified", "ambiguous reference". This distinguishes *"I chose not to write"*
-  from *"the write failed."*
+1. **No pre-navigation.** CRUD commands work from any page. Current view is context, not a workflow
+   requirement.
+2. **Trusted context.** Identity, permissions, session, and context defaults come from authenticated
+   runtime state, never model-supplied IDs.
+3. **One application service.** REST and MCP are adapters over the same validation, authorization,
+   approval, mutation, and outcome logic.
+4. **Commit before claim.** A record is changed only after an authorized concurrency-safe commit;
+   the UI renders records only after re-reading backend state.
+5. **Open only after success.** Only `committed` carries a grounded destination. Errors, no-ops,
+   ambiguity, and pending confirmations do not move the UI.
 
-`save()` (`appdb.py:171`) exists but is **last-write-wins and not concurrency-safe** — reserved
-for seeding/admin/tests. Concurrent writers (agent tools, the reminder scheduler, manual edits)
-**must** use `update()`.
+## User experience
 
-## Caller A — agent tools
+### Create from anywhere
 
-The agent's CRUD tools (`create_task`/`update_task`/`delete_task`/`add_subtask`,
-`create_event`/`update_event`/`delete_event`, `session-container/agent.py:458` onward) share a
-strict shape:
+"Add a high-priority action to prepare the steering deck" can be issued from Home, chat, or another
+Engagement. Context identifies the active Engagement; the backend validates that default and the
+actor's editor role, creates the action, and returns its canonical detail destination. The UI then
+opens it.
 
-- **Narrow, typed parameters** — one Pydantic param model per tool; no free-form JSON blob.
-- **A two-tier validation rule**, codified in `_update`'s docstring (`agent.py:390-398`):
-  - *Input-only checks* (empty title, missing date) return a marker **before** `update()` —
-    e.g. `TITLE_REQUIRED`, `DATE_REQUIRED`.
-  - *Doc-dependent checks* (resolve-by-reference, ambiguity, not-found) raise `AbortWrite`
-    **inside** the mutator, so they re-evaluate against the fresh read on each retry.
-- **Leading status markers** that classify the outcome (see the contract below):
-  `CREATED` / `UPDATED` / `DELETED` / `ADDED` (→ `ok`), `AMBIGUOUS` / `NO_CHANGES` (→ `noop`),
-  `*_REQUIRED` / `*_NOT_FOUND` (→ `error`).
-- **Strict reference resolution** — `_resolve_task_strict` / `_resolve_event_strict`
-  (`agent.py:401-423`) resolve a task/event by id, then exact title, then unique substring, and
-  return an explicit `*_NOT_FOUND` or `AMBIGUOUS` error rather than mutating the wrong record.
+### Update without opening the record
 
-## Caller B — manual REST endpoints
+"Mark the launch security risk mitigated" does not first navigate to risks. The backend searches
+only accessible Engagements, uses current and working context to rank strict matches, revalidates a
+unique target, commits, and returns the updated risk destination.
 
-So the app stands on its own **without the AI**, the UI edits the same document directly through
-typed REST endpoints (`app.py:441` onward — `POST/PATCH/DELETE /sessions/{id}/tasks…`). No
-session container or agent is involved. They share the store and the primitive but differ in
-surface:
+### Destructive action
 
-- **Typed request bodies** (`TaskCreate`, `TaskUpdate`, …) with field constraints.
-- **Enum validation → HTTP 422** — `status`/`priority` are checked against
-  `appdb.TASK_STATUSES` / `TASK_PRIORITIES` (`app.py:492-495,514-517`).
-- **Missing record → HTTP 404** — the mutator raises `_NotFound`, which `_mutate` maps to a 404
-  (`app.py:445-462`); it propagates through `update()` because `update()` only catches
-  `AbortWrite`.
-- **Same primitive** — every endpoint's mutator runs through `appdb.update`, off-thread.
+"Delete the completed launch actions" resolves candidates and policy but does not mutate. The
+backend returns `needs_confirmation` with a preview and a signed, expiring confirmation token. Only
+a later command presenting that token can commit, and the policy and record versions are checked
+again.
 
-After a manual mutation the UI calls `refresh()` (`useAgentSession.ts:519`), re-pulling
-`/app/state` so a hand edit and an agent edit converge on identical rendering.
+## Scopes and records
 
-## The outcome contract
+The shared collaboration scope is an **Engagement**. Personal space remains available for records
+that do not belong to an Engagement.
 
-Both callers surface a **truthful** outcome — but through different channels (agent tools via
-`TOOL_CALL_RESULT.outcome`; manual endpoints via HTTP status), and they do **not** map
-one-to-one:
+An Engagement combines the stronger parts of the in-flight implementations:
 
-| Outcome | Agent tool signal | Manual endpoint signal | UI meaning |
-|---|---|---|---|
-| `ok` | `CREATED` / `UPDATED` / `DELETED` / `ADDED` | `2xx` + record body | Mutation landed; refetch shows it |
-| `noop` | `AMBIGUOUS` / `NO_CHANGES` | *(no manual analogue — a no-field `PATCH` still `200`s)* | Nothing changed; surface why |
-| `error` | `*_REQUIRED` / `*_NOT_FOUND` / raised exception | `422` (bad input) / `404` (missing) / `5xx` | Loud failure |
+- Account-backed membership with `owner`, `editor`, and `viewer` roles
+- Tasks, events, and documents where those general records remain useful
+- Engagement fields such as stage, health, notes, milestones, risks, and actions
+- Conventions, activity/audit entries, and destination metadata
+- One ETag-safe document or aggregate boundary per Engagement
 
-**Mind the asymmetry.** Input validation lands differently on the two callers: a missing title
-is `TITLE_REQUIRED` on the agent tool — in `_ERROR_MARKERS` (`agent.py:213`), so it classifies
-as **`error`** — while the manual endpoint rejects it with a **`422`**. Same intent, different
-signal. And the agent has true no-ops (`AMBIGUOUS` / `NO_CHANGES`) that the manual API has no
-equivalent for (it addresses records by explicit id, and a no-op `PATCH` still returns `200`).
-For agent tools the outcome is classified from the leading status marker by `_tool_outcome`
-(`agent.py:216`, see [harnesses.md](harnesses.md)) — so `NO_CHANGES` shows as a truthful no-op
-and `TITLE_REQUIRED` as an honest error, never a fake success.
+The architecture does not treat a display name in a members list as authorization. Membership is
+bound to stable user IDs and checked on every read and mutation.
 
-## Route side effects
+## Context-aware resolution
 
-Create/update/delete intentionally set the **post-action route** — but only the **agent** tools
-do, because an assistant action should land you on its result:
+The [context service](context-reference-architecture.md) supplies a snapshot with provenance. CRUD
+uses it in this order:
 
-| Action | Agent-tool route effect (`agent.py`) | Manual endpoint |
-|---|---|---|
-| Create | Open the new record (`/todo/{id}`, `/calendar/{id}`) | No route change — user stays where they clicked |
-| Update | Open the changed record | No route change |
-| Delete | Return to the list (`/todo`, `/calendar`) | No route change |
+```text
+explicit scope or stable ID in the turn
+  > currently selected record or Engagement
+  > Engagement encoded by the current view
+  > sticky working Engagement
+  > personal/default scope
+```
 
-The agent sets `currentRoute` in the same mutator that writes the record, so the follow rule
-(see [navigation-reference-architecture.md](navigation-reference-architecture.md#the-frontend-follow-contract-event-driven-not-diff-driven))
-moves the pane to the result on the post-mutation refetch. Manual edits deliberately leave the
-route alone — a form submission shouldn't teleport the user.
+These are resolution hints, not authority. The service first generates candidates from resources the
+authenticated actor may access, then uses context to rank that permitted set.
 
-## Known gap — validation parity
+Rules by operation:
 
-The two callers **do not yet validate identically.** Manual endpoints reject out-of-enum
-`status`/`priority` with a 422 (`app.py:492-495,514-517`); the agent tools accept free-form
-strings — `create_task`/`update_task` do `params.status.strip() or "To do"` /
-`params.priority.strip() or "Medium"` with **no** membership check (`agent.py:466-467,490-493`).
-This is real drift risk: a `status` value the agent will happily create ("Later", "urgent")
-would be rejected by the manual API, and vice versa. Documenting it is the first step; the fix
-is a single shared validation layer (below).
+- **Create:** may default to a clearly active Engagement and must report the chosen scope.
+- **Update:** requires one resolved target. A close call returns `ambiguous`; it never updates the
+  highest-scored guess.
+- **Delete or bulk change:** requires one resolved target set plus approval policy. High contextual
+  confidence does not waive confirmation.
+- **Cross-Engagement request:** must carry an explicit authorized scope or resolve uniquely from the
+  request. Working context cannot silently spread a mutation across scopes.
 
-**Mutation parity is worth tracking as a matrix** — for each entity (task, event, subtask) and
-each field, do the agent tool and the manual endpoint enforce the same required/enum/default
-rules? Divergences are bugs waiting to surface.
+The backend re-resolves document-dependent references and rechecks membership inside any optimistic
+concurrency retry.
 
-## Migration: one CRUD implementation behind MCP
+## One service, multiple adapters
 
-Tool logic is [duplicated per harness today](architecture.md#limitations-and-known-gaps), and
-validation is duplicated again between agent tools and REST endpoints. The
-[planned MCP tool substrate](harnesses.md#the-reusable-substrate-direction--not-yet-built)
-collapses the *harness* duplication: task/event CRUD lifts into a **Personal Assistant MCP
-server** that every harness consumes as a client. The manual REST endpoints, though, live in
-the orchestrator — a [pure proxy that never runs the agent SDK](architecture.md#why-the-orchestrator-never-runs-the-sdk),
-so they can't consume that MCP server directly; the parity fix on the manual side is a
-**shared validation module** that both the tools and the endpoints import. Either path lands the
-same goal — one definition of what a valid task is, for every caller.
+```text
+Manual UI -> REST adapter ---------\
+                                    -> CRUD application service -> repositories
+Deep Agents -> MCP adapter --------/
+Copilot     -> MCP adapter --------/
+```
 
-## CRUD contract checklist
+MCP is the agent-facing protocol, not the domain layer. REST does not call MCP over the network, and
+MCP tools do not contain their own mutation rules. Both delegate to the same in-process application
+service.
 
-For any new entity or mutation, verify:
+That service owns:
 
-- [ ] The write goes through `appdb.update` (never `save`) so it's ETag-safe and loud.
-- [ ] The mutator is side-effect-free until commit (safe to re-run on retry).
-- [ ] Validation splits correctly: input-only checks before `update`; doc-dependent checks via
-      `AbortWrite` inside the mutator.
-- [ ] The outcome maps to `ok` / `noop` / `error` via a status marker (agent) or status code
-      (REST) — remembering `*_REQUIRED` is an **error**, and the two callers' input-validation
-      signals differ.
-- [ ] Agent tools set the intended post-action `currentRoute`; manual endpoints leave it alone.
-- [ ] The UI re-reads `/app/state` after the mutation — it never renders from tool args.
-- [ ] Agent and manual validation agree (or the divergence is tracked in the parity matrix).
+- Actor and session binding
+- Context lookup and scope resolution
+- Membership and role authorization
+- Entity schemas, defaults, and cross-field validation
+- Strict target resolution
+- Confirmation and standing-approval policy
+- Idempotency and expected-version handling
+- ETag-safe mutation
+- Activity/audit recording and side-effect outbox entries
+- Structured outcome construction
+- Canonical post-success destination generation
+
+The repository layer owns storage mechanics. It does not decide authorization, user-visible
+outcomes, or route behavior.
+
+## Typed command contract
+
+Agent tools should remain narrow and typed (`create_action`, `update_risk`, `delete_task`) while
+normalizing into one internal command envelope:
+
+```json
+{
+  "requestId": "req-...",
+  "idempotencyKey": "turn-...:tool-...",
+  "operation": "update",
+  "resourceType": "risk",
+  "targetRef": "security review",
+  "scopeHint": {"kind": "engagement", "ref": "launch"},
+  "changes": {"status": "Mitigated"},
+  "expectedVersion": null,
+  "approvalToken": null
+}
+```
+
+The following values are **not** model arguments:
+
+- Acting user ID
+- Session/workspace ownership
+- Effective permissions
+- Trusted current route
+- Standing approvals
+- `contextId`
+
+The REST or MCP adapter binds those from authenticated transport and the turn runtime. Treat every
+model-provided scope, target, and field value as intent to validate, not trusted state.
+
+## Execution pipeline
+
+The application service executes commands in this order:
+
+1. **Bind actor and context.** Load the authenticated actor and immutable turn-context snapshot.
+2. **Build authorized candidates.** Query only personal and Engagement resources visible to that
+   actor.
+3. **Resolve scope and target.** Apply explicit references and contextual precedence.
+4. **Authorize operation.** Viewers cannot mutate; editors can change records; owner-only operations
+   include membership and Engagement administration.
+5. **Validate.** Apply canonical field schemas, state transitions, and cross-field rules.
+6. **Evaluate approval.** Check action class, risk, standing grants, and any confirmation token.
+7. **Commit.** Use an idempotent ETag-protected mutation and re-run document-dependent checks after
+   conflicts.
+8. **Audit.** Write actor, operation, scope, before/after summary, approval basis, and request ID in
+   the same aggregate commit when possible.
+9. **Queue external effects.** Email, indexing, and other non-transactional work use an outbox or a
+   compensating workflow after the state commit.
+10. **Return outcome.** Construct one structured status and a canonical destination only when the
+    mutation committed.
+
+## Concurrency and idempotency
+
+The current `appdb.update(mutator)` pattern supplies the right core behavior: read with ETag, run a
+side-effect-free in-memory mutator, conditionally replace, and retry against fresh state after a
+conflict.
+
+The target service adds these requirements:
+
+- Recheck authorization, membership, target resolution, and approval validity on every retry.
+- Attach an idempotency key to every agent tool call so a retried stream or network request cannot
+  duplicate a create.
+- Store the resulting outcome or operation receipt long enough to replay duplicate requests.
+- Bind confirmation tokens to actor, operation, scope, target IDs, proposed payload, expected
+  versions, and expiry.
+- Never perform email, search indexing, or other external side effects inside a retryable mutator.
+- Raise a loud `conflict` after bounded retries rather than silently accepting last-write-wins.
+
+## Structured outcomes
+
+Marker strings are presentation, not a protocol. The application service returns one envelope:
+
+```json
+{
+  "requestId": "req-...",
+  "status": "committed",
+  "operation": "update",
+  "scope": {"kind": "engagement", "id": "eng-42"},
+  "resource": {"kind": "risk", "id": "risk-7", "version": "etag-..."},
+  "destination": {
+    "id": "destination:engagement:eng-42:risk:risk-7",
+    "title": "Security review",
+    "route": "/engagements/eng-42/risks/risk-7"
+  },
+  "auditId": "activity-..."
+}
+```
+
+| Status | Mutation? | Navigate? | Meaning |
+|---|---:|---:|---|
+| `committed` | Yes | Yes | Authorized mutation landed |
+| `noop` | No | No | Request was already satisfied or changed nothing |
+| `needs_confirmation` | No | No | Backend-issued preview/token must be accepted |
+| `ambiguous` | No | No | More than one authorized target remains |
+| `invalid` | No | No | Fields or transition violate the canonical schema |
+| `not_found` | No | No | No authorized target matched |
+| `forbidden` | No | No | A known scope or operation is not permitted |
+| `conflict` | No | No | Concurrent change prevented a safe commit |
+| `failed` | Unknown/No | No | Infrastructure failure; the client must refetch before claiming state |
+
+Adapters translate this envelope to HTTP and AG-UI without parsing prose. Candidate lists, field
+errors, previews, approval tokens, and retry guidance are typed optional fields on the same result.
+
+## Confirmation and standing approvals
+
+The backend, not the model, decides whether a mutation may commit.
+
+- Create and low-risk update may commit immediately according to user policy.
+- Delete, bulk mutation, membership changes, and high-risk transitions normally return
+  `needs_confirmation`.
+- Standing approvals are user-visible, revocable grants scoped to an action class and optionally an
+  Engagement.
+- A confirmation token is single-use and bound to the exact preview and record versions.
+- Confirmation re-runs authorization, policy, and version checks before commit.
+- Every policy decision and committed action writes an audit entry.
+
+A boolean such as `confirmed=true` supplied by an agent is not proof of user approval.
+
+## Navigate after completion
+
+The order is deliberate:
+
+1. Commit the record and audit.
+2. Return `status=committed` with a grounded canonical destination.
+3. Emit the structured tool result through AG-UI.
+4. Invalidate and refetch authoritative app state.
+5. Apply the returned route effect through the client router.
+6. Record the resulting navigation event for future context.
+
+There is no semantic `navigate` call before or after CRUD. The backend already knows the record it
+committed. If client navigation fails, the mutation remains committed and visible after refetch; UI
+presentation cannot roll back domain truth.
+
+Agent-driven CRUD follows the destination by default. A manual form can deliberately remain in place
+as a presentation choice, but it receives the same committed result from the same service.
+
+## Deep Agents and MCP
+
+The LangGraph Deep Agents harness should consume typed MCP tools backed by the application service:
+
+- Remove local copied `appdb` CRUD implementations from `agent_deepagents.py`.
+- Load MCP tools through the harness adapter and preserve their narrow schemas.
+- Bind actor, session, workspace, and tool-context projection outside model arguments.
+- Let the backend resolve Engagement defaults; do not prompt the model to guess a scope argument from
+  the current route.
+- Forward structured outcomes and route effects as AG-UI events.
+- Keep the LangGraph checkpointer for conversation continuity, not durable application state or
+  approval evidence.
+
+Copilot and future harnesses use the same MCP tools. Harness parity becomes a property of shared
+execution rather than duplicated code.
+
+## Current repo and migration
+
+Useful foundations already exist:
+
+- [`session-container/appdb.py`](../session-container/appdb.py) has an ETag-safe retrying mutation
+  primitive and fail-loud abort behavior.
+- [`app.py`](../app.py) proves manual REST can mutate the same authoritative state as agent tools.
+- The Projects worktree prototypes accounts, role-gated shared scopes, context, previews, standing
+  approvals, and activity records.
+- The Engagement worktree contributes the chosen domain vocabulary and stage, health, milestone,
+  risk, action, and note model.
+- [`mcp_server.py`](../mcp_server.py) proves private-network MCP transport.
+
+The current implementations are not the target service:
+
+- REST, Copilot, Deep Agents, and MCP duplicate validation and mutation behavior.
+- The current MCP server uses one shared key and one global owner document, has no Engagement
+  authorization, and allows immediate destructive operations.
+- The current Deep Agents CRUD path uses copied tools and last-write-wins saves rather than the
+  concurrency-safe shared service.
+- The Projects branch leaves some scope inference and confirmation to model arguments.
+- Structured status is still inferred from leading text markers.
+- The two collaboration worktrees use incompatible identity and membership models.
+
+Migration order:
+
+1. Adopt Engagement as the shared scope while retaining account-backed roles and per-user context.
+2. Extract canonical entity schemas and a CRUD application service above `appdb`.
+3. Route existing REST handlers through the service.
+4. Harden MCP with actor-bound authentication and make its tools thin service adapters.
+5. Add structured outcomes, idempotency receipts, confirmation tokens, and audit behavior.
+6. Port both harnesses to the same MCP tools and remove local CRUD implementations.
+7. Add canonical post-commit destinations and structured AG-UI route effects.
+8. Retire marker parsing, global-owner access, and model-controlled confirmation/scope defaults.
+
+## Architecture checklist
+
+- [ ] CRUD works from any view and never requires pre-navigation.
+- [ ] Actor, permissions, session, and context are runtime-bound rather than model arguments.
+- [ ] Context ranks only authorized candidates and never grants access.
+- [ ] Creates report their chosen scope; updates/deletes require a unique target.
+- [ ] REST and MCP delegate to one application service with one validation policy.
+- [ ] Every mutation is idempotent, ETag-safe, retry-safe, and fail-loud.
+- [ ] Authorization and approval are rechecked inside retries.
+- [ ] Destructive operations require a backend-verifiable policy or confirmation token.
+- [ ] Outcomes are structured and transport-independent.
+- [ ] Only `committed` carries a destination and triggers navigation.
+- [ ] The UI re-reads authoritative state and never renders from model claims.
+- [ ] Deep Agents and Copilot use the same MCP-backed implementation.

@@ -26,21 +26,39 @@ set -euo pipefail
 SHA=$(git rev-parse --short HEAD)
 
 # ── Configuration ─────────────────────────────────────────────────────────
-PREFIX="${PREFIX:-taxagent}"
-LOCATION="${LOCATION:-eastus}"
+# Dev environment lives in flow-dev-rg, everything in eastus2 (eastus hit hard
+# AKS capacity limits in Jul 2026). Moved-in resources (rfpagent-ai OpenAI,
+# djgrfpagentadls ADLS) keep their original names/regions.
+PREFIX="${PREFIX:-flow-dev}"
+LOCATION="${LOCATION:-eastus2}"
 RG="${PREFIX}-rg"
 IDENTITY_NAME="${PREFIX}-identity"
-ACR_NAME="${PREFIX}acr"
-ENV_NAME="${PREFIX}-env"
-SESSION_POOL_NAME="${PREFIX}-sessions"
-APP_NAME="${PREFIX}-app"
-FRONTEND_NAME="${PREFIX}-frontend"
+ACR_NAME="${ACR_NAME:-flowdevdjgacr}"   # ACR names: alphanumeric only, globally unique
+ENV_NAME="${ENV_NAME:-${PREFIX}-env}"
+SESSION_POOL_NAME="${SESSION_POOL_NAME:-flow-sessions}"
+APP_NAME="${APP_NAME:-flow-app}"
+FRONTEND_NAME="${FRONTEND_NAME:-flow-frontend}"
+MCP_NAME="${MCP_NAME:-flow-mcp}"
+IMG_PREFIX="${IMG_PREFIX:-rfp}"   # images: rfp-session / rfp-orchestrator / rfp-frontend / rfp-mcp
+# Shared key for the flow-mcp app-state MCP server (required — it is the only
+# path to Cosmos from outside the VNet; see docs/deployment.md).
+MCP_API_KEY="${MCP_API_KEY:-}"
+
+# ── Private networking (single VNet: ACA infra + Cosmos private endpoint) ──
+VNET_NAME="${VNET_NAME:-${PREFIX}-vnet}"
+COSMOS_ACCOUNT_NAME="${COSMOS_ACCOUNT_NAME:-${PREFIX}-cosmos}"
 
 AZURE_DEPLOYMENT="${AZURE_DEPLOYMENT:-gpt-4.1}"
-COSMOS_ENDPOINT="${COSMOS_ENDPOINT:-}"
-ADLS_ACCOUNT_NAME="${ADLS_ACCOUNT_NAME:-${PREFIX}adls}"
+COSMOS_ENDPOINT="${COSMOS_ENDPOINT:-https://${COSMOS_ACCOUNT_NAME}.documents.azure.com:443/}"
+COSMOS_DATABASE="${COSMOS_DATABASE:-flow}"
+COSMOS_CONTAINER="${COSMOS_CONTAINER:-appstate}"
+# Reminder email via ACS (scheduler.py) — optional, empty disables
+ACS_EMAIL_ENDPOINT="${ACS_EMAIL_ENDPOINT:-}"
+ACS_SENDER_ADDRESS="${ACS_SENDER_ADDRESS:-}"
+REMINDER_EMAIL="${REMINDER_EMAIL:-}"
+ADLS_ACCOUNT_NAME="${ADLS_ACCOUNT_NAME:-djgrfpagentadls}"   # moved-in account; storage names are alphanumeric-only
 ADLS_FILESYSTEM="${ADLS_FILESYSTEM:-documents}"
-AZURE_SEARCH_KB_NAME="${AZURE_SEARCH_KB_NAME:-tax-knowledge}"
+AZURE_SEARCH_KB_NAME="${AZURE_SEARCH_KB_NAME:-rfp-knowledge}"
 LOG_ANALYTICS_WORKSPACE_NAME="${LOG_ANALYTICS_WORKSPACE_NAME:-${PREFIX}-logs}"
 APPINSIGHTS_NAME="${APPINSIGHTS_NAME:-${PREFIX}-insights}"
 APPLICATIONINSIGHTS_CONNECTION_STRING="${APPLICATIONINSIGHTS_CONNECTION_STRING:-}"
@@ -48,7 +66,10 @@ OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-flow-session}"
 OTEL_SERVICE_NAMESPACE="${OTEL_SERVICE_NAMESPACE:-flow}"
 OTEL_SERVICE_VERSION="${OTEL_SERVICE_VERSION:-$SHA}"
 OTEL_DEPLOYMENT_ENVIRONMENT="${OTEL_DEPLOYMENT_ENVIRONMENT:-azure}"
-SESSION_READY_SESSIONS="${SESSION_READY_SESSIONS:-0}"
+# ACA no longer accepts 0 ready sessions (SessionPoolInvalidReadySessionInstances,
+# enforced at create AND via ARM since ~mid-2026): the platform floor is 1, so one
+# warm session is always running. Old pools with 0 are grandfathered.
+SESSION_READY_SESSIONS="${SESSION_READY_SESSIONS:-1}"
 ORCHESTRATOR_MIN_REPLICAS="${ORCHESTRATOR_MIN_REPLICAS:-0}"
 FRONTEND_MIN_REPLICAS="${FRONTEND_MIN_REPLICAS:-0}"
 SESSION_POOL_API_VERSION="${SESSION_POOL_API_VERSION:-2024-10-02-preview}"
@@ -103,6 +124,51 @@ echo ""
 echo ">>> Creating resource group..."
 az group create --name "$RG" --location "$LOCATION" -o none
 
+# ── 1a. Private networking ─────────────────────────────────────────────────
+# Cosmos is reachable ONLY via private endpoint (publicNetworkAccess=Disabled;
+# an MCAPS management-group policy force-disables it anyway). One VNet: the ACA
+# env gets egress via aca-infra; the Cosmos PE sits in private-endpoints.
+echo ">>> Ensuring VNet, DNS zone, and Cosmos (serverless, private)..."
+az network vnet create -g "$RG" -n "$VNET_NAME" -l "$LOCATION" \
+    --address-prefix 10.20.0.0/16 \
+    --subnet-name aca-infra --subnet-prefix 10.20.0.0/23 -o none 2>/dev/null || true
+az network vnet subnet update -g "$RG" --vnet-name "$VNET_NAME" -n aca-infra \
+    --delegations Microsoft.App/environments -o none
+az network vnet subnet create -g "$RG" --vnet-name "$VNET_NAME" -n private-endpoints \
+    --address-prefixes 10.20.2.0/24 -o none 2>/dev/null || true
+
+az network private-dns zone create -g "$RG" -n privatelink.documents.azure.com -o none 2>/dev/null || true
+az network private-dns link vnet create -g "$RG" -n "${VNET_NAME}-link" \
+    -z privatelink.documents.azure.com --virtual-network "$VNET_NAME" \
+    --registration-enabled false -o none 2>/dev/null || true
+
+# Serverless Cosmos (pay-per-RU — right-sized for dev), AAD-only, private-only.
+if ! az cosmosdb show -n "$COSMOS_ACCOUNT_NAME" -g "$RG" -o none 2>/dev/null; then
+    az cosmosdb create -n "$COSMOS_ACCOUNT_NAME" -g "$RG" \
+        --locations regionName="$LOCATION" failoverPriority=0 isZoneRedundant=False \
+        --capabilities EnableServerless \
+        --public-network-access DISABLED \
+        --default-consistency-level Session -o none
+    az resource update --ids "$(az cosmosdb show -n "$COSMOS_ACCOUNT_NAME" -g "$RG" --query id -o tsv)" \
+        --set properties.disableLocalAuth=true -o none
+    az cosmosdb sql database create -a "$COSMOS_ACCOUNT_NAME" -g "$RG" -n "$COSMOS_DATABASE" -o none
+    az cosmosdb sql container create -a "$COSMOS_ACCOUNT_NAME" -g "$RG" -d "$COSMOS_DATABASE" \
+        -n "$COSMOS_CONTAINER" --partition-key-path /sessionId -o none
+fi
+COSMOS_ID=$(az cosmosdb show -n "$COSMOS_ACCOUNT_NAME" -g "$RG" --query id -o tsv)
+if ! az network private-endpoint show -g "$RG" -n "${COSMOS_ACCOUNT_NAME}-pe" -o none 2>/dev/null; then
+    az network private-endpoint create -g "$RG" -n "${COSMOS_ACCOUNT_NAME}-pe" -l "$LOCATION" \
+        --vnet-name "$VNET_NAME" --subnet private-endpoints \
+        --private-connection-resource-id "$COSMOS_ID" --group-id Sql \
+        --connection-name "${COSMOS_ACCOUNT_NAME}-pe-conn" -o none
+    az network private-endpoint dns-zone-group create -g "$RG" \
+        --endpoint-name "${COSMOS_ACCOUNT_NAME}-pe" -n default \
+        --private-dns-zone privatelink.documents.azure.com --zone-name cosmos -o none
+fi
+# NOTE: there is deliberately NO VPN gateway — laptops never reach Cosmos
+# directly. Outside-the-VNet access to app-state goes through the flow-mcp
+# MCP server (deployed below); backend code dev uses the Cosmos emulator.
+
 # ── 1b. Observability (Application Insights + Log Analytics) ───────────────
 echo ">>> Ensuring Log Analytics workspace..."
 az monitor log-analytics workspace create \
@@ -115,6 +181,13 @@ LOG_ANALYTICS_WORKSPACE_ID=$(az monitor log-analytics workspace show \
     --resource-group "$RG" \
     --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" \
     --query id -o tsv)
+
+# `az containerapp env create --logs-workspace-id` wants the customer GUID,
+# not the ARM resource id (which App Insights' --workspace wants).
+LOG_ANALYTICS_CUSTOMER_ID=$(az monitor log-analytics workspace show \
+    --resource-group "$RG" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE_NAME" \
+    --query customerId -o tsv)
 
 LOG_ANALYTICS_SHARED_KEY=$(az monitor log-analytics workspace get-shared-keys \
     --resource-group "$RG" \
@@ -254,19 +327,26 @@ az role assignment create \
     --scope "$ADLS_ID" \
     -o none
 
-# ── 4c. Azure AI Search (Foundry IQ agentic retrieval) ────────────────
-SEARCH_NAME="${PREFIX}-srch"
-echo ">>> Creating Azure AI Search service..."
-az search service create \
-    --name "$SEARCH_NAME" \
-    --resource-group "$RG" \
-    --location "$LOCATION" \
-    --sku basic \
-    --partition-count 1 \
-    --replica-count 1 \
-    -o none
+# ── 4c. Azure AI Search (Library / KB retrieval) ────────────────────────
+# free tier ($0) for dev; capacity varies by region — flow-dev-srch landed in
+# eastus because eastus2 had none. Override SEARCH_SKU=basic for real load.
+SEARCH_NAME="${SEARCH_NAME:-${PREFIX}-srch}"
+SEARCH_SKU="${SEARCH_SKU:-free}"
+if ! az search service show --name "$SEARCH_NAME" --resource-group "$RG" -o none 2>/dev/null; then
+    echo ">>> Creating Azure AI Search service ($SEARCH_SKU)..."
+    az search service create \
+        --name "$SEARCH_NAME" \
+        --resource-group "$RG" \
+        --location "$LOCATION" \
+        --sku "$SEARCH_SKU" \
+        --partition-count 1 \
+        --replica-count 1 \
+        -o none
+fi
 
 SEARCH_ENDPOINT="https://${SEARCH_NAME}.search.windows.net"
+# library.py authenticates with the admin key — thread it into the containers.
+SEARCH_ADMIN_KEY=$(az search admin-key show --service-name "$SEARCH_NAME" --resource-group "$RG" --query primaryKey -o tsv)
 echo "    Search endpoint: $SEARCH_ENDPOINT"
 
 # Grant Search roles to the managed identity
@@ -285,30 +365,40 @@ az role assignment create \
     --scope "$SEARCH_ID" \
     -o none
 
-# ── 5. Container Apps Environment ────────────────────────────────────────
+# ── 5. Container Apps Environment (VNet-integrated) ──────────────────────
+ACA_SUBNET_ID=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET_NAME" -n aca-infra --query id -o tsv)
 if az containerapp env show \
     --name "$ENV_NAME" \
     --resource-group "$RG" \
     -o none >/dev/null 2>&1; then
     echo ">>> Reusing Container Apps environment..."
 else
-    echo ">>> Creating Container Apps environment..."
+    echo ">>> Creating Container Apps environment (VNet-integrated, $LOCATION)..."
     az containerapp env create \
         --name "$ENV_NAME" \
         --resource-group "$RG" \
         --location "$LOCATION" \
-        --logs-workspace-id "$LOG_ANALYTICS_WORKSPACE_ID" \
+        --logs-workspace-id "$LOG_ANALYTICS_CUSTOMER_ID" \
         --logs-workspace-key "$LOG_ANALYTICS_SHARED_KEY" \
+        --infrastructure-subnet-resource-id "$ACA_SUBNET_ID" \
+        --enable-workload-profiles \
         -o none
 fi
 
+# ── 5b. Cosmos data-plane role (managed identity → app-state doc) ────────
+echo ">>> Granting Cosmos DB Built-in Data Contributor to managed identity..."
+az cosmosdb sql role assignment create -a "$COSMOS_ACCOUNT_NAME" -g "$RG" \
+    --role-definition-id 00000000-0000-0000-0000-000000000002 \
+    --principal-id "$IDENTITY_PRINCIPAL_ID" \
+    --scope "$COSMOS_ID" -o none 2>/dev/null || true  # already exists on re-run
+
 # ── 6. Build & Push Session Container Image ─────────────────────────────
 echo ">>> Building session container image..."
-SESSION_IMAGE="$ACR_LOGIN_SERVER/tax-session:$SHA"
+SESSION_IMAGE="$ACR_LOGIN_SERVER/${IMG_PREFIX}-session:$SHA"
 az acr build \
     --registry "$ACR_NAME" \
-    --image "tax-session:$SHA" \
-    --image "tax-session:latest" \
+    --image "${IMG_PREFIX}-session:$SHA" \
+    --image "${IMG_PREFIX}-session:latest" \
     --file session-container/Dockerfile \
     session-container/ \
     -o none
@@ -338,10 +428,14 @@ if ! az containerapp sessionpool create \
         "AZURE_ENDPOINT=$AZURE_ENDPOINT" \
         "AZURE_DEPLOYMENT=$AZURE_DEPLOYMENT" \
         "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT" \
+        "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY" \
         "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME" \
         "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME" \
         "ADLS_FILESYSTEM=$ADLS_FILESYSTEM" \
         "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID" \
+        "COSMOS_ENDPOINT=$COSMOS_ENDPOINT" \
+        "COSMOS_DATABASE=$COSMOS_DATABASE" \
+        "COSMOS_CONTAINER=$COSMOS_CONTAINER" \
         "APPLICATIONINSIGHTS_CONNECTION_STRING=$APPLICATIONINSIGHTS_CONNECTION_STRING" \
         "OTEL_SERVICE_NAME=$OTEL_SERVICE_NAME" \
         "OTEL_SERVICE_NAMESPACE=$OTEL_SERVICE_NAMESPACE" \
@@ -360,6 +454,7 @@ if ! az containerapp sessionpool create \
             "AZURE_ENDPOINT=$AZURE_ENDPOINT" \
             "AZURE_DEPLOYMENT=$AZURE_DEPLOYMENT" \
             "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT" \
+            "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY" \
             "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME" \
             "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME" \
             "ADLS_FILESYSTEM=$ADLS_FILESYSTEM" \
@@ -395,6 +490,17 @@ if [ "$ACTUAL_READY_SESSIONS" != "$SESSION_READY_SESSIONS" ]; then
     exit 1
 fi
 
+# Managed identity INSIDE session containers (appdb → Cosmos, ADLS, OpenAI):
+# assigning the identity to the pool only covers image pull. Session code gets
+# a token endpoint only when managedIdentitySettings lifecycle=Main — without
+# it DefaultAzureCredential fails with ClientAuthenticationError. No CLI flag
+# for lifecycle as of Jul 2026, hence the raw PATCH.
+echo ">>> Enabling managed identity inside session containers (lifecycle=Main)..."
+az rest --method PATCH \
+    --url "https://management.azure.com${POOL_ID}?api-version=${SESSION_POOL_API_VERSION}" \
+    --body "{\"identity\":{\"type\":\"UserAssigned\",\"userAssignedIdentities\":{\"$IDENTITY_ID\":{}}},\"properties\":{\"managedIdentitySettings\":[{\"identity\":\"$IDENTITY_ID\",\"lifecycle\":\"Main\"}]}}" \
+    -o none
+
 POOL_ENDPOINT=$(az containerapp sessionpool show \
     --name "$SESSION_POOL_NAME" \
     --resource-group "$RG" \
@@ -415,19 +521,27 @@ az role assignment create \
 echo ">>> Building orchestrator image..."
 az acr build \
     --registry "$ACR_NAME" \
-    --image "tax-orchestrator:$SHA" \
-    --image "tax-orchestrator:latest" \
+    --image "${IMG_PREFIX}-orchestrator:$SHA" \
+    --image "${IMG_PREFIX}-orchestrator:latest" \
     --file Dockerfile \
     . \
     -o none
 
 # ── 10. Deploy Orchestrator as Container App ─────────────────────────────
 echo ">>> Deploying orchestrator container app..."
-ORCHESTRATOR_IMAGE="$ACR_LOGIN_SERVER/tax-orchestrator:$SHA"
+ORCHESTRATOR_IMAGE="$ACR_LOGIN_SERVER/${IMG_PREFIX}-orchestrator:$SHA"
 
 ORCHESTRATOR_ENV_VARS=(
     "POOL_MANAGEMENT_ENDPOINT=$POOL_ENDPOINT"
     "COSMOS_ENDPOINT=$COSMOS_ENDPOINT"
+    "COSMOS_DATABASE=$COSMOS_DATABASE"
+    "COSMOS_CONTAINER=$COSMOS_CONTAINER"
+    "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT"
+    "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY"
+    "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME"
+    "ACS_EMAIL_ENDPOINT=$ACS_EMAIL_ENDPOINT"
+    "ACS_SENDER_ADDRESS=$ACS_SENDER_ADDRESS"
+    "REMINDER_EMAIL=$REMINDER_EMAIL"
     "AZURE_ENDPOINT=$AZURE_ENDPOINT"
     "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME"
     "ADLS_FILESYSTEM=$ADLS_FILESYSTEM"
@@ -523,7 +637,7 @@ fi
 
 # ── 12. Build & Push Frontend Image ─────────────────────────────────────
 echo ">>> Building frontend image..."
-FRONTEND_IMAGE="$ACR_LOGIN_SERVER/tax-frontend:$SHA"
+FRONTEND_IMAGE="$ACR_LOGIN_SERVER/${IMG_PREFIX}-frontend:$SHA"
 
 # Derive redirect URI from frontend URL if not explicitly provided
 FRONTEND_URL_PREVIEW="${FRONTEND_NAME}.$(az containerapp env show --name "$ENV_NAME" --resource-group "$RG" --query "properties.defaultDomain" -o tsv)"
@@ -531,8 +645,8 @@ RESOLVED_REDIRECT_URI="${ENTRA_REDIRECT_URI:-https://$FRONTEND_URL_PREVIEW}"
 
 az acr build \
     --registry "$ACR_NAME" \
-    --image "tax-frontend:$SHA" \
-    --image "tax-frontend:latest" \
+    --image "${IMG_PREFIX}-frontend:$SHA" \
+    --image "${IMG_PREFIX}-frontend:latest" \
     --file frontend/Dockerfile \
     --build-arg "NEXT_PUBLIC_API_URL=https://$APP_URL" \
     --build-arg "NEXT_PUBLIC_AUTH_ENABLED=${API_AUTH_REQUIRED}" \
@@ -576,6 +690,54 @@ FRONTEND_URL=$(az containerapp show \
     --query "properties.configuration.ingress.fqdn" -o tsv)
 
 echo "    Frontend URL: https://$FRONTEND_URL"
+
+# ── 13b. Build & Deploy app-state MCP server ────────────────────────────
+if [ -n "$MCP_API_KEY" ]; then
+    echo ">>> Building MCP server image..."
+    MCP_IMAGE="$ACR_LOGIN_SERVER/${IMG_PREFIX}-mcp:$SHA"
+    az acr build \
+        --registry "$ACR_NAME" \
+        --image "${IMG_PREFIX}-mcp:$SHA" \
+        --image "${IMG_PREFIX}-mcp:latest" \
+        --file Dockerfile.mcp \
+        . \
+        -o none
+
+    echo ">>> Deploying MCP server container app..."
+    if ! az containerapp create \
+        --name "$MCP_NAME" \
+        --resource-group "$RG" \
+        --environment "$ENV_NAME" \
+        --image "$MCP_IMAGE" \
+        --registry-server "$ACR_LOGIN_SERVER" \
+        --registry-identity "$IDENTITY_ID" \
+        --user-assigned "$IDENTITY_ID" \
+        --target-port 8080 \
+        --ingress external \
+        --min-replicas 0 \
+        --max-replicas 1 \
+        --cpu 0.25 --memory 0.5Gi \
+        --secrets "mcp-api-key=$MCP_API_KEY" \
+        --env-vars \
+            "COSMOS_ENDPOINT=$COSMOS_ENDPOINT" \
+            "COSMOS_DATABASE=$COSMOS_DATABASE" \
+            "COSMOS_CONTAINER=$COSMOS_CONTAINER" \
+            "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID" \
+            "MCP_API_KEY=secretref:mcp-api-key" \
+        -o none 2>/dev/null; then
+        echo "    MCP app exists, updating..."
+        az containerapp update \
+            --name "$MCP_NAME" \
+            --resource-group "$RG" \
+            --image "$MCP_IMAGE" \
+            -o none
+    fi
+    MCP_URL=$(az containerapp show --name "$MCP_NAME" --resource-group "$RG" \
+        --query "properties.configuration.ingress.fqdn" -o tsv)
+    echo "    MCP URL: https://$MCP_URL/mcp"
+else
+    echo ">>> Skipping MCP server (MCP_API_KEY not set)."
+fi
 
 # ── 14. Update orchestrator CORS with frontend URL ─────────────────────
 echo ">>> Updating orchestrator CORS..."

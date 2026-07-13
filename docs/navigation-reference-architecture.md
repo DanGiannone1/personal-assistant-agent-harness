@@ -1,212 +1,274 @@
 # Navigation Reference Architecture
 
-How the assistant moves the app from one screen to another — and why navigation is a
-**trust boundary**, not a place to let the model improvise.
+## The simple version
 
-## Navigation at a glance
+Navigation should feel like using an app, not operating an AI system.
 
-"Navigation" means changing what the app pane shows. Bare bones: **one rule, two paths, one
-tool that everything else composes on.**
+1. The app shows quick links based on what the user is working on.
+2. Clicking a link, record, or menu item opens it immediately.
+3. If the user says where they want to go, the assistant searches the places that actually exist
+   and opens the best match.
 
-**The rule: a route can only come from the set of destinations that actually exist.** Models
-*select* destinations; they never invent one.
+For example, someone working on the Website Launch Engagement might see **Risks**, **Next
+milestone**, and **Steering deck** as quick links. Clicking **Risks** opens it immediately. Saying
+"open the launch risks" produces the same result through the assistant.
 
-### Path 1 — quick links (no AI, instant)
+That is the whole experience. The rest of this document explains how to make it personal, fast,
+and dependable.
 
-The sidebar and quick-nav chips set the route directly: a click, milliseconds, no model in
-the loop. As user context accrues (recency, frequency, salience), the links get better —
-context **ranks** what surfaces; it never changes what's reachable
-([personalized-navigation-via-user-context.md](personalized-navigation-via-user-context.md)).
+> **Architecture status:** this is the target design. The final section explains what already
+> exists in the repo and what still needs to change.
 
-### Path 2 — the nav tool (one tool, one call)
+## The two ways navigation happens
 
-Users rarely ask for pure navigation — navigation happens *inside* tasks. Whenever a task
-needs a page, the agent makes one call: `navigate(<what the user means>)`. Inside the tool:
+| Situation | Path | AI involved? |
+|---|---|---|
+| The UI already has a destination: quick link, sidebar item, record card, or successful CRUD result | Navigate immediately through the client router | No |
+| The user describes a destination in natural language | Search the user's real destinations, choose the best match, and open it | Only inside the navigation tool |
 
-1. **Vector search** over the real destinations (routes, records) returns candidates.
-2. **An LLM decides** — picks the best candidate. This call lives inside the tool, so
-   candidate lists never pollute the main agent's context.
-3. **Navigate.** The route is set; the pane follows.
+## The one safety rule
 
-```mermaid
-flowchart LR
-    T["task needs a page"] --> N["navigate(intent)"]
-    N --> V["vector search<br/>over real destinations"]
-    V --> D["LLM decides"]
-    D --> GO["route set — pane follows"]
+> **The app only opens places that exist and that the user is allowed to see.**
+
+The UI may use a route supplied by that catalog. A picker may choose an opaque destination ID
+from search results. Neither the main agent nor the picker may invent a URL.
+
+## Use the shortest path
+
+Everything uses the same **navigation contract**, but not everything uses semantic search.
+
+- A quick link already names a grounded destination, so it opens directly.
+- A successful CRUD command already knows the created or changed record, so its result carries a
+  grounded route effect that the UI follows directly.
+- Only an unresolved natural-language request such as "open the launch risks" needs
+  `navigate(intent)`.
+
+Calling semantic navigation for a known destination adds latency and can only make a correct answer
+less reliable. Conversely, letting the model construct a route turns navigation into an
+unverifiable guess. The destination catalog is the boundary between those mistakes.
+
+## The destination catalog
+
+The backend owns one canonical catalog of destinations. It contains static application surfaces and
+dynamic destinations derived from live state, including Engagements and their records.
+
+A destination has this logical shape:
+
+```json
+{
+  "id": "destination:engagement:eng-42:risks",
+  "title": "Website Launch risks",
+  "route": "/engagements/eng-42/risks",
+  "kind": "engagement-risks",
+  "scope": {"kind": "engagement", "id": "eng-42"},
+  "aliases": ["launch risks", "website risks"],
+  "searchText": "Website Launch risks issues blockers",
+  "version": "..."
+}
 ```
 
-**Decide, don't interrogate.** The tool commits to the best match — no clarifying questions.
-If it lands wrong, the user says so and the next call gets it right; a cheap correction beats
-an interrogation. And it can only be wrong *somewhere real* — the LLM selects from what the
-vector search returned.
+The catalog follows five rules:
 
-### Everything composes on it
+1. **Derived, not copied as truth.** Static entries come from one route registry; dynamic entries
+   derive from current Engagement and record state.
+2. **Permission-trimmed first.** A user can rank, search, or pick only destinations they may
+   currently open.
+3. **Stable identity.** Search and context refer to `destination.id`; application code maps the ID
+   to the current route.
+4. **Live revalidation.** The backend checks existence and authorization immediately before an
+   agent-driven route effect because an index can be stale.
+5. **One registry.** The sidebar, quick links, semantic search, and route generation consume the
+   same definitions rather than maintaining separate route lists.
 
-CRUD, reminders, reports — any operation that should end on a page relies on the same nav
-call as its final step. Navigation is the one primitive; use cases are its consumers. And it
-is a **baked-in tool, not a skill**: every request may need to move the app, so it can't sit
-behind a trigger that might not fire.
+The vector index is an acceleration structure, not authority. It stores searchable catalog fields
+and embeddings, but a search hit is never enough to navigate without a live catalog lookup.
 
----
+## Personalized quick links
 
-*The sections below document the **shipped demo implementation**: a deterministic lexical
-resolver with explicit ambiguous/not-found outcomes and candidate chips. The bare-bones
-target above replaces the matching internals with vector search + an in-tool LLM decision,
-and drops clarifying prompts in favor of decisive selection. The contract surfaces carry
-over unchanged: grounded routes only, honest trace outcomes, and the pane follows server
-state — never the model's claims.*
+**Quick links are the highest-ranked permitted destinations for this user right now.** They are the
+normal navigation experience, not an AI feature.
 
-## The rule: intent in, resolution owned by the app
+The deterministic ranker consumes the [turn context](context-reference-architecture.md), including:
 
-The rule: **the model expresses intent; application code owns resolution.** The agent calls
-one tool with the user's words; a deterministic resolver in the app turns those words into a
-concrete route (or a short list to disambiguate). The model never chooses a URL.
+- Current view and selected record
+- Active Engagement
+- Recent visits with time decay
+- Visit frequency with a bounded contribution
+- Due, overdue, blocked, upcoming, and recently changed salience
+- Explicit pins
+- Role and profile defaults for cold start
 
-This is a reference pattern. The anchors below point at this repo's implementation, but the
-contract — one intent call, a deterministic resolver, three explicit outcomes, an
-event-driven follow rule — is portable to any assistant that drives a UI.
+The ranker returns both a score and reason codes, for example `recent`, `active_engagement`, and
+`overdue_items`. Those reasons power the context inspector and make personalization explainable.
 
-## One intent call, not a navigation agent
+Context **ranks but never gates**. It cannot add an unauthorized destination, and low-ranked
+surfaces remain reachable through the complete navigation UI. Recency decays and frequency is
+capped so yesterday's habit does not permanently bury the long tail.
 
-The agent has a single navigation tool, [`navigate(destination)`](../session-container/agent.py)
-(`session-container/agent.py:425`). It passes the user's phrasing through — ideally verbatim
-("my calendar", "the crypto task", "documents") — and gets back a **grounded** answer in one
-call. There is no loop where the model guesses a path, sees a 404, and guesses again.
+### Immediate click behavior
 
-The contrast this design rejects: a multi-call "navigation agent" that reasons its way to a
-URL. That is slower, non-deterministic, and unfalsifiable — the model can assert it navigated
-somewhere that does not exist. Here, routing is **application logic exposed as a tool**, so the
-same input always resolves the same way and every outcome is explainable from code.
+A click does not wait for an agent, embedding, search, or context write:
 
-## The resolver contract
+1. The component receives a grounded destination from the backend.
+2. The client router applies its route immediately.
+3. The client asynchronously records one navigation event containing destination ID, source,
+   timestamp, and Engagement scope.
+4. The context service atomically updates the visit log and working Engagement from that event.
 
-All parsing lives in [`resolve_destination(data, destination)`](../session-container/appdb.py)
-(`session-container/appdb.py:294`). It is deterministic — **no LLM** — and returns exactly one
-of three shapes:
+A logging failure does not roll back visible navigation. The next context bundle reports that the
+behavioral signal is unavailable rather than fabricating it.
 
-| Outcome | Shape | Meaning | Effect on `currentRoute` |
-|---|---|---|---|
-| `resolved` | `{status, path, title}` | Intent matched exactly one destination | **Set** to `path` |
-| `ambiguous` | `{status, candidates[]}` | Intent matched several — the user must pick | **Unchanged** (no-op) |
-| `not_found` | `{status, candidates[]}` | Nothing matched | **Unchanged** (no-op) |
+## Natural-language navigation
 
-Only `resolved` mutates state. The tool applies this by writing `currentRoute` on `resolved`
-and raising [`AbortWrite`](../session-container/appdb.py) for the other two
-(`session-container/agent.py:427-436`) — so an ambiguous or unknown destination **leaves the
-app exactly where it was** and returns candidates instead of moving the user somewhere wrong.
+The agent sees one baked-in tool:
 
-Ambiguous and not-found are **first-class outcomes, not failures to hide.** Both leave the app
-where it was and return candidate destinations that become clickable chips in the trace. They
-differ in *signal*: an **ambiguous** result is a neutral no-op ("which one did you mean?"); a
-**not-found** result surfaces as an *error* ("nothing matched") — but still offers fallback
-destinations rather than a dead end. Either way the user gets a choice, never a wrong move or a
-silent failure. (The candidate sources differ too: not-found returns `_all_destinations(data)[:8]`,
-capped at 8, `appdb.py:371`; ambiguous returns the matched destinations, uncapped,
-`appdb.py:369-370`. The trace then caps the chips it renders to 6, `agent.py:251`.)
+```text
+navigate(intent: string) -> NavigationResult
+```
 
-## How resolution matches (deterministic layers)
+The model supplies only the user's destination words. Actor identity, session, permissions, current
+view, and working Engagement are bound by the runtime; they are not model-controlled tool
+arguments.
 
-`resolve_destination` tries increasingly loose matches and stops at the first that yields a
-single hit (`appdb.py:307-371`):
+### Embed -> search -> pick -> navigate
 
-1. **Exact static route** — path or title equals the query (`/calendar`, "Calendar").
-2. **Exact task/event title** — a single record whose title equals the query resolves to its
-   detail route (`/todo/{id}`, `/calendar/{id}`).
-3. **Substring + keyword match across routes, tasks, and events** — a route matches on a ≥3-char
-   *raw* substring of its title or a keyword, **or** on a whole-word keyword hit (the
-   word-boundary rule stops a 1–2 char query from matching inside a word). Tasks/events join by
-   ≥3-char substring on title. Keyword-only hits are then filtered by the stopword-residual
-   guard below.
+Inside the tool:
 
-One or more matches after dedup → `resolved` (exactly one) or `ambiguous` (more than one); zero
-→ `not_found`.
+1. **Embed.** Embed the intent using the version associated with the destination index.
+2. **Search.** Retrieve a small set from the actor's permission-trimmed destination index. Exact and
+   lexical signals may boost vector retrieval, but every result is a real destination ID.
+3. **Establish viability.** Reject candidates below a semantic relevance floor before applying
+   context. Context may break close ties; it must not turn an unrelated result into a winner.
+4. **Pick.** If scoring produces a clear winner, select deterministically. Otherwise call a bounded
+   picker with only candidate IDs, minimal labels, the intent, and safe context reasons. Its schema
+   permits exactly one supplied candidate ID and no route text.
+5. **Revalidate.** Resolve the selected ID against live state and recheck authorization. If stale,
+   exclude it and retry the remaining candidates once.
+6. **Navigate.** Return a structured successful route effect. The frontend applies it immediately.
+7. **Record.** Emit the same navigation-context event used by manual clicks.
 
-### The stopword residual guard (fail-loud matching)
+The main agent never sees the candidate list or picker reasoning. The context inspector can show the
+candidate IDs, scores, boosts, selected ID, and decision method without bloating the conversation.
 
-The subtlest — and most important — piece is the guard at `appdb.py:350-355`. A **keyword-only**
-match (one resting on a keyword hit, not a title substring) is trusted **only if, after removing
-the matched keyword and a set of filler stopwords** (`my`, `the`, `page`, `view`, `open`,
-`show`, …), **no content words remain.** This lets "my calendar" and "the documents page"
-resolve, while forcing `"crypto mining dashboard"` to fail loud (`not_found`) instead of
-silently resolving to Home via the stray "dashboard" keyword.
+**Decide, do not interrogate.** A viable grounded set should normally produce a destination. If no
+candidate clears the relevance floor, return `not_found` and do not move. Do not ask a clarifying
+question merely because two viable results were close; context and the bounded picker exist to make
+that decision.
 
-This is the navigation analogue of *no silent fallbacks*: a partial keyword hit that leaves
-unexplained words is treated as **not understood**, not as a lucky guess.
+## Result and frontend follow contract
 
-## Outcome → trace signal
+The backend returns data, not marker prose:
 
-The three resolver outcomes surface to the UI through the custom `TOOL_CALL_RESULT` event
-(see [architecture.md](architecture.md#sse-and-ag-ui-event-flow),
-[harnesses.md](harnesses.md)):
+```json
+{
+  "status": "navigated",
+  "destination": {
+    "id": "destination:engagement:eng-42:risks",
+    "title": "Website Launch risks",
+    "route": "/engagements/eng-42/risks"
+  },
+  "routeEffect": {"type": "navigate", "route": "/engagements/eng-42/risks"},
+  "contextId": "ctx-...",
+  "decisionId": "nav-..."
+}
+```
 
-| Tool result marker | `TOOL_CALL_RESULT.outcome` | UI |
-|---|---|---|
-| `NAVIGATED to …` | `ok` | Pane follows the route |
-| `AMBIGUOUS: … matches multiple …` | `noop` | Candidate chips, pane stays |
-| `NOT_FOUND: no destination matched …` | `error` | Fallback-destination chips, pane stays |
+Valid statuses are `navigated`, `not_found`, and `failed`. Only `navigated` carries a route effect.
+The AG-UI adapter forwards that structured result without inferring success from strings or tool
+names.
 
-The outcome is classified from the tool's **leading status marker** by `_tool_outcome`
-(`agent.py:216`): `AMBIGUOUS` is in `_NOOP_MARKERS`, while a marker ending in `NOT_FOUND` maps to
-`error`. **Both leave the pane put** — the follow rule keys on `outcome === "ok"`, so *neither* a
-noop nor an error moves the user. The difference is the signal the trace shows (neutral "which
-one?" vs. a red "not found") — and either way it is honest: an unresolved navigation is never
-rendered as a false success.
+The frontend follows these rules:
 
-## The frontend follow contract (event-driven, not diff-driven)
+- Follow only a successful structured route effect.
+- Never route from tool arguments or assistant prose.
+- A manual click after the tool starts wins over an older trailing route effect.
+- A later successful agent navigation may supersede an earlier manual click in the same turn.
+- Last-issued state refresh wins; stale snapshots cannot replace newer app data.
+- Cancellation invalidates buffered route effects from the cancelled turn.
+- Refetch authoritative app data after tool completion, but do not make the visible route wait for
+  that refetch.
 
-The pane follows server navigation as **behavior**, codified in
-[`useAgentSession.ts`](../frontend/src/hooks/useAgentSession.ts). The rules:
+## CRUD composes without semantic navigation
 
-1. **Follow only on a successful route-setting tool.** The client follows `currentRoute` only
-   when a tool in `ROUTE_SETTING_TOOLS` (`useAgentSession.ts:10`) completes with outcome `ok`
-   (`useAgentSession.ts:427`). It does **not** diff `currentRoute` and follow on any change — an
-   old change-heuristic dropped re-navigation to the current route; the event-driven rule
-   handles it.
-2. **Manual navigation wins.** If the user clicks the sidebar mid-turn, `userNavSinceToolRef`
-   (`useAgentSession.ts:322,438`) suppresses the route-*follow* on the trailing refetch — the
-   refetch still runs to pull fresh state, but a deliberate click is not yanked back — unless a
-   *later* agent nav supersedes it that same turn.
-3. **Last-issued refetch wins.** Every tool completion (`TOOL_CALL_END`, `useAgentSession.ts:438`)
-   triggers a `/app/state` refetch; a monotonic sequence (`appStateSeqRef`,
-   `useAgentSession.ts:325,348-354`) drops any out-of-order snapshot so a stale read can't
-   clobber the pane.
-4. **Cancellation is respected.** After Stop, `cancelledRef` (`useAgentSession.ts:327,408`)
-   ignores buffered events from the cancelled turn, so they can't re-navigate.
+CRUD does not navigate first. It executes from any screen using trusted context and backend scope
+resolution. After a successful commit, the CRUD result includes the canonical destination of the
+new or changed record. The UI follows that known route effect directly.
 
-The pane renders the route from `/app/state` — the store the tool mutated — **never from the
-tool's arguments or the assistant's prose.** This is the navigation face of the
-[verifiable-execution invariant](architecture.md#anatomy-of-a-turn): the app can't claim to
-be somewhere it isn't.
+There is no reason to embed and search for a record the backend just returned. See
+[crud-reference-architecture.md](crud-reference-architecture.md).
 
-## Anti-patterns
+## Context, privacy, and auditability
 
-- **Don't let the model compute route paths.** It emits intent; the resolver owns paths. A
-  model-chosen URL is unfalsifiable and drifts from the real route table.
-- **Don't render the pane from tool arguments or assistant text.** Follow server state only.
-- **Don't treat ambiguous/not-found as an error to swallow or a success to fake.** They are
-  outcomes with candidates — surface them (as a neutral noop and a red error respectively).
-- **Don't add bidirectional substring matching** to "be helpful." It over-matches; the
-  word-boundary + stopword-residual rules exist to fail loud instead.
+Navigation both consumes and produces context:
 
-## Migration: one resolver behind MCP
+- It consumes current view, active Engagement, visit history, salience, pins, and role defaults.
+- It produces a bounded visit event and may update the working Engagement.
+- Quick-link results include explanation codes.
+- Semantic decisions record candidates, component scores, the selected ID, and live revalidation
+  outcome.
 
-Today each harness wires its own `navigate` tool, but both call the same
-`resolve_destination`. The [planned MCP tool substrate](harnesses.md#the-reusable-substrate-direction--not-yet-built)
-lifts the resolver into a **Personal Assistant MCP server** so every harness (Copilot, Deep
-Agents, future) consumes one canonical navigation implementation — identical outcomes, one
-place to evolve the route table and stopword policy.
+Visit history is user data. Keep a capped log, decay old behavior, provide a clear-history control,
+and do not expose raw history to the model when aggregate ranking features suffice.
 
-## Navigation contract checklist
+## Deep Agents and MCP
 
-For any new destination type or resolver change, verify:
+`navigate` belongs in the shared backend/MCP substrate, not in each harness:
 
-- [ ] Exact match (path/title) is tried before fuzzy matching.
-- [ ] A single hit → `resolved`; multiple → `ambiguous`; none → `not_found`.
-- [ ] Only `resolved` mutates `currentRoute`; the other two are no-ops with candidates.
-- [ ] Keyword-only matches pass the stopword-residual guard (no unexplained content words).
-- [ ] Candidate handling is precise: not-found caps at 8, ambiguous is uncapped, trace chips cap
-      at 6 — none are relevance-ranked (fixed route→task→event order).
-- [ ] The tool emits a status marker that classifies to `ok`/`noop`/`error` correctly
-      (`NAVIGATED`→ok, `AMBIGUOUS`→noop, `*_NOT_FOUND`→error).
-- [ ] The pane follows only on a successful route-setting tool; manual nav is not overridden.
+```text
+LangGraph Deep Agent -> MCP adapter -> navigation service -> destination catalog/index
+Copilot harness      -> MCP adapter -> navigation service -> destination catalog/index
+Manual UI            -> REST/client -> known destination contract
+```
+
+For Deep Agents:
+
+- Load the shared MCP `navigate` tool instead of defining a local `appdb` resolver.
+- Bind actor, session, and tool-context projection when constructing the MCP client or request.
+- Expose only `intent` to the model.
+- Keep the static navigation policy in the system prompt and the per-turn context in dynamic
+  middleware.
+- Forward the structured result as AG-UI; do not parse status markers.
+
+Harness parity then follows from shared execution rather than duplicated implementations.
+
+## Current repo and migration
+
+The current checkout ships a deterministic lexical resolver in
+[`session-container/appdb.py`](../session-container/appdb.py), with separate tool wrappers in the two
+agent harnesses. It has honest resolved/ambiguous/not-found behavior but no personalized quick links,
+embedding index, or bounded picker.
+
+The in-flight Projects worktree prototypes a destination registry, visit context, quick links, and
+context-weighted lexical ranking. It is useful implementation evidence, but it still uses Project
+terminology, has duplicate registries, lacks embed/search/pick, and does not give Deep Agents the same
+navigation path. The target shared scope is **Engagement**.
+
+The in-flight [`mcp_server.py`](../mcp_server.py) proves remote MCP transport but does not expose
+navigation and is still bound to one global owner.
+
+Migration order:
+
+1. Rename the shared scope and route family to Engagements.
+2. Establish one canonical destination registry and authorized catalog service.
+3. Add atomic navigation-context recording and deterministic quick-link ranking.
+4. Make known UI destinations and CRUD route effects navigate directly.
+5. Add the permission-trimmed destination embedding index.
+6. Implement the bounded embed/search/pick navigation service.
+7. Expose that service once through MCP and use it from both harnesses.
+8. Replace string markers and hardcoded route-setting tool lists with structured route effects.
+9. Remove the legacy per-harness resolvers after parity checks cover both backends.
+
+## Architecture checklist
+
+- [ ] Quick links rank only permitted destinations and include explanation reasons.
+- [ ] A known destination navigates immediately with no model or semantic search.
+- [ ] The complete navigation surface remains available outside personalized links.
+- [ ] Natural-language navigation is one embed -> search -> pick -> revalidate operation.
+- [ ] The picker can select only an opaque ID from the supplied candidates.
+- [ ] Context ranks candidates but never makes an irrelevant candidate viable.
+- [ ] The backend revalidates existence and authorization before returning a route effect.
+- [ ] No viable candidate leaves the UI in place with `not_found`.
+- [ ] Successful CRUD uses its returned destination and never calls semantic navigation.
+- [ ] Manual and agent navigation record the same bounded context event.
+- [ ] AG-UI carries structured status and route effects, not parsed marker prose.
+- [ ] Copilot and Deep Agents call the same backend/MCP navigation service.
