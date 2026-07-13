@@ -1,7 +1,7 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { AGUIEvent, AppFile, AppState, ChatMessage, MessagePart, ToolOutcome } from "@/lib/types";
+import { AGUIEvent, AppFile, AppState, ChatMessage, MessagePart, NavCandidate, ToolOutcome } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
-import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary } from "@/lib/api";
+import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, recordVisit, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary } from "@/lib/api";
 import { clearSessionId, clearUserToken, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
 
@@ -36,7 +36,7 @@ type Action =
   | { type: "REASONING_DELTA"; delta: string }
   | { type: "TOOL_START"; toolCallId: string; toolCallName: string }
   | { type: "TOOL_ARGS"; toolCallId: string; delta: string }
-  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: string[] }
+  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: NavCandidate[] }
   | { type: "TOOL_END"; toolCallId: string }
   | { type: "SET_TURN_META"; steps: number; durationMs: number }
   | { type: "DONE" }
@@ -343,6 +343,19 @@ export function useAgentSession() {
   useEffect(() => { streamingRef.current = state.isStreaming; }, [state.isStreaming]);
   useEffect(() => { viewRouteRef.current = state.viewRoute; }, [state.viewRoute]);
   useEffect(() => { appStateRef.current = state.appState; }, [state.appState]);
+
+  // Visit log (M3): ping the server whenever the pane's route changes — manual click or agent
+  // nav — so server-ranked quick links can weight recency. Fire-and-forget: it never blocks a
+  // navigation and never surfaces an error (a dropped ping just isn't logged). Consecutive
+  // duplicate routes are skipped so re-navigating to the same place doesn't spam the log.
+  const lastVisitRef = useRef<string | null>(null);
+  useEffect(() => {
+    const sid = state.sessionId;
+    const route = state.viewRoute;
+    if (!sid || !route || lastVisitRef.current === route) return;
+    lastVisitRef.current = route;
+    void recordVisit(sid, route, viewLabel(appStateRef.current, route)).catch(() => {});
+  }, [state.sessionId, state.viewRoute]);
 
   const clearAndDeleteSession = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;

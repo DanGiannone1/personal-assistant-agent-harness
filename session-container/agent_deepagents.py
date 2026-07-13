@@ -9,8 +9,9 @@ on a LangChain/LangGraph "deep agent" (`deepagents.create_deep_agent`) against
 Azure OpenAI instead of the Copilot SDK.
 
 Design notes (see review/ findings doc for the full comparison):
-- **Standalone by choice.** This module shares only `appdb` (the system of record)
-  and the `ag_ui` event protocol with the Copilot path. The Personal Assistant tools and system
+- **Standalone by choice.** This module shares `appdb` (the system of record),
+  `library` (the RAG Library store), and the `ag_ui` event protocol with the Copilot
+  path. The Personal Assistant tools and system
   prompt are ported here as native LangChain tools so the two backends never
   couple. The cost is duplicated tool logic; the benefit is a clean, independent
   implementation that could run with the Copilot SDK uninstalled.
@@ -18,7 +19,7 @@ Design notes (see review/ findings doc for the full comparison):
   a scratch filesystem (`ls`/`read_file`/`write_file`/…), subagents (`task`) and
   shell (`execute`). Personal Assistant is deliberately a one-direct-tool-call app, so every
   built-in tool is hidden from the model via `_ToolExclusionMiddleware`. The model
-  sees ONLY the 14 Personal Assistant tools — identical surface to the Copilot agent.
+  sees ONLY the 22 Personal Assistant tools — identical surface to the Copilot agent.
 - **Tool-name fidelity.** The frontend keys off exact tool *and* arg names
   (`write_file`/`p.path`, `navigate`/`p.destination`, …). A user tool named
   `write_file` shadows the built-in of the same name (verified: user `tools=` win
@@ -60,6 +61,7 @@ from deepagents import create_deep_agent
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 
 import appdb
+import library
 
 load_dotenv()
 
@@ -229,7 +231,7 @@ def _result_text(result) -> str:
 
 
 _NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS"}
-_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED"}
+_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED"}
 
 
 def _tool_outcome(result, success) -> str:
@@ -247,15 +249,20 @@ def _tool_outcome(result, success) -> str:
     return "ok"
 
 
-def _nav_candidates(result) -> list[str]:
+def _nav_candidates(result) -> list[dict]:
+    """Pull FULLY-BOUND candidates ({title, path}) from a navigate result's CHIPS line —
+    picker chips (ambiguous/not-found) and escape-hatch chips (decided-with-alternates)
+    both ride this channel; a chip click is a plain manual nav, no second resolution."""
     text = _result_text(result)
-    marker = "destinations: " if "destinations: " in text else ("options: " if "options: " in text else None)
-    if not marker:
+    if "\nCHIPS: " not in text:
         return []
-    tail = text.split(marker, 1)[1]
-    tail = tail.split(". ", 1)[0].rstrip(".")
-    parts = [p.strip() for p in tail.split(";") if p.strip()]
-    return [p for p in parts if p and not p.lower().startswith("ask ")][:6]
+    tail = text.rsplit("\nCHIPS: ", 1)[1].strip()
+    chips = []
+    for part in tail.split(";"):
+        title, _, path = part.strip().partition("|")
+        if title and path.startswith("/"):
+            chips.append({"title": title, "path": path})
+    return chips[:6]
 
 
 def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
@@ -264,51 +271,6 @@ def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-_SEARCH_INDEX_NAME = "flow-documents-index"
-_SEARCH_SEMANTIC_CONFIG = "flow-semantic"
-_SEARCH_API_VERSION = "2024-07-01"
-
-
-def _search_documents_query(query: str, top: int = 4) -> str:
-    import httpx
-
-    endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-    key = os.getenv("AZURE_SEARCH_KEY")
-    if not endpoint or not key:
-        return (
-            "SEARCH_NOT_CONFIGURED: document search is unavailable because Azure AI Search "
-            "is not configured (missing AZURE_SEARCH_ENDPOINT / AZURE_SEARCH_KEY)."
-        )
-    url = endpoint.rstrip("/") + f"/indexes/{_SEARCH_INDEX_NAME}/docs/search"
-    body = {
-        "search": query,
-        "top": top,
-        "select": "filename,title,chunk",
-        "queryType": "semantic",
-        "semanticConfiguration": _SEARCH_SEMANTIC_CONFIG,
-    }
-    try:
-        resp = httpx.post(
-            url,
-            params={"api-version": _SEARCH_API_VERSION},
-            headers={"api-key": key, "Content-Type": "application/json"},
-            json=body,
-            timeout=20,
-        )
-    except httpx.HTTPError as exc:
-        return f"SEARCH_FAILED: could not reach Azure AI Search ({exc})."
-    if resp.status_code != 200:
-        return f"SEARCH_FAILED: Azure AI Search returned {resp.status_code}: {resp.text[:200]}"
-    results = resp.json().get("value", [])
-    if not results:
-        return f"NO_RESULTS: nothing in the document library matched '{query}'."
-    lines = [f"PASSAGES for '{query}' ({len(results)} from the document library):"]
-    for r in results:
-        snippet = " ".join((r.get("chunk") or "").split())
-        lines.append(f"- source: {r.get('filename')}\n  {snippet}")
-    return "\n".join(lines)
 
 
 def _normalize_workspace_text(text: str) -> str:

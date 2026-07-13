@@ -10,6 +10,7 @@ import MarkdownRenderer from "./MarkdownRenderer";
 interface MessageBubbleProps {
   message: ChatMessage;
   onPick?: (text: string) => void;
+  onNavigate?: (route: string) => void;
 }
 
 type RenderedSegment =
@@ -61,7 +62,7 @@ function ReasoningBlock({ content }: { content: string }) {
   );
 }
 
-export default function MessageBubble({ message, onPick }: MessageBubbleProps) {
+export default function MessageBubble({ message, onPick, onNavigate }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const segments = useMemo(() => groupParts(message.parts), [message.parts]);
   const isThinking = message.isStreaming && message.parts.length === 0;
@@ -95,6 +96,7 @@ export default function MessageBubble({ message, onPick }: MessageBubbleProps) {
                   parts={seg.parts}
                   isStreaming={message.isStreaming}
                   onPick={onPick}
+                  onNavigate={onNavigate}
                 />
               );
             }

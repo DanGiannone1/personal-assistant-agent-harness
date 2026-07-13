@@ -5,7 +5,7 @@ export type AGUIEvent =
   | { type: "TEXT_MESSAGE_END"; message_id: string }
   | { type: "TOOL_CALL_START"; tool_call_id: string; tool_call_name: string; parent_message_id?: string }
   | { type: "TOOL_CALL_ARGS"; tool_call_id: string; delta: string }
-  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: string[] }
+  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: NavCandidate[] }
   | { type: "TOOL_CALL_END"; tool_call_id: string }
   | { type: "RUN_FINISHED"; thread_id: string; run_id: string }
   | { type: "RUN_ERROR"; message: string }
@@ -14,6 +14,13 @@ export type AGUIEvent =
   | { type: "REASONING_END" };
 
 export type ToolOutcome = "ok" | "noop" | "error";
+
+// A fully-bound navigation candidate surfaced in the trace — ambiguous/not-found pickers, or
+// the "decided with alternates" escape hatch on ok outcomes. `path` is click-ready (no round-trip).
+export interface NavCandidate {
+  title: string;
+  path: string;
+}
 
 // The signed-in app-level user (spec F1). Shape mirrors the /auth/login + /auth/me payloads.
 export interface AuthUser {
@@ -25,7 +32,7 @@ export interface AuthUser {
 export type MessagePart =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: string[] };
+  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: NavCandidate[] };
 
 export interface TurnMeta {
   steps: number;       // tool calls in the turn
@@ -135,6 +142,12 @@ export interface Project {
   role: ProjectRole;      // the signed-in user's role in this project
 }
 
+// A server-ranked quick link (recency + salience, max 5) rendered as one-click nav chips.
+export interface QuickLink {
+  path: string;
+  title: string;
+}
+
 export interface AppState {
   currentRoute: string;
   tasks: Task[];
@@ -143,4 +156,5 @@ export interface AppState {
   schedules: Schedule[];
   library: LibraryDoc[];
   projects: Project[];
+  quickLinks: QuickLink[];
 }

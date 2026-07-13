@@ -221,6 +221,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const projects = appState.projects ?? [];
   // Projects the signed-in user may write to — the scope options offered by the personal add-bars.
   const writableProjects = projects.filter((p) => p.role !== "viewer");
+  const quickLinks = appState.quickLinks ?? [];
 
   // ── Task detail (/todo/{id}) ──────────────────────────────────────────────
   if (viewRoute.startsWith("/todo/")) {
@@ -584,6 +585,16 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
     <div className="tw-screen" data-testid="home-screen">
       <h1 className="tw-h1">Home</h1>
       <p className="tw-subtle">Today&apos;s agenda — {absDate(today)}.</p>
+      {quickLinks.length > 0 && (
+        <div data-testid="quick-links" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 2, marginBottom: 6 }}>
+          <span className="tw-td-sub" style={{ fontWeight: 700, fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase" }}>Quick links</span>
+          {quickLinks.map((q, i) => (
+            <button key={`${q.path}-${i}`} type="button" data-testid={`quick-link-${i}`} style={{ ...docActionBtn, borderRadius: 999 }} onClick={() => onNavigate(q.path)}>
+              {q.title}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="tw-stats">
         <Stat label="Tasks" value={tasks.length} />
         <Stat label="Open" value={openTasks.length} />

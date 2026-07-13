@@ -238,6 +238,10 @@ export const removeProjectMember = (sid: string, pid: string, userId: string) =>
 export const putProjectConventions = (sid: string, pid: string, conventions: string[]) =>
   jsonReq("PUT", `/sessions/${sid}/projects/${pid}/conventions`, { conventions });
 
+// ── Visit log (M3) — fire-and-forget nav ping; ranks quick links by recency. 204 No Content.
+export const recordVisit = (sid: string, path: string, title: string) =>
+  jsonReq("POST", `/sessions/${sid}/visits`, { path, title });
+
 export const createSchedule = (sid: string, body: { title: string; prompt: string; frequency: string; time: string; timezone?: string; daysOfWeek?: number[] }) =>
   jsonReq("POST", `/sessions/${sid}/schedules`, body);
 export const updateSchedule = (sid: string, id: string, body: Partial<{ enabled: boolean; title: string; prompt: string }>) =>

@@ -32,16 +32,20 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
   const [confirmNewChat, setConfirmNewChat] = useState(false);
   const agentWorking = state.isStreaming || isChatUploading;
   const artifacts = useMemo(() => state.files.filter((f) => f.origin === "generated"), [state.files]);
-  // Instant quick-nav targets (the app's pages) — client-side, no agent.
-  const quickNav = useMemo(() => (
-    [
+  // Instant quick-nav targets (the app's pages) — client-side, no agent. Prefer the server-ranked
+  // quick links (recency + salience) when present; fall back to the static page list before any
+  // visit history exists.
+  const quickNav = useMemo(() => {
+    const ranked = state.appState?.quickLinks ?? [];
+    if (ranked.length > 0) return ranked.map((q) => ({ label: q.title, route: q.path }));
+    return [
       { label: "Home", route: "/home" },
       { label: "Tasks", route: "/todo" },
       { label: "Calendar", route: "/calendar" },
       { label: "Documents", route: "/documents" },
       { label: "Reminders", route: "/reminders" },
-    ]
-  ), []);
+    ];
+  }, [state.appState]);
 
   // "Needs attention" — overdue tasks, computed client-side so opening the assistant lands the
   // user on what matters with one click (no asking, no agent turn). Done = not overdue.
@@ -103,6 +107,7 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
               onSuggestion={state.isStreaming || state.isInitializing ? undefined : handleSend}
               quickNav={quickNav}
               onQuickNav={navigateView}
+              onNavigate={navigateView}
               attention={attention}
             />
             {statusMessage && <div className="px-5 pb-1 text-[11px] text-text-muted">{statusMessage}</div>}
