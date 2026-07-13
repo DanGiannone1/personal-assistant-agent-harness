@@ -261,6 +261,11 @@ async function agentTurn(p, msg, maxMs = 150000) {
   ok("M6 hint explains the hold", await p.locator('[data-testid="health-note-hint"]').count() === 1);
   await p.reload({ waitUntil: "networkidle" });
   await p.waitForTimeout(1500);
+  // The pane route is app state, not the URL — walk back to the overview after reload.
+  await p.locator('[data-testid="nav--engagements"]').click();
+  await p.waitForTimeout(600);
+  await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
+  await p.waitForTimeout(700);
   ok("M6 health unchanged after reload (nothing committed)",
     (await p.locator('[data-testid="engagement-health-badge"]').innerText()).trim() === "amber");
   await p.screenshot({ path: `${OUT}/m6-health-held.png` });
@@ -272,6 +277,10 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await p.waitForTimeout(1500);
   await p.reload({ waitUntil: "networkidle" });
   await p.waitForTimeout(1500);
+  await p.locator('[data-testid="nav--engagements"]').click();
+  await p.waitForTimeout(600);
+  await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
+  await p.waitForTimeout(700);
   ok("M6 red + why committed",
     (await p.locator('[data-testid="engagement-health-badge"]').innerText()).trim() === "red");
   ok("M6 why persisted",
