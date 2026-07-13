@@ -128,7 +128,6 @@ export interface ToolCard {
 export interface ContextBundle {
   user: { id: string; displayName: string };
   persona: { role?: string; tone?: string; outputPrefs?: string; language?: string };
-  memories: { id: string; text: string; scope: string; createdAt: string }[];
   conventions: { id: string; text: string }[];
   engagementName: string | null;
   workingContext: { activeEngagementId?: string; lastRoute?: string };
@@ -156,53 +155,22 @@ export interface ActivityEntry {
   detail: string;
 }
 
-export type EngagementStage = "Discovery" | "Design" | "Build" | "Deploy" | "Live" | "Closed";
-export type EngagementHealth = "green" | "amber" | "red";
-export type EngagementItemKind = "milestone" | "risk" | "action";
-
-export interface Milestone {
-  id: string;
-  title: string;
-  dueDate: string;
-  status: "Planned" | "In progress" | "Done" | "Slipped";
-  notes: string;
-}
-
-export interface Risk {
-  id: string;
-  title: string;
-  severity: "Low" | "Medium" | "High";
-  status: "Open" | "Mitigating" | "Closed";
-  mitigation: string;
-  owner: string;
-}
-
-export interface ActionItem {
-  id: string;
-  title: string;
-  owner: string;
-  dueDate: string;
-  status: "Open" | "Done";
-  notes: string;
-}
+// The v1 delivery record is deliberately slim: a G/Y/R status that always carries a
+// why. (Stage, milestones, risks, and actions are parked — docs/mvp-requirements.md R7.)
+export type EngagementStatus = "green" | "yellow" | "red";
 
 export interface Engagement {
   id: string;
   name: string;
   description: string;
   customer: string;
-  stage: EngagementStage;
-  health: EngagementHealth;
-  healthNote: string;
+  status: EngagementStatus;
+  statusNote: string;
   startDate: string;
   targetDate: string;
-  milestones: Milestone[];
-  risks: Risk[];
-  actions: ActionItem[];
   members: EngagementMember[];
   conventions: Convention[];
   tasks: Task[];
-  events: CalendarEvent[];
   library: LibraryDoc[];
   activity: ActivityEntry[];
   createdAt: string;
@@ -218,8 +186,6 @@ export interface VisitEntry {
 export interface UserContext {
   visits: VisitEntry[];
   workingContext: { activeEngagementId?: string; lastRoute?: string };
-  memories: { id: string; text: string; scope: string; createdAt: string }[];
-  standingApprovals: string[];
 }
 
 export interface AppUserRecord {

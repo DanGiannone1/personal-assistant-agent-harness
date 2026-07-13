@@ -194,7 +194,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
   const events = appState.events ?? [];
   const schedules = appState.schedules ?? [];
 
-  // ── Settings (/settings) — persona, approvals, memories ──────────────────
+  // ── Settings (/settings) — persona ────────────────────────────────────────
   if (viewRoute === "/settings") {
     return <SettingsScreen appState={appState} onRefresh={onRefresh} />;
   }

@@ -107,18 +107,16 @@ How you work:
   a card; never repeat those lines in your reply.
 - Engagements are shared customer-delivery workspaces with members and roles
   (owner/editor/viewer). Use `list_engagements` to see them, `create_engagement` to add one,
-  `update_engagement` to change name/customer/stage/dates, `share_engagement` to grant a
-  user access. Tasks and events can live in a engagement OR in the personal space: pass the
-  tool's `engagement` argument when the user names a engagement or their current view is a
-  engagement page (see "[Current view: …]"); leave it empty for personal items. If a engagement
-  tool returns FORBIDDEN, tell the user their role doesn't allow it — do not retry.
-- Each engagement is also the delivery record: stage (Discovery→Closed), health, milestones,
-  risks, and actions. `set_engagement_health` sets green/amber/red — amber and red REQUIRE a
-  `note` saying why, so ask for the reason if the user didn't give one. `add_engagement_item` /
-  `update_engagement_item` manage milestones, risks, and actions (`kind` = 'milestone' |
-  'risk' | 'action'; risks carry a severity and a mitigation, actions an owner and due date).
-  For engagement status questions ("how is Contoso doing", "which engagements are red"),
-  answer from `list_engagements` — never from memory.
+  `update_engagement` to change name/description/customer/dates, `share_engagement` to grant
+  a user access. Tasks can live in an engagement OR in the personal space: pass the task
+  tool's `engagement` argument when the user names an engagement or their current view is an
+  engagement page (see "[Current view: …]"); leave it empty for personal tasks. Events are
+  personal-calendar only. If an engagement tool returns FORBIDDEN, tell the user their role
+  doesn't allow it — do not retry.
+- Every engagement carries a status: green, yellow, or red. `set_engagement_status` sets it —
+  yellow and red REQUIRE a `note` saying why, so ask for the reason if the user didn't give
+  one; green clears the note. For engagement status questions ("how is Contoso doing",
+  "which engagements are red"), answer from `list_engagements` — never from memory.
 - Tasks: use `list_tasks` to review (it returns a computed `overdue` flag and each task's
   subtask progress), `create_task` to add one, `update_task` to change status/priority/
   group/due date, `add_subtask` to add a subtask, and `delete_task` to remove one.
@@ -129,16 +127,12 @@ How you work:
   `prompt`, pick `daily`/`weekly`, a `time` (HH:MM), and a `timezone` if the user implies one
   (ask only if genuinely unclear). Use `list_schedules` to review and `delete_schedule` to
   cancel. The app runs the saved prompt on the cadence and emails whatever it produces.
-- When the user states a durable preference or working agreement ("we do reviews on
-  Fridays", "always round to thousands"), offer to remember it with `propose_memory`.
-  It stores NOTHING until the user confirms; after an explicit yes, call `save_memory`
-  with the same text. Saved memories and engagement conventions arrive in your context each
-  turn — apply them, with precedence: the user's current instruction beats a engagement
-  convention, which beats their persona defaults.
+- Engagement conventions and the user's persona arrive in your context each turn — apply
+  them, with precedence: the user's current instruction beats an engagement convention,
+  which beats their persona defaults.
 - Deleting things is confirm-first: delete tools return PENDING_CONFIRM with a card the
   user sees. Nothing is deleted until the user confirms — then call the tool again with
-  confirmed=true. If the user has granted a standing approval for that action, the tool
-  commits immediately instead. Never set confirmed=true without an explicit user yes.
+  confirmed=true. Never set confirmed=true without an explicit user yes.
 - For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
   context — never judge dates yourself.
 - Documents come in two tiers. **Session files** are this session's uploads + drafts —
@@ -249,7 +243,7 @@ def _result_text(result) -> str:
 
 
 _NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS", "PENDING_CONFIRM"}
-_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE", "INVALID_STAGE", "INVALID_HEALTH", "INVALID_KIND", "INVALID_SEVERITY", "INVALID_STATUS", "NOTE_REQUIRED"}
+_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE", "INVALID_STATUS", "NOTE_REQUIRED"}
 
 
 def _tool_outcome(result, success) -> str:
@@ -387,12 +381,11 @@ class AddSubtaskParams(BaseModel):
 
 
 class ListEventsParams(BaseModel):
-    engagement: str = Field(default="", description="Engagement name or id to list a shared engagement's calendar; empty = personal space.")
+    pass
 
 
 class CreateEventParams(BaseModel):
     title: str = Field(description="Event title, e.g. 'Team standup'")
-    engagement: str = Field(default="", description="Engagement name or id when the event belongs to a shared engagement; empty = personal space.")
     date: str = Field(description="Event date (YYYY-MM-DD) — required")
     start: str = Field(default="", description="Start time (24h HH:MM), if known")
     end: str = Field(default="", description="End time (24h HH:MM), if known")
@@ -421,7 +414,6 @@ class CreateEngagementParams(BaseModel):
     name: str = Field(description="Engagement name, e.g. 'Website Launch'")
     description: str = Field(default="", description="One-line description of the engagement")
     customer: str = Field(default="", description="Customer name, e.g. 'Contoso Retail' (free text, not a system of record)")
-    stage: str = Field(default="", description="Delivery stage: Discovery, Design, Build, Deploy, Live, or Closed (default Discovery)")
     target_date: str = Field(default="", description="Target/go-live date, YYYY-MM-DD")
 
 
@@ -436,45 +428,14 @@ class UpdateEngagementParams(BaseModel):
     name: str = Field(default="", description="New name")
     description: str = Field(default="", description="New one-line description")
     customer: str = Field(default="", description="New customer name")
-    stage: str = Field(default="", description="New stage: Discovery, Design, Build, Deploy, Live, or Closed")
     start_date: str = Field(default="", description="New start date, YYYY-MM-DD")
     target_date: str = Field(default="", description="New target date, YYYY-MM-DD")
 
 
-class SetEngagementHealthParams(BaseModel):
+class SetEngagementStatusParams(BaseModel):
     engagement: str = Field(description="Engagement name or id")
-    health: str = Field(description="'green', 'amber', or 'red'")
-    note: str = Field(default="", description="The why — REQUIRED for amber/red (e.g. 'security review rejected the network design')")
-
-
-class AddEngagementItemParams(BaseModel):
-    engagement: str = Field(description="Engagement name or id")
-    kind: str = Field(description="'milestone', 'risk', or 'action'")
-    title: str = Field(description="Item title, e.g. 'Content freeze' or 'CMS migration overrun'")
-    due_date: str = Field(default="", description="Due date, YYYY-MM-DD (milestones and actions)")
-    severity: str = Field(default="", description="Risk severity: Low, Medium, or High (risks only; default Medium)")
-    owner: str = Field(default="", description="Person responsible (risks and actions)")
-    notes: str = Field(default="", description="Notes; for a risk this is the mitigation")
-
-
-class UpdateEngagementItemParams(BaseModel):
-    engagement: str = Field(description="Engagement name or id")
-    kind: str = Field(description="'milestone', 'risk', or 'action'")
-    item: str = Field(description="Item id or title (unique substring ok)")
-    title: str = Field(default="", description="New title")
-    status: str = Field(default="", description="New status — milestone: Planned/In progress/Done/Slipped; risk: Open/Mitigating/Closed; action: Open/Done")
-    severity: str = Field(default="", description="New risk severity: Low, Medium, or High")
-    due_date: str = Field(default="", description="New due date, YYYY-MM-DD")
-    owner: str = Field(default="", description="New owner")
-    notes: str = Field(default="", description="New notes; for a risk this is the mitigation")
-
-
-class ProposeMemoryParams(BaseModel):
-    text: str = Field(description="The durable fact to remember, phrased as a standalone statement, e.g. 'Weekly reviews happen on Fridays'.")
-
-
-class SaveMemoryParams(BaseModel):
-    text: str = Field(description="The exact memory text the user just confirmed saving.")
+    status: str = Field(description="'green', 'yellow', or 'red'")
+    note: str = Field(default="", description="The why — REQUIRED for yellow/red (e.g. 'security review rejected the network design')")
 
 
 class SearchDocumentsParams(BaseModel):
@@ -572,14 +533,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return None, f"AMBIGUOUS engagement '{ref}': {opts}. Ask which one."
         return matches[0], None
 
-    def _normalize_kind(kind: str):
-        k = (kind or "").strip().lower()
-        if k.endswith("s") and k[:-1] in appdb.ENGAGEMENT_ITEM_KINDS:
-            k = k[:-1]
-        if k not in appdb.ENGAGEMENT_ITEM_KINDS:
-            return None, "INVALID_KIND: kind must be 'milestone', 'risk', or 'action'."
-        return k, None
-
     def _set_route(path: str, title: str) -> None:
         """Route side-effect: point the pane at a result + feed the visit log."""
         def _mut(data):
@@ -589,12 +542,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             appdb.record_visit(user_id, path, title)
         except Exception:
             _logging.getLogger(__name__).warning("visit log write failed", exc_info=True)
-
-    def _has_standing_approval(action: str) -> bool:
-        try:
-            return action in appdb.load_context(user_id)["standingApprovals"]
-        except Exception:
-            return False
 
     def _confirm_card(action: str, title: str, detail: str) -> str:
         """A PENDING_CONFIRM result: nothing was mutated; the UI renders Confirm/Cancel."""
@@ -783,7 +730,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="delete_task", description="Delete a task from the to-do list.")
     def delete_task(params: DeleteTaskParams) -> str:
-        if not params.confirmed and not _has_standing_approval("delete_task"):
+        if not params.confirmed:
             data = _load() if not params.engagement.strip() else None
             scope_data = data
             if params.engagement.strip():
@@ -837,18 +784,10 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="list_events", description="List the calendar events with their date, time, and type.")
     def list_events(params: ListEventsParams) -> str:
-        scope_label = "personal"
-        if params.engagement.strip():
-            eng, err = _resolve_engagement_ref(params.engagement)
-            if err:
-                return err
-            events = eng["events"]
-            scope_label = eng["name"]
-        else:
-            data = _load()
-            events = data["events"]
+        data = _load()
+        events = data["events"]
         if not events:
-            return f"No events yet in {scope_label}."
+            return "No events yet."
         from datetime import datetime, timezone
         today = datetime.now(timezone.utc).date().isoformat()
         ordered = sorted(events, key=lambda e: (e.get("date") or "", e.get("start") or ""))
@@ -868,26 +807,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return "TITLE_REQUIRED: an event needs a title."
         if not params.date.strip():
             return "DATE_REQUIRED: an event needs a date (YYYY-MM-DD)."
-        if params.engagement.strip():
-            eng, err = _resolve_engagement_ref(params.engagement)
-            if err:
-                return err
-            def _pmut(doc):
-                event = {
-                    "id": appdb.new_id("e", doc["events"]),
-                    "title": params.title.strip(), "date": params.date.strip(),
-                    "start": params.start.strip(), "end": params.end.strip(),
-                    "type": params.type.strip() or "Meeting", "notes": "",
-                }
-                doc["events"].append(event)
-                appdb.log_activity(doc, user_id, "event.created", event["title"])
-                return event
-            out = _mutate_engagement_scoped(eng, "editor", _pmut)
-            if isinstance(out, str):
-                return out
-            _set_route(f"/engagements/{eng['id']}/calendar", out["title"])
-            when = out["start"] or "all-day"
-            return f"CREATED event [{out['id']}] '{out['title']}' on {out['date']} at {when} in engagement {eng['name']}."
         def _mut(data):
             event = {
                 "id": appdb.new_id("e", data["events"]),
@@ -938,7 +857,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="delete_event", description="Delete a calendar event.")
     def delete_event(params: DeleteEventParams) -> str:
-        if not params.confirmed and not _has_standing_approval("delete_event"):
+        if not params.confirmed:
             e, eerr = _resolve_event_strict(_load(), params.event)
             if eerr:
                 return eerr
@@ -1021,7 +940,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         resolved.write_text(params.content, encoding="utf-8")
         return f"WROTE {resolved.name} ({resolved.stat().st_size} bytes)."
 
-    @define_tool(name="list_engagements", description="List the shared engagements the user belongs to: role, customer, stage, health (with the why), milestone progress, open risks and actions. Answer engagement status questions from THIS, never from memory.")
+    @define_tool(name="list_engagements", description="List the shared engagements the user belongs to: role, customer, status (with the why), open tasks, and target date. Answer engagement status questions from THIS, never from memory.")
     def list_engagements(params: ListEngagementsParams) -> str:
         engs = _engagements()
         if not engs:
@@ -1029,16 +948,12 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         lines = [f"{len(engs)} engagement(s):"]
         for p in engs:
             role = appdb.member_role(p, user_id)
-            ms = p.get("milestones") or []
-            done = sum(1 for m in ms if m.get("status") == "Done")
-            open_risks = sum(1 for r in p.get("risks") or [] if r.get("status") != "Closed")
-            open_actions = sum(1 for a in p.get("actions") or [] if a.get("status") != "Done")
-            why = f" ({p['healthNote']})" if p.get("healthNote") else ""
+            open_tasks = sum(1 for t in p.get("tasks") or [] if t.get("status") != "Done")
+            why = f" ({p['statusNote']})" if p.get("statusNote") else ""
             lines.append(
                 f"- [{p['id']}] {p['name']} | your role: {role} | customer={p.get('customer') or 'n/a'} | "
-                f"stage={p.get('stage')} | health={p.get('health')}{why} | "
-                f"milestones={done}/{len(ms)} | open risks={open_risks} | open actions={open_actions} | "
-                f"target={p.get('targetDate') or 'n/a'} | tasks: {len(p['tasks'])} | events: {len(p['events'])}"
+                f"status={p.get('status')}{why} | open tasks={open_tasks} | "
+                f"target={p.get('targetDate') or 'n/a'} | docs: {len(p.get('library') or [])}"
             )
         return "\n".join(lines)
 
@@ -1047,39 +962,33 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         name = params.name.strip()
         if not name:
             return "NAME_REQUIRED: the engagement needs a name."
-        stage = params.stage.strip()
-        if stage and stage not in appdb.ENGAGEMENT_STAGES:
-            return f"INVALID_STAGE: stage must be one of {', '.join(appdb.ENGAGEMENT_STAGES)}."
         existing = [p for p in _engagements() if p["name"].lower() == name.lower()]
         if existing:
             return f"AMBIGUOUS: you already have an engagement named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
         eng = appdb.new_engagement(user_id, name, params.description,
-                                   customer=params.customer, stage=stage,
+                                   customer=params.customer,
                                    target_date=params.target_date)
         _set_route(f"/engagements/{eng['id']}", eng["name"])
         return (
             f"CREATED engagement [{eng['id']}] '{eng['name']}' | customer={eng['customer'] or 'n/a'} | "
-            f"stage={eng['stage']} | health={eng['health']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
+            f"status={eng['status']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
         )
 
-    @define_tool(name="update_engagement", description="Update an engagement's name, description, customer, stage, or dates. Requires editor access.")
+    @define_tool(name="update_engagement", description="Update an engagement's name, description, customer, or dates. Requires editor access.")
     def update_engagement(params: UpdateEngagementParams) -> str:
-        stage = params.stage.strip()
-        if stage and stage not in appdb.ENGAGEMENT_STAGES:
-            return f"INVALID_STAGE: stage must be one of {', '.join(appdb.ENGAGEMENT_STAGES)}."
         eng, err = _resolve_engagement_ref(params.engagement)
         if err:
             return err
         def _pmut(doc):
             changed = []
             for field, value in (("name", params.name), ("description", params.description),
-                                 ("customer", params.customer), ("stage", stage),
+                                 ("customer", params.customer),
                                  ("startDate", params.start_date), ("targetDate", params.target_date)):
                 if value.strip():
                     doc[field] = value.strip()
                     changed.append(f"{field}={doc[field]}")
             if not changed:
-                raise appdb.AbortWrite("NO_CHANGES: specify a name, description, customer, stage, start_date, or target_date to update.")
+                raise appdb.AbortWrite("NO_CHANGES: specify a name, description, customer, start_date, or target_date to update.")
             appdb.log_activity(doc, user_id, "engagement.updated", ", ".join(changed))
             return f"UPDATED engagement [{doc['id']}] '{doc['name']}': {', '.join(changed)}."
         out = _mutate_engagement_scoped(eng, "editor", _pmut)
@@ -1088,98 +997,25 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         _set_route(f"/engagements/{eng['id']}", eng["name"])
         return out
 
-    @define_tool(name="set_engagement_health", description="Set an engagement's health (green/amber/red). Amber and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
-    def set_engagement_health(params: SetEngagementHealthParams) -> str:
-        health = params.health.strip().lower()
-        if health not in appdb.HEALTH_LEVELS:
-            return f"INVALID_HEALTH: health must be one of {', '.join(appdb.HEALTH_LEVELS)}."
+    @define_tool(name="set_engagement_status", description="Set an engagement's status (green/yellow/red). Yellow and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
+    def set_engagement_status(params: SetEngagementStatusParams) -> str:
+        status = params.status.strip().lower()
+        if status not in appdb.ENGAGEMENT_STATUSES:
+            return f"INVALID_STATUS: status must be one of {', '.join(appdb.ENGAGEMENT_STATUSES)}."
         note = params.note.strip()
-        if health in ("amber", "red") and not note:
-            return "NOTE_REQUIRED: amber/red health needs a why — pass `note` (a red with no reason is noise)."
+        if status in ("yellow", "red") and not note:
+            return "NOTE_REQUIRED: yellow/red status needs a why — pass `note` (a red with no reason is noise)."
         eng, err = _resolve_engagement_ref(params.engagement)
         if err:
             return err
         def _pmut(doc):
-            if doc["health"] == health and (not note or doc["healthNote"] == note):
-                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{doc['id']}] health is already {health}.")
-            doc["health"] = health
-            doc["healthNote"] = note  # green with no note clears the stale why
+            if doc["status"] == status and (not note or doc["statusNote"] == note):
+                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{doc['id']}] status is already {status}.")
+            doc["status"] = status
+            doc["statusNote"] = note  # green with no note clears the stale why
             why = f" — {note}" if note else ""
-            appdb.log_activity(doc, user_id, "health.set", f"{health}{why}")
-            return f"UPDATED engagement [{doc['id']}] '{doc['name']}' health={health}{why}."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("UPDATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
-
-    @define_tool(name="add_engagement_item", description="Add a milestone, risk, or action to an engagement (kind = 'milestone' | 'risk' | 'action'). Risks carry a severity and a mitigation; actions an owner and due date. Requires editor access.")
-    def add_engagement_item(params: AddEngagementItemParams) -> str:
-        kind, kerr = _normalize_kind(params.kind)
-        if kerr:
-            return kerr
-        if not params.title.strip():
-            return f"TITLE_REQUIRED: a {kind} needs a title."
-        severity = params.severity.strip() or "Medium"
-        if kind == "risk" and severity not in appdb.RISK_SEVERITIES:
-            return f"INVALID_SEVERITY: severity must be one of {', '.join(appdb.RISK_SEVERITIES)}."
-        eng, err = _resolve_engagement_ref(params.engagement)
-        if err:
-            return err
-        field, prefix = appdb.ENGAGEMENT_ITEM_KINDS[kind]
-        def _pmut(doc):
-            items = doc[field]
-            item = {"id": appdb.new_id(prefix, items), "title": params.title.strip()}
-            if kind == "milestone":
-                item.update({"dueDate": params.due_date.strip(), "status": "Planned",
-                             "notes": params.notes.strip()})
-            elif kind == "risk":
-                item.update({"severity": severity, "status": "Open",
-                             "mitigation": params.notes.strip(), "owner": params.owner.strip()})
-            else:  # action
-                item.update({"owner": params.owner.strip(), "dueDate": params.due_date.strip(),
-                             "status": "Open", "notes": params.notes.strip()})
-            items.append(item)
-            appdb.log_activity(doc, user_id, f"{kind}.added", item["title"])
-            return f"CREATED {kind} [{item['id']}] '{item['title']}' on engagement [{doc['id']}] '{doc['name']}'."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("CREATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
-
-    @define_tool(name="update_engagement_item", description="Update a milestone, risk, or action on an engagement — status, title, severity, owner, due date, or notes. Requires editor access.")
-    def update_engagement_item(params: UpdateEngagementItemParams) -> str:
-        kind, kerr = _normalize_kind(params.kind)
-        if kerr:
-            return kerr
-        status = params.status.strip()
-        valid_statuses = {"milestone": appdb.MILESTONE_STATUSES, "risk": appdb.RISK_STATUSES,
-                          "action": appdb.ACTION_STATUSES}[kind]
-        if status and status not in valid_statuses:
-            return f"INVALID_STATUS: a {kind} status must be one of {', '.join(valid_statuses)}."
-        severity = params.severity.strip()
-        if severity and (kind != "risk" or severity not in appdb.RISK_SEVERITIES):
-            return f"INVALID_SEVERITY: severity applies to risks and must be one of {', '.join(appdb.RISK_SEVERITIES)}."
-        eng, err = _resolve_engagement_ref(params.engagement)
-        if err:
-            return err
-        notes_field = "mitigation" if kind == "risk" else "notes"
-        def _pmut(doc):
-            item = appdb.find_engagement_item(doc, kind, params.item)
-            if item is None:
-                raise appdb.AbortWrite(f"ITEM_NOT_FOUND: no {kind} matches '{params.item}' on engagement [{doc['id']}].")
-            changed = []
-            for field, value in (("title", params.title), ("status", status),
-                                 ("severity", severity), ("owner", params.owner),
-                                 ("dueDate", params.due_date), (notes_field, params.notes)):
-                if value.strip():
-                    item[field] = value.strip()
-                    changed.append(f"{field}={item[field]}")
-            if not changed:
-                raise appdb.AbortWrite("NO_CHANGES: specify a title, status, severity, owner, due_date, or notes to update.")
-            appdb.log_activity(doc, user_id, f"{kind}.updated", f"{item['title']}: {', '.join(changed)}")
-            return f"UPDATED {kind} [{item['id']}] '{item['title']}' on [{doc['id']}]: {', '.join(changed)}."
+            appdb.log_activity(doc, user_id, "status.set", f"{status}{why}")
+            return f"UPDATED engagement [{doc['id']}] '{doc['name']}' status={status}{why}."
         out = _mutate_engagement_scoped(eng, "editor", _pmut)
         if isinstance(out, str) and not out.startswith("UPDATED"):
             return out
@@ -1212,27 +1048,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return out
         _set_route(f"/engagements/{eng['id']}/settings", eng["name"])
         return f"SHARED engagement '{eng['name']}' with {target['id']} as {role}."
-
-    @define_tool(name="propose_memory", description="Propose saving a durable fact to the user's workspace memory. NOTHING is stored until the user confirms — the app shows a confirmation card. Use when the user states a lasting preference or working agreement worth remembering.")
-    def propose_memory(params: ProposeMemoryParams) -> str:
-        text = params.text.strip()
-        if not text:
-            return "TEXT_REQUIRED: what should be remembered?"
-        return _confirm_card("save_memory", text[:80],
-                             "Save to workspace memory (visible and editable in Settings)")
-
-    @define_tool(name="save_memory", description="Save a memory the user has JUST explicitly confirmed (after propose_memory). Never call without that confirmation.")
-    def save_memory(params: SaveMemoryParams) -> str:
-        text = params.text.strip()
-        if not text:
-            return "TEXT_REQUIRED: what should be remembered?"
-        def _mut(doc):
-            mem = {"id": appdb.new_id("m", doc["memories"]), "text": text,
-                   "scope": "global", "createdAt": appdb._now_iso()}
-            doc["memories"].append(mem)
-            return mem
-        mem = appdb.update_context(user_id, _mut)
-        return f"SAVED memory [{mem['id']}]: {text}. The user can view or remove it in Settings."
 
     @define_tool(name="search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")
     def search_documents(params: SearchDocumentsParams) -> str:
@@ -1373,7 +1188,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     @define_tool(name="delete_schedule", description="Delete a scheduled reminder.")
     def delete_schedule(params: DeleteScheduleParams) -> str:
-        if not params.confirmed and not _has_standing_approval("delete_schedule"):
+        if not params.confirmed:
             sch = appdb.resolve_schedule(_load(), params.schedule)
             if sch is None:
                 return f"NOT_FOUND: no reminder matches '{params.schedule}'."
@@ -1390,11 +1205,10 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     return [
         navigate,
         list_engagements, create_engagement, update_engagement, share_engagement,
-        set_engagement_health, add_engagement_item, update_engagement_item,
+        set_engagement_status,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,
-        propose_memory, save_memory,
         search_documents, save_to_library, list_library,
         create_schedule, list_schedules, delete_schedule,
     ]

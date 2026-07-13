@@ -1,50 +1,36 @@
 "use client";
 
-// Engagement screens: list, overview, tasks, calendar, documents, settings.
+// Engagement screens: list, overview, tasks, documents, settings.
 // Role-aware: mutation controls render only for editor+; member management for owners.
 // All mutations go through the typed REST API then onRefresh() re-reads /app/state —
 // the pane never renders from its own optimism (same invariant as everywhere else).
+// v1 delivery record is deliberately slim: a G/Y/R status that always carries a why
+// (stage, milestones, risks, and actions are parked — docs/mvp-requirements.md R7).
 
 import { useState } from "react";
 import {
-  AlertTriangle, ArrowLeft, Calendar as CalendarIcon, CheckSquare, Files, FolderKanban,
-  Plus, Settings as SettingsIcon, Target, Trash2, Users,
+  ArrowLeft, CheckSquare, Files, FolderKanban,
+  Plus, Settings as SettingsIcon, Trash2, Users,
 } from "lucide-react";
 import type {
-  AppState, Engagement, EngagementHealth, EngagementRole, Task,
+  AppState, Engagement, EngagementStatus, EngagementRole, Task,
 } from "@/lib/types";
 import {
-  addConvention, addEngagementItem, addEngagementMember, createEngagement, createEngagementEvent,
-  createEngagementTask, deleteEngagementEvent, deleteEngagementItem, deleteEngagementTask,
-  removeConvention, removeEngagementMember, updateEngagement, updateEngagementItem, updateEngagementTask,
+  addConvention, addEngagementMember, createEngagement,
+  createEngagementTask, deleteEngagementTask,
+  removeConvention, removeEngagementMember, updateEngagement, updateEngagementTask,
 } from "@/lib/api";
 import { friendlyError } from "@/lib/utils";
 
-const STAGES = ["Discovery", "Design", "Build", "Deploy", "Live", "Closed"] as const;
-const MILESTONE_STATUSES = ["Planned", "In progress", "Done", "Slipped"] as const;
-const RISK_STATUSES = ["Open", "Mitigating", "Closed"] as const;
-const RISK_SEVERITIES = ["Low", "Medium", "High"] as const;
-const ACTION_STATUSES = ["Open", "Done"] as const;
-
-function healthClass(health: EngagementHealth): string {
-  return health === "red" ? "tw-badge-red" : health === "amber" ? "tw-badge-orange" : "tw-badge-green";
+function statusClass(status: EngagementStatus): string {
+  return status === "red" ? "tw-badge-red" : status === "yellow" ? "tw-badge-orange" : "tw-badge-green";
 }
 
-function HealthBadge({ health, testid }: { health: EngagementHealth; testid?: string }) {
-  return <span className={`tw-badge ${healthClass(health)}`} data-testid={testid}>{health}</span>;
+function StatusBadge({ status, testid }: { status: EngagementStatus; testid?: string }) {
+  return <span className={`tw-badge ${statusClass(status)}`} data-testid={testid}>{status}</span>;
 }
 
-// Done/Closed/Live are "settled" states; In progress/Mitigating are live; Slipped is trouble.
-function engStatusClass(status: string): string {
-  if (status === "Done" || status === "Closed" || status === "Live") return "tw-badge-green";
-  if (status === "In progress" || status === "Mitigating") return "tw-badge-orange";
-  if (status === "Slipped") return "tw-badge-red";
-  return "tw-badge-gray";
-}
-
-const openRisks = (p: Engagement) => (p.risks ?? []).filter((r) => r.status !== "Closed").length;
-const openActions = (p: Engagement) => (p.actions ?? []).filter((a) => a.status !== "Done").length;
-const milestonesDone = (p: Engagement) => (p.milestones ?? []).filter((m) => m.status === "Done").length;
+const openTasks = (p: Engagement) => (p.tasks ?? []).filter((t) => t.status !== "Done").length;
 
 const KNOWN_USERS = ["dan", "ava", "sam"];
 
@@ -97,13 +83,13 @@ export function EngagementsList({ appState, onNavigate, onRefresh }: {
   return (
     <div className="tw-screen" data-testid="engagements-screen">
       <h1 className="tw-h1">Engagements</h1>
-      <p className="tw-subtle">Shared customer-delivery workspaces — stage, health, milestones, risks, and the team&apos;s records in one place.</p>
+      <p className="tw-subtle">Shared customer-delivery workspaces — status, documents, and the team&apos;s records in one place.</p>
 
       <div className="tw-stats" style={{ marginTop: 14 }}>
         <StatBox label="Engagements" value={engagements.length} testid="eng-stat-total" />
-        <StatBox label="Red" value={engagements.filter((p) => p.health === "red").length} testid="eng-stat-red" />
-        <StatBox label="Amber" value={engagements.filter((p) => p.health === "amber").length} testid="eng-stat-amber" />
-        <StatBox label="Open risks" value={engagements.reduce((n, p) => n + openRisks(p), 0)} testid="eng-stat-risks" />
+        <StatBox label="Red" value={engagements.filter((p) => p.status === "red").length} testid="eng-stat-red" />
+        <StatBox label="Yellow" value={engagements.filter((p) => p.status === "yellow").length} testid="eng-stat-yellow" />
+        <StatBox label="Open tasks" value={engagements.reduce((n, p) => n + openTasks(p), 0)} testid="eng-stat-tasks" />
       </div>
 
       {!adding ? (
@@ -146,17 +132,15 @@ export function EngagementsList({ appState, onNavigate, onRefresh }: {
                   <span className="flex min-w-0 flex-col">
                     <span className="tw-td-title">{p.name}{p.customer ? <span className="tw-td-sub"> · {p.customer}</span> : null}</span>
                     <span className="tw-td-sub">
-                      {p.healthNote ? `${p.healthNote.slice(0, 80)}${p.healthNote.length > 80 ? "…" : ""}` : p.description || "—"}
+                      {p.statusNote ? `${p.statusNote.slice(0, 80)}${p.statusNote.length > 80 ? "…" : ""}` : p.description || "—"}
                     </span>
                   </span>
                   <span style={{ marginLeft: "auto" }} className="flex items-center gap-2">
-                    <HealthBadge health={p.health} testid={`engagement-health-${p.id}`} />
-                    <span className="tw-badge tw-badge-gray">{p.stage}</span>
+                    <StatusBadge status={p.status} testid={`engagement-status-${p.id}`} />
                     <span className="tw-badge tw-badge-gray" data-testid={`engagement-role-${p.id}`}>{role}</span>
-                    <span className="tw-td-sub"><Target size={12} style={{ display: "inline" }} /> {milestonesDone(p)}/{(p.milestones ?? []).length}</span>
-                    <span className="tw-td-sub"><AlertTriangle size={12} style={{ display: "inline" }} /> {openRisks(p)}</span>
                     <span className="tw-td-sub"><Users size={12} style={{ display: "inline" }} /> {p.members.length}</span>
                     <span className="tw-td-sub"><CheckSquare size={12} style={{ display: "inline" }} /> {p.tasks.length}</span>
+                    <span className="tw-td-sub"><Files size={12} style={{ display: "inline" }} /> {(p.library ?? []).length}</span>
                     <span className="tw-td-sub">{p.targetDate ? `→ ${p.targetDate}` : ""}</span>
                   </span>
                 </div>
@@ -187,7 +171,7 @@ export function EngagementScreen({ appState, viewRoute, onNavigate, onRefresh }:
 
   const tabs = (
     <div className="tw-tabs" data-testid="engagement-tabs">
-      {[["", "Overview"], ["tasks", "Tasks"], ["calendar", "Calendar"], ["documents", "Documents"], ["settings", "Settings"]].map(([key, label]) => (
+      {[["", "Overview"], ["tasks", "Tasks"], ["documents", "Documents"], ["settings", "Settings"]].map(([key, label]) => (
         <button key={key} type="button"
           className={`tw-tab ${sub === key || (key === "tasks" && sub === "tasks") ? "tw-tab-active" : ""}`}
           data-testid={`engagement-tab-${key || "overview"}`}
@@ -203,15 +187,14 @@ export function EngagementScreen({ appState, viewRoute, onNavigate, onRefresh }:
       <button type="button" className="tw-back" onClick={() => onNavigate("/engagements")}><ArrowLeft size={14} /> All engagements</button>
       <h1 className="tw-h1">{engagement.name}</h1>
       <div className="mt-1 flex flex-wrap items-center gap-2">
-        <HealthBadge health={engagement.health} testid="engagement-health-badge" />
-        <span className="tw-badge tw-badge-gray" data-testid="engagement-stage-badge">{engagement.stage}</span>
+        <StatusBadge status={engagement.status} testid="engagement-status-badge" />
         <span className="tw-badge tw-badge-gray" data-testid="my-role">{role}</span>
         {engagement.customer && <span className="tw-td-sub">{engagement.customer}</span>}
         <span className="tw-subtle">{engagement.description}</span>
       </div>
-      {engagement.healthNote && (
-        <p className="tw-subtle" data-testid="engagement-health-note" style={{ marginTop: 4 }}>
-          {engagement.health !== "green" ? "Why: " : ""}{engagement.healthNote}
+      {engagement.statusNote && (
+        <p className="tw-subtle" data-testid="engagement-status-note" style={{ marginTop: 4 }}>
+          {engagement.status !== "green" ? "Why: " : ""}{engagement.statusNote}
         </p>
       )}
       {tabs}
@@ -234,15 +217,6 @@ export function EngagementScreen({ appState, viewRoute, onNavigate, onRefresh }:
       <div className="tw-screen" data-testid="engagement-tasks-screen">
         {header}
         <EngagementTasks engagement={engagement} editable={editable} today={today} onNavigate={onNavigate} onRefresh={onRefresh} />
-      </div>
-    );
-  }
-
-  if (sub === "calendar") {
-    return (
-      <div className="tw-screen" data-testid="engagement-calendar-screen">
-        {header}
-        <EngagementCalendar engagement={engagement} editable={editable} today={today} onRefresh={onRefresh} />
       </div>
     );
   }
@@ -282,17 +256,12 @@ export function EngagementScreen({ appState, viewRoute, onNavigate, onRefresh }:
     <div className="tw-screen" data-testid="engagement-overview">
       {header}
       <div className="tw-stats" style={{ marginTop: 14 }}>
-        <StatBox label="Milestones" value={`${milestonesDone(engagement)}/${(engagement.milestones ?? []).length}`} testid="stat-milestones" />
-        <StatBox label="Open risks" value={openRisks(engagement)} testid="stat-risks" />
-        <StatBox label="Open actions" value={openActions(engagement)} testid="stat-actions" />
-        <StatBox label="Tasks" value={engagement.tasks.length} />
-        <StatBox label="Overdue" value={overdue} />
-        <StatBox label="Members" value={engagement.members.length} />
+        <StatBox label="Open tasks" value={openTasks(engagement)} testid="stat-open-tasks" />
+        <StatBox label="Overdue" value={overdue} testid="stat-overdue" />
+        <StatBox label="Documents" value={(engagement.library ?? []).length} testid="stat-documents" />
+        <StatBox label="Members" value={engagement.members.length} testid="stat-members" />
       </div>
       <EngagementDetailEditor key={engagement.id} engagement={engagement} editable={editable} onRefresh={onRefresh} />
-      <MilestoneSection engagement={engagement} editable={editable} onRefresh={onRefresh} />
-      <RiskSection engagement={engagement} editable={editable} onRefresh={onRefresh} />
-      <ActionSection engagement={engagement} editable={editable} onRefresh={onRefresh} />
       {engagement.conventions.length > 0 && (
         <section className="tw-section">
           <h2 className="tw-h2">Conventions</h2>
@@ -335,16 +304,16 @@ function StatBox({ label, value, testid }: { label: string; value: number | stri
   );
 }
 
-// Delivery-record editor: customer/stage/dates save on change; health is HELD locally
-// when moving to amber/red until a non-empty why is entered, then both commit together —
+// Delivery-record editor: customer/dates save on change; status is HELD locally
+// when moving to yellow/red until a non-empty why is entered, then both commit together —
 // the same rule the tool layer (NOTE_REQUIRED) and REST (422) enforce.
 function EngagementDetailEditor({ engagement, editable, onRefresh }: {
   engagement: Engagement; editable: boolean; onRefresh: () => Promise<void>;
 }) {
   const { busy, error, run } = useBusy(onRefresh);
   const [saved, setSaved] = useState(false);
-  const [pendingHealth, setPendingHealth] = useState<EngagementHealth | null>(null);
-  const [note, setNote] = useState(engagement.healthNote);
+  const [pendingStatus, setPendingStatus] = useState<EngagementStatus | null>(null);
+  const [note, setNote] = useState(engagement.statusNote);
   if (!editable) return null;
 
   const save = async (fn: () => Promise<unknown>) => {
@@ -352,8 +321,8 @@ function EngagementDetailEditor({ engagement, editable, onRefresh }: {
     await run(fn);
     setSaved(true);
   };
-  const shownHealth = pendingHealth ?? engagement.health;
-  const noteVisible = pendingHealth !== null || engagement.health !== "green";
+  const shownStatus = pendingStatus ?? engagement.status;
+  const noteVisible = pendingStatus !== null || engagement.status !== "green";
 
   return (
     <section className="tw-section" data-testid="engagement-detail-editor">
@@ -362,10 +331,6 @@ function EngagementDetailEditor({ engagement, editable, onRefresh }: {
         <input className="tw-input" placeholder="Customer" defaultValue={engagement.customer}
           data-testid="engagement-customer-edit" disabled={busy} style={{ minWidth: 180 }}
           onBlur={(e) => { const v = e.target.value.trim(); if (v !== engagement.customer) save(() => updateEngagement(engagement.id, { customer: v })); }} />
-        <select className="tw-input" value={engagement.stage} data-testid="engagement-stage-select" disabled={busy}
-          onChange={(e) => save(() => updateEngagement(engagement.id, { stage: e.target.value }))}>
-          {STAGES.map((s) => <option key={s}>{s}</option>)}
-        </select>
         <input type="date" className="tw-input" title="Start date" defaultValue={engagement.startDate} disabled={busy}
           onChange={(e) => save(() => updateEngagement(engagement.id, { startDate: e.target.value }))} />
         <input type="date" className="tw-input" title="Target date" defaultValue={engagement.targetDate} disabled={busy}
@@ -374,230 +339,35 @@ function EngagementDetailEditor({ engagement, editable, onRefresh }: {
         <span className="tw-td-sub" data-testid="detail-save-state">{busy ? "Saving…" : error ? "" : saved ? "Saved ✓" : ""}</span>
       </div>
       <div className="tw-addform" style={{ marginTop: 8 }}>
-        <select className="tw-input" value={shownHealth} data-testid="health-select" disabled={busy}
+        <select className="tw-input" value={shownStatus} data-testid="status-select" disabled={busy}
           onChange={(e) => {
-            const v = e.target.value as EngagementHealth;
-            if (v === "green") { setPendingHealth(null); save(() => updateEngagement(engagement.id, { health: "green", healthNote: "" })); }
-            else { setPendingHealth(v); setNote(engagement.healthNote); }
+            const v = e.target.value as EngagementStatus;
+            if (v === "green") { setPendingStatus(null); save(() => updateEngagement(engagement.id, { status: "green", statusNote: "" })); }
+            else { setPendingStatus(v); setNote(engagement.statusNote); }
           }}>
-          {(["green", "amber", "red"] as const).map((h) => <option key={h}>{h}</option>)}
+          {(["green", "yellow", "red"] as const).map((h) => <option key={h}>{h}</option>)}
         </select>
         {noteVisible && (
-          <input className="tw-input" placeholder="Why? (required for amber/red)" value={note}
-            data-testid="health-note-input" disabled={busy} style={{ minWidth: 320 }}
+          <input className="tw-input" placeholder="Why? (required for yellow/red)" value={note}
+            data-testid="status-note-input" disabled={busy} style={{ minWidth: 320 }}
             onChange={(e) => setNote(e.target.value)}
             onBlur={() => {
-              if (pendingHealth === null && note.trim() && note.trim() !== engagement.healthNote)
-                save(() => updateEngagement(engagement.id, { healthNote: note.trim() }));
+              if (pendingStatus === null && note.trim() && note.trim() !== engagement.statusNote)
+                save(() => updateEngagement(engagement.id, { statusNote: note.trim() }));
             }} />
         )}
-        {pendingHealth !== null && (
+        {pendingStatus !== null && (
           <>
-            <button type="button" className="tw-btn" data-testid="health-commit-btn" disabled={busy || !note.trim()}
-              onClick={() => { const h = pendingHealth; setPendingHealth(null); save(() => updateEngagement(engagement.id, { health: h, healthNote: note.trim() })); }}>
-              Set {pendingHealth}
+            <button type="button" className="tw-btn" data-testid="status-commit-btn" disabled={busy || !note.trim()}
+              onClick={() => { const h = pendingStatus; setPendingStatus(null); save(() => updateEngagement(engagement.id, { status: h, statusNote: note.trim() })); }}>
+              Set {pendingStatus}
             </button>
-            <button type="button" className="tw-btn-ghost" onClick={() => { setPendingHealth(null); setNote(engagement.healthNote); }}>Cancel</button>
-            {!note.trim() && <span className="tw-td-sub" data-testid="health-note-hint">A {pendingHealth} needs a why before it saves.</span>}
+            <button type="button" className="tw-btn-ghost" onClick={() => { setPendingStatus(null); setNote(engagement.statusNote); }}>Cancel</button>
+            {!note.trim() && <span className="tw-td-sub" data-testid="status-note-hint">A {pendingStatus} needs a why before it saves.</span>}
           </>
         )}
       </div>
       {error && <p className="tw-error" data-testid="detail-error">{error}</p>}
-    </section>
-  );
-}
-
-function MilestoneSection({ engagement, editable, onRefresh }: {
-  engagement: Engagement; editable: boolean; onRefresh: () => Promise<void>;
-}) {
-  const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
-  const [due, setDue] = useState("");
-  const { busy, error, run } = useBusy(onRefresh);
-  const items = engagement.milestones ?? [];
-
-  return (
-    <section className="tw-section" data-testid="milestone-section">
-      <h2 className="tw-h2"><Target size={14} /> Milestones</h2>
-      {editable && (!adding ? (
-        <button type="button" className="tw-addbar" data-testid="add-milestone-btn" onClick={() => setAdding(true)}>
-          <Plus size={14} /> Add milestone
-        </button>
-      ) : (
-        <div className="tw-addform">
-          <input autoFocus placeholder="Milestone title" value={title} data-testid="milestone-title-input"
-            onChange={(e) => setTitle(e.target.value)} className="tw-input" style={{ minWidth: 240 }} />
-          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} className="tw-input" data-testid="milestone-due-input" />
-          <button type="button" className="tw-btn" data-testid="milestone-save-btn" disabled={busy || !title.trim()}
-            onClick={() => run(async () => { await addEngagementItem(engagement.id, "milestone", { title: title.trim(), dueDate: due }); setAdding(false); setTitle(""); setDue(""); })}>
-            Save
-          </button>
-          <button type="button" className="tw-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
-        </div>
-      ))}
-      {error && <p className="tw-error">{error}</p>}
-      {items.length === 0 ? (
-        <div className="tw-empty-sm">No milestones yet.</div>
-      ) : (
-        <table className="tw-table" data-testid="milestones-table">
-          <thead><tr><th>Milestone</th><th>Due</th><th>Status</th>{editable && <th></th>}</tr></thead>
-          <tbody>
-            {items.map((m) => (
-              <tr key={m.id} data-testid={`milestone-row-${m.id}`}>
-                <td className="tw-td-title">{m.title}</td>
-                <td>{m.dueDate || "—"}</td>
-                <td>
-                  {editable ? (
-                    <select className="tw-input" value={m.status} data-testid={`milestone-status-${m.id}`} disabled={busy}
-                      onChange={(e) => run(() => updateEngagementItem(engagement.id, "milestone", m.id, { status: e.target.value }))}>
-                      {MILESTONE_STATUSES.map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  ) : (
-                    <span className={`tw-badge ${engStatusClass(m.status)}`}>{m.status}</span>
-                  )}
-                </td>
-                {editable && (
-                  <td><ArmedDelete testid={`milestone-delete-${m.id}`}
-                    onConfirm={() => run(() => deleteEngagementItem(engagement.id, "milestone", m.id))} /></td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-  );
-}
-
-function RiskSection({ engagement, editable, onRefresh }: {
-  engagement: Engagement; editable: boolean; onRefresh: () => Promise<void>;
-}) {
-  const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
-  const [severity, setSeverity] = useState("Medium");
-  const [owner, setOwner] = useState("");
-  const { busy, error, run } = useBusy(onRefresh);
-  const items = engagement.risks ?? [];
-
-  return (
-    <section className="tw-section" data-testid="risk-section">
-      <h2 className="tw-h2"><AlertTriangle size={14} /> Risks</h2>
-      {editable && (!adding ? (
-        <button type="button" className="tw-addbar" data-testid="add-risk-btn" onClick={() => setAdding(true)}>
-          <Plus size={14} /> Add risk
-        </button>
-      ) : (
-        <div className="tw-addform">
-          <input autoFocus placeholder="Risk title" value={title} data-testid="risk-title-input"
-            onChange={(e) => setTitle(e.target.value)} className="tw-input" style={{ minWidth: 240 }} />
-          <select className="tw-input" value={severity} data-testid="risk-severity-input" onChange={(e) => setSeverity(e.target.value)}>
-            {RISK_SEVERITIES.map((s) => <option key={s}>{s}</option>)}
-          </select>
-          <input placeholder="Owner" value={owner} onChange={(e) => setOwner(e.target.value)} className="tw-input" style={{ minWidth: 120 }} />
-          <button type="button" className="tw-btn" data-testid="risk-save-btn" disabled={busy || !title.trim()}
-            onClick={() => run(async () => { await addEngagementItem(engagement.id, "risk", { title: title.trim(), severity, owner: owner.trim() }); setAdding(false); setTitle(""); setOwner(""); })}>
-            Save
-          </button>
-          <button type="button" className="tw-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
-        </div>
-      ))}
-      {error && <p className="tw-error">{error}</p>}
-      {items.length === 0 ? (
-        <div className="tw-empty-sm">No risks logged.</div>
-      ) : (
-        <table className="tw-table" data-testid="risks-table">
-          <thead><tr><th>Risk</th><th>Severity</th><th>Status</th><th>Owner</th><th>Mitigation</th>{editable && <th></th>}</tr></thead>
-          <tbody>
-            {items.map((r) => (
-              <tr key={r.id} data-testid={`risk-row-${r.id}`}>
-                <td className="tw-td-title">{r.title}</td>
-                <td><span className={`tw-badge ${r.severity === "High" ? "tw-badge-red" : r.severity === "Medium" ? "tw-badge-orange" : "tw-badge-gray"}`}>{r.severity}</span></td>
-                <td>
-                  {editable ? (
-                    <select className="tw-input" value={r.status} data-testid={`risk-status-${r.id}`} disabled={busy}
-                      onChange={(e) => run(() => updateEngagementItem(engagement.id, "risk", r.id, { status: e.target.value }))}>
-                      {RISK_STATUSES.map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  ) : (
-                    <span className={`tw-badge ${engStatusClass(r.status)}`}>{r.status}</span>
-                  )}
-                </td>
-                <td>{r.owner || "—"}</td>
-                <td className="tw-td-sub">{r.mitigation || "—"}</td>
-                {editable && (
-                  <td><ArmedDelete testid={`risk-delete-${r.id}`}
-                    onConfirm={() => run(() => deleteEngagementItem(engagement.id, "risk", r.id))} /></td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-  );
-}
-
-function ActionSection({ engagement, editable, onRefresh }: {
-  engagement: Engagement; editable: boolean; onRefresh: () => Promise<void>;
-}) {
-  const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
-  const [owner, setOwner] = useState("");
-  const [due, setDue] = useState("");
-  const { busy, error, run } = useBusy(onRefresh);
-  const items = engagement.actions ?? [];
-
-  return (
-    <section className="tw-section" data-testid="action-section">
-      <h2 className="tw-h2"><CheckSquare size={14} /> Actions</h2>
-      {editable && (!adding ? (
-        <button type="button" className="tw-addbar" data-testid="add-action-btn" onClick={() => setAdding(true)}>
-          <Plus size={14} /> Add action
-        </button>
-      ) : (
-        <div className="tw-addform">
-          <input autoFocus placeholder="Action title" value={title} data-testid="action-title-input"
-            onChange={(e) => setTitle(e.target.value)} className="tw-input" style={{ minWidth: 240 }} />
-          <input placeholder="Owner" value={owner} onChange={(e) => setOwner(e.target.value)} className="tw-input" style={{ minWidth: 120 }} />
-          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} className="tw-input" />
-          <button type="button" className="tw-btn" data-testid="action-save-btn" disabled={busy || !title.trim()}
-            onClick={() => run(async () => { await addEngagementItem(engagement.id, "action", { title: title.trim(), owner: owner.trim(), dueDate: due }); setAdding(false); setTitle(""); setOwner(""); setDue(""); })}>
-            Save
-          </button>
-          <button type="button" className="tw-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
-        </div>
-      ))}
-      {error && <p className="tw-error">{error}</p>}
-      {items.length === 0 ? (
-        <div className="tw-empty-sm">No open actions.</div>
-      ) : (
-        <table className="tw-table" data-testid="actions-table">
-          <thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>Status</th>{editable && <th></th>}</tr></thead>
-          <tbody>
-            {items.map((a) => (
-              <tr key={a.id} data-testid={`action-row-${a.id}`}>
-                <td className="tw-td-title">{a.title}</td>
-                <td>{a.owner || "—"}</td>
-                <td>{a.dueDate || "—"}</td>
-                <td>
-                  {editable ? (
-                    <select className="tw-input" value={a.status} data-testid={`action-status-${a.id}`} disabled={busy}
-                      onChange={(e) => run(() => updateEngagementItem(engagement.id, "action", a.id, { status: e.target.value }))}>
-                      {ACTION_STATUSES.map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  ) : (
-                    <span className={`tw-badge ${engStatusClass(a.status)}`}>{a.status}</span>
-                  )}
-                </td>
-                {editable && (
-                  <td><ArmedDelete testid={`action-delete-${a.id}`}
-                    onConfirm={() => run(() => deleteEngagementItem(engagement.id, "action", a.id))} /></td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
     </section>
   );
 }
@@ -699,60 +469,6 @@ function EngagementTaskDetail({ engagement, task, editable, onRefresh, onNavigat
       )}
       {error && <p className="tw-error">{error}</p>}
     </section>
-  );
-}
-
-function EngagementCalendar({ engagement, editable, today, onRefresh }: {
-  engagement: Engagement; editable: boolean; today: string; onRefresh: () => Promise<void>;
-}) {
-  const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState("");
-  const { busy, error, run } = useBusy(onRefresh);
-  const events = [...engagement.events].sort((a, b) => ((a.date || "") < (b.date || "") ? -1 : 1));
-
-  return (
-    <>
-      {editable && (!adding ? (
-        <button type="button" className="tw-addbar" data-testid="engagement-add-event-btn" onClick={() => setAdding(true)}>
-          <Plus size={14} /> Add event
-        </button>
-      ) : (
-        <div className="tw-addform">
-          <input autoFocus placeholder="Event title" value={title} data-testid="engagement-event-title-input"
-            onChange={(e) => setTitle(e.target.value)} className="tw-input" style={{ minWidth: 220 }} />
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="tw-input" data-testid="engagement-event-date-input" />
-          <button type="button" className="tw-btn" data-testid="engagement-event-save-btn" disabled={busy || !title.trim() || !date}
-            onClick={() => run(async () => { await createEngagementEvent(engagement.id, { title: title.trim(), date }); setAdding(false); setTitle(""); setDate(""); })}>
-            Save
-          </button>
-          <button type="button" className="tw-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
-        </div>
-      ))}
-      {error && <p className="tw-error">{error}</p>}
-      {events.length === 0 ? (
-        <section className="tw-section"><div className="tw-empty-sm">Nothing scheduled in this engagement yet.</div></section>
-      ) : (
-        <section className="tw-section">
-          <div className="tw-doclist">
-            {events.map((e) => (
-              <div key={e.id} className="tw-docitem" data-testid={`engagement-event-${e.id}`}>
-                <CalendarIcon size={15} />
-                <span className="flex min-w-0 flex-col">
-                  <span className="tw-td-title">{e.title}</span>
-                  <span className="tw-td-sub">{e.date}{e.start ? ` · ${e.start}${e.end ? `–${e.end}` : ""}` : ""} · {e.type || "Meeting"}{e.date === today ? " · today" : ""}</span>
-                </span>
-                {editable && (
-                  <span style={{ marginLeft: "auto" }}>
-                    <ArmedDelete testid={`engagement-event-delete-${e.id}`} onConfirm={() => run(() => deleteEngagementEvent(engagement.id, e.id))} />
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </>
   );
 }
 

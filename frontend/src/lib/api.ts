@@ -207,20 +207,14 @@ export const deleteSchedule = (sid: string, id: string) => jsonReq("DELETE", `/s
 
 
 // ── Engagements (shared customer-delivery workspaces) ───────────────────────────
-import type { Engagement, EngagementItemKind, QuickLink } from "./types";
+import type { Engagement, QuickLink } from "./types";
 
 export const listEngagements = () => jsonReq<Engagement[]>("GET", "/engagements");
-export const createEngagement = (body: { name: string; description?: string; customer?: string; stage?: string; targetDate?: string }) =>
+export const createEngagement = (body: { name: string; description?: string; customer?: string; targetDate?: string }) =>
   jsonReq<Engagement>("POST", "/engagements", body);
 export const getEngagement = (pid: string) => jsonReq<Engagement>("GET", `/engagements/${pid}`);
-export const updateEngagement = (pid: string, body: Partial<{ name: string; description: string; customer: string; stage: string; health: string; healthNote: string; startDate: string; targetDate: string }>) =>
+export const updateEngagement = (pid: string, body: Partial<{ name: string; description: string; customer: string; status: string; statusNote: string; startDate: string; targetDate: string }>) =>
   jsonReq<Engagement>("PATCH", `/engagements/${pid}`, body);
-export const addEngagementItem = (pid: string, kind: EngagementItemKind, body: { title: string; dueDate?: string; severity?: string; owner?: string; status?: string; notes?: string }) =>
-  jsonReq("POST", `/engagements/${pid}/${kind}s`, body);
-export const updateEngagementItem = (pid: string, kind: EngagementItemKind, iid: string, body: Partial<{ title: string; dueDate: string; severity: string; owner: string; status: string; notes: string }>) =>
-  jsonReq("PATCH", `/engagements/${pid}/${kind}s/${iid}`, body);
-export const deleteEngagementItem = (pid: string, kind: EngagementItemKind, iid: string) =>
-  jsonReq("DELETE", `/engagements/${pid}/${kind}s/${iid}`);
 export const addEngagementMember = (pid: string, userId: string, role: string) =>
   jsonReq("POST", `/engagements/${pid}/members`, { userId, role });
 export const removeEngagementMember = (pid: string, userId: string) =>
@@ -236,24 +230,16 @@ export const updateEngagementTask = (pid: string, tid: string, body: Partial<{ t
   jsonReq("PATCH", `/engagements/${pid}/tasks/${tid}`, body);
 export const deleteEngagementTask = (pid: string, tid: string) =>
   jsonReq("DELETE", `/engagements/${pid}/tasks/${tid}`);
-export const createEngagementEvent = (pid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
-  jsonReq("POST", `/engagements/${pid}/events`, body);
-export const deleteEngagementEvent = (pid: string, eid: string) =>
-  jsonReq("DELETE", `/engagements/${pid}/events/${eid}`);
 
 // ── Navigation context ───────────────────────────────────────────────────────
 export const recordVisit = (path: string, title: string) =>
   jsonReq("POST", "/visits", { path, title }).catch(() => undefined); // fire-and-forget
 export const getQuickLinks = () => jsonReq<QuickLink[]>("GET", "/quicklinks");
 
-// ── Settings + context bundle (M4/M5) ───────────────────────────────────────
+// ── Settings + context bundle ────────────────────────────────────────────────
 import type { ContextBundle } from "./types";
 
-export const getApprovals = () => jsonReq<{ approvals: string[]; available: string[] }>("GET", "/settings/approvals");
-export const putApprovals = (approvals: string[]) => jsonReq("PUT", "/settings/approvals", { approvals });
 export const putPersona = (p: { role: string; tone: string; outputPrefs: string; language: string }) =>
   jsonReq("PUT", "/settings/persona", p);
-export const addMemory = (text: string) => jsonReq("POST", "/settings/memories", { text });
-export const deleteMemory = (id: string) => jsonReq("DELETE", `/settings/memories/${id}`);
 export const getContextBundle = (view: string) =>
   jsonReq<ContextBundle>("GET", `/context-bundle?view=${encodeURIComponent(view)}`);

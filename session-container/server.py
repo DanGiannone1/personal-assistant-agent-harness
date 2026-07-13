@@ -31,9 +31,10 @@ if str(ROOT) not in sys.path:
 
 import appdb
 # Agent backend is selectable so the same session container can run either the
-# GitHub Copilot SDK agent (default) or the standalone LangGraph Deep Agents
-# backend. Both expose an identical AgentSession interface (see agent_deepagents).
-_AGENT_BACKEND = os.getenv("AGENT_BACKEND", "copilot").lower()
+# standalone LangGraph Deep Agents backend (default — the primary harness per
+# docs/mvp-requirements.md R11) or the GitHub Copilot SDK agent. Both expose an
+# identical AgentSession interface (see agent_deepagents).
+_AGENT_BACKEND = os.getenv("AGENT_BACKEND", "deepagents").lower()
 if _AGENT_BACKEND == "deepagents":
     from agent_deepagents import AgentSession, _sse_event
 else:

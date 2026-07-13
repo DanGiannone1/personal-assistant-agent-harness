@@ -354,10 +354,12 @@ def update_state(user_id: str, mutator):
 
 ENGAGEMENT_ROLES = ["owner", "editor", "viewer"]
 
-# Delivery-record vocabulary. Health is never just a color: amber/red must carry a
-# non-empty healthNote (the "why") — enforced at the tool, REST, and UI layers.
+# Delivery-record vocabulary. Status is never just a color: yellow/red must carry a
+# non-empty statusNote (the "why") — enforced at the tool, REST, and UI layers.
+# Stage and the milestone/risk/action collections are parked out of the v1 surface
+# (docs/mvp-requirements.md R7) but stay in the data layer, dormant.
 ENGAGEMENT_STAGES = ["Discovery", "Design", "Build", "Deploy", "Live", "Closed"]
-HEALTH_LEVELS = ["green", "amber", "red"]
+ENGAGEMENT_STATUSES = ["green", "yellow", "red"]
 MILESTONE_STATUSES = ["Planned", "In progress", "Done", "Slipped"]
 RISK_SEVERITIES = ["Low", "Medium", "High"]
 RISK_STATUSES = ["Open", "Mitigating", "Closed"]
@@ -372,13 +374,19 @@ ENGAGEMENT_ITEM_KINDS = {
 
 # Domain fields added to every engagement doc (older docs get these on read).
 _ENGAGEMENT_DOMAIN_DEFAULTS = {
-    "customer": "", "stage": ENGAGEMENT_STAGES[0], "health": "green", "healthNote": "",
+    "customer": "", "stage": ENGAGEMENT_STAGES[0], "status": "green", "statusNote": "",
     "startDate": "", "targetDate": "", "milestones": [], "risks": [], "actions": [],
 }
 
 
 def _with_domain_defaults(eng: dict) -> dict:
     """Fill missing delivery-record fields so pre-domain docs read uniformly."""
+    # Legacy mapping: docs written before the G/Y/R rename carried health/healthNote
+    # with "amber" for the middle level.
+    if eng.get("status") is None and eng.get("health") is not None:
+        legacy = eng.get("health")
+        eng["status"] = "yellow" if legacy == "amber" else legacy
+        eng["statusNote"] = eng.get("healthNote") or ""
     for k, v in _ENGAGEMENT_DOMAIN_DEFAULTS.items():
         if eng.get(k) is None:
             eng[k] = list(v) if isinstance(v, list) else v
@@ -392,11 +400,11 @@ def _valid_stage(stage: str) -> str:
     return stage
 
 
-def _valid_health(health: str) -> str:
-    health = (health or "").strip().lower() or "green"
-    if health not in HEALTH_LEVELS:
-        raise ValueError(f"health must be one of {HEALTH_LEVELS}")
-    return health
+def _valid_status(status: str) -> str:
+    status = (status or "").strip().lower() or "green"
+    if status not in ENGAGEMENT_STATUSES:
+        raise ValueError(f"status must be one of {ENGAGEMENT_STATUSES}")
+    return status
 
 
 def _engagement_doc_id(engagement_id: str) -> str:
@@ -405,13 +413,13 @@ def _engagement_doc_id(engagement_id: str) -> str:
 
 
 def new_engagement(creator_id: str, name: str, description: str = "",
-                   customer: str = "", stage: str = "", health: str = "",
-                   health_note: str = "", start_date: str = "",
+                   customer: str = "", status: str = "",
+                   status_note: str = "", start_date: str = "",
                    target_date: str = "") -> dict:
     """Create an engagement; the creator is its first owner. Returns the engagement doc.
 
-    Raises ValueError on bad stage/health. Callers enforce the health-note rule
-    (amber/red need a why) before getting here.
+    Raises ValueError on a bad status. Callers enforce the status-note rule
+    (yellow/red need a why) before getting here.
     """
     uid = _valid_user(creator_id)
     name = (name or "").strip()
@@ -423,8 +431,8 @@ def new_engagement(creator_id: str, name: str, description: str = "",
         "id": pid, "sessionId": pid,
         "name": name, "description": (description or "").strip(),
         "customer": (customer or "").strip(),
-        "stage": _valid_stage(stage), "health": _valid_health(health),
-        "healthNote": (health_note or "").strip(),
+        "stage": ENGAGEMENT_STAGES[0], "status": _valid_status(status),
+        "statusNote": (status_note or "").strip(),
         "startDate": (start_date or "").strip(), "targetDate": (target_date or "").strip(),
         "milestones": [], "risks": [], "actions": [],
         "members": [{"userId": uid, "role": "owner"}],
@@ -522,8 +530,8 @@ def _seed_engagements() -> None:
             "id": "eng-website-launch", "name": "Website Launch",
             "description": "Marketing site refresh and launch",
             "customer": "Contoso Retail", "stage": "Build",
-            "health": "amber",
-            "healthNote": "CMS migration slipped a week; launch date at risk until content freeze lands.",
+            "status": "yellow",
+            "statusNote": "CMS migration slipped a week; launch date at risk until content freeze lands.",
             "targetDate": "2026-07-24",
             "milestones": [
                 {"id": "m-1", "title": "Design sign-off", "dueDate": "2026-07-01",

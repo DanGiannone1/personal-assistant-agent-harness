@@ -166,7 +166,7 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await c2.close();
 }
 
-// ── M4: confirm-first delete + card, standing approvals ─────────────────────
+// ── M4: confirm-first delete + card (always confirm-first in v1) ────────────
 {
   const { ctx, p } = await fresh();
   await signIn(p, "dan");
@@ -199,17 +199,14 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await ctx.close();
 }
 
-// ── M5: persona/memory/conventions + inspector ──────────────────────────────
+// ── M5: persona/conventions + inspector (memories are parked in v1) ─────────
 {
   const { ctx, p } = await fresh();
   await signIn(p, "dan");
   await p.locator('[data-testid="nav--settings"]').click();
   await p.waitForTimeout(700);
   ok("M5 settings screen renders", await p.locator('[data-testid="settings-screen"]').count() === 1);
-  await p.locator('[data-testid="memory-input"]').fill("Weekly reviews happen on Fridays");
-  await p.locator('[data-testid="memory-add"]').click();
-  await p.waitForTimeout(1200);
-  ok("M5 manual memory saved + listed", (await p.locator('[data-testid="memory-list"]').innerText()).includes("Fridays"));
+  ok("M5 persona editor renders", await p.locator('[data-testid="persona-role"]').count() === 1);
   await p.screenshot({ path: `${OUT}/m5-settings.png` });
 
   // Turn in a French-convention engagement: inspector shows convention + precedence.
@@ -222,43 +219,41 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await p.waitForTimeout(400);
   const insp = await p.locator('[data-testid="context-inspector"]').innerText().catch(() => "");
   ok("M5 inspector shows the French convention", insp.includes("French"), insp.slice(0, 100));
-  ok("M5 inspector shows memory", insp.includes("Fridays"));
   ok("M5 inspector states precedence", insp.toLowerCase().includes("precedence") || insp.includes("›"));
   await p.screenshot({ path: `${OUT}/m5-inspector.png` });
   await ctx.close();
 }
 
-// ── M6: the delivery record — health-with-a-why, milestones, stat tiles ─────
+// ── M6: the delivery record — G/Y/R status-with-a-why, stat tiles ───────────
 {
   const { ctx, p } = await fresh();
   await signIn(p, "dan");
   await p.locator('[data-testid="nav--engagements"]').click();
   await p.waitForTimeout(600);
 
-  // List shows the seeded amber + fleet tiles.
-  ok("M6 list stat tiles render", await p.locator('[data-testid="eng-stat-amber"]').count() === 1);
-  const amberTile = await p.locator('[data-testid="eng-stat-amber"]').innerText();
-  ok("M6 amber tile counts the seeded amber", amberTile.includes("1"), amberTile);
-  const wlHealth = await p.locator('[data-testid="engagement-health-eng-website-launch"]').innerText();
-  ok("M6 Website Launch shows amber in the list", wlHealth.trim() === "amber", wlHealth);
+  // List shows the seeded yellow + fleet tiles.
+  ok("M6 list stat tiles render", await p.locator('[data-testid="eng-stat-yellow"]').count() === 1);
+  const yellowTile = await p.locator('[data-testid="eng-stat-yellow"]').innerText();
+  ok("M6 yellow tile counts the seeded yellow", yellowTile.includes("1"), yellowTile);
+  const wlStatus = await p.locator('[data-testid="engagement-status-eng-website-launch"]').innerText();
+  ok("M6 Website Launch shows yellow in the list", wlStatus.trim() === "yellow", wlStatus);
 
-  // Overview: health badge + the why from seed.
+  // Overview: status badge + the why from seed.
   await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
   await p.waitForTimeout(700);
-  ok("M6 overview health badge is amber",
-    (await p.locator('[data-testid="engagement-health-badge"]').innerText()).trim() === "amber");
+  ok("M6 overview status badge is yellow",
+    (await p.locator('[data-testid="engagement-status-badge"]').innerText()).trim() === "yellow");
   ok("M6 overview shows the why",
-    (await p.locator('[data-testid="engagement-health-note"]').innerText()).includes("CMS migration"));
-  ok("M6 milestone stat shows done/total",
-    (await p.locator('[data-testid="stat-milestones"]').innerText()).includes("1/2"));
+    (await p.locator('[data-testid="engagement-status-note"]').innerText()).includes("CMS migration"));
+  ok("M6 open-tasks stat renders", await p.locator('[data-testid="stat-open-tasks"]').count() === 1);
 
-  // amber→red without a why is HELD client-side (nothing commits).
-  await p.locator('[data-testid="health-select"]').selectOption("red");
-  await p.locator('[data-testid="health-note-input"]').fill("");
+  // yellow→red without a why is HELD client-side (nothing commits).
+  await p.locator('[data-testid="status-select"]').selectOption("red");
+  await p.locator('[data-testid="status-note-input"]').fill("");
   await p.waitForTimeout(300);
   ok("M6 red without a why is blocked client-side",
-    await p.locator('[data-testid="health-commit-btn"]').isDisabled());
-  ok("M6 hint explains the hold", await p.locator('[data-testid="health-note-hint"]').count() === 1);
+    await p.locator('[data-testid="status-commit-btn"]').isDisabled());
+  ok("M6 hint explains the hold", await p.locator('[data-testid="status-note-hint"]').count() === 1);
   await p.reload({ waitUntil: "networkidle" });
   await p.waitForTimeout(1500);
   // The pane route is app state, not the URL — walk back to the overview after reload.
@@ -266,14 +261,14 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await p.waitForTimeout(600);
   await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
   await p.waitForTimeout(700);
-  ok("M6 health unchanged after reload (nothing committed)",
-    (await p.locator('[data-testid="engagement-health-badge"]').innerText()).trim() === "amber");
-  await p.screenshot({ path: `${OUT}/m6-health-held.png` });
+  ok("M6 status unchanged after reload (nothing committed)",
+    (await p.locator('[data-testid="engagement-status-badge"]').innerText()).trim() === "yellow");
+  await p.screenshot({ path: `${OUT}/m6-status-held.png` });
 
   // With a why it commits — and survives reload.
-  await p.locator('[data-testid="health-select"]').selectOption("red");
-  await p.locator('[data-testid="health-note-input"]').fill("e2e: cutover blocked by security review");
-  await p.locator('[data-testid="health-commit-btn"]').click();
+  await p.locator('[data-testid="status-select"]').selectOption("red");
+  await p.locator('[data-testid="status-note-input"]').fill("e2e: cutover blocked by security review");
+  await p.locator('[data-testid="status-commit-btn"]').click();
   await p.waitForTimeout(1500);
   await p.reload({ waitUntil: "networkidle" });
   await p.waitForTimeout(1500);
@@ -282,34 +277,19 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await p.locator('[data-testid="engagement-row-eng-website-launch"]').click();
   await p.waitForTimeout(700);
   ok("M6 red + why committed",
-    (await p.locator('[data-testid="engagement-health-badge"]').innerText()).trim() === "red");
+    (await p.locator('[data-testid="engagement-status-badge"]').innerText()).trim() === "red");
   ok("M6 why persisted",
-    (await p.locator('[data-testid="engagement-health-note"]').innerText()).includes("security review"));
-
-  // Add a milestone via the UI; the tile updates.
-  await p.locator('[data-testid="add-milestone-btn"]').click();
-  await p.locator('[data-testid="milestone-title-input"]').fill("e2e probe milestone");
-  await p.locator('[data-testid="milestone-save-btn"]').click();
-  await p.waitForTimeout(1200);
-  ok("M6 milestone added",
-    (await p.locator('[data-testid="milestones-table"]').innerText()).includes("e2e probe milestone"));
-  ok("M6 milestone tile updated",
-    (await p.locator('[data-testid="stat-milestones"]').innerText()).includes("1/3"));
+    (await p.locator('[data-testid="engagement-status-note"]').innerText()).includes("security review"));
   await p.screenshot({ path: `${OUT}/m6-delivery-record.png` });
 
-  // Restore seed state so the suite stays re-runnable: back to amber + original why,
-  // and remove the probe milestone.
-  await p.locator('[data-testid="health-select"]').selectOption("amber");
-  await p.locator('[data-testid="health-note-input"]')
+  // Restore seed state so the suite stays re-runnable: back to yellow + original why.
+  await p.locator('[data-testid="status-select"]').selectOption("yellow");
+  await p.locator('[data-testid="status-note-input"]')
     .fill("CMS migration slipped a week; launch date at risk until content freeze lands.");
-  await p.locator('[data-testid="health-commit-btn"]').click();
+  await p.locator('[data-testid="status-commit-btn"]').click();
   await p.waitForTimeout(1200);
-  const probeRow = p.locator('[data-testid^="milestone-row-"]').filter({ hasText: "e2e probe milestone" });
-  await probeRow.locator('[data-testid^="milestone-delete-"]').click();
-  await probeRow.locator('[data-testid$="-confirm"]').click();
-  await p.waitForTimeout(1200);
-  ok("M6 probe milestone cleaned up",
-    (await p.locator('[data-testid="stat-milestones"]').innerText()).includes("1/2"));
+  ok("M6 seed state restored",
+    (await p.locator('[data-testid="engagement-status-badge"]').innerText()).trim() === "yellow");
 
   // Viewer (sam) sees the record read-only: no editor, no add buttons.
   const { ctx: c2, p: p2 } = await fresh();
@@ -320,10 +300,10 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await p2.waitForTimeout(700);
   ok("M6 viewer sees no delivery-record editor",
     await p2.locator('[data-testid="engagement-detail-editor"]').count() === 0);
-  ok("M6 viewer sees no add-milestone button",
-    await p2.locator('[data-testid="add-milestone-btn"]').count() === 0);
+  ok("M6 viewer sees no add-task button",
+    await p2.locator('[data-testid="engagement-add-task-btn"]').count() === 0);
   ok("M6 viewer still sees the why",
-    (await p2.locator('[data-testid="engagement-health-note"]').innerText()).includes("CMS migration"));
+    (await p2.locator('[data-testid="engagement-status-note"]').innerText()).includes("CMS migration"));
   await p2.screenshot({ path: `${OUT}/m6-viewer-readonly.png` });
   await c2.close();
   await ctx.close();
