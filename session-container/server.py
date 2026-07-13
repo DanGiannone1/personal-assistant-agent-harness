@@ -98,13 +98,13 @@ _session_locks: dict[str, asyncio.Lock] = {}
 _manifest_locks: dict[str, asyncio.Lock] = {}
 
 
-async def _get_or_create_session(token: str | None, session_id: str) -> AgentSession:
+async def _get_or_create_session(token: str | None, session_id: str, user_id: str | None = None) -> AgentSession:
     """Lazy-init the AgentSession for the given session identifier."""
     session = _sessions.get(session_id)
     workspace = _session_workspace(session_id)
     if session is None:
         os.makedirs(workspace, exist_ok=True)
-        session = AgentSession(workspace, token=token, session_id=session_id)
+        session = AgentSession(workspace, token=token, session_id=session_id, user_id=user_id)
         await session.__aenter__()
         _sessions[session_id] = session
         logger.info(
@@ -114,7 +114,7 @@ async def _get_or_create_session(token: str | None, session_id: str) -> AgentSes
         )
     elif token and session.token != token:
         await _destroy_session_locked(session_id)
-        session = AgentSession(workspace, token=token, session_id=session_id)
+        session = AgentSession(workspace, token=token, session_id=session_id, user_id=user_id)
         await session.__aenter__()
         _sessions[session_id] = session
         logger.info(
@@ -122,6 +122,9 @@ async def _get_or_create_session(token: str | None, session_id: str) -> AgentSes
             workspace,
             session.raw_sdk_log_path,
         )
+    else:
+        # Reused session: re-bind the turn's user (tools read it at execution time).
+        session.set_user(user_id)
     return session
 
 
@@ -260,7 +263,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         ctx = appdb.set_current_user(uid)
         try:
             try:
-                session = await _get_or_create_session(token=token, session_id=session_id)
+                session = await _get_or_create_session(token=token, session_id=session_id, user_id=uid)
                 trace_event(
                     "session",
                     "agent.prompt_received",

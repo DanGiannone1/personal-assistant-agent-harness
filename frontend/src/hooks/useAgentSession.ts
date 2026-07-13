@@ -2,8 +2,15 @@ import { useReducer, useRef, useCallback, useEffect, useState } from "react";
 import { AGUIEvent, AppFile, AppState, ChatMessage, MessagePart, ToolOutcome } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
 import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary } from "@/lib/api";
-import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
+import { clearSessionId, clearUserToken, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
+
+// A 401 means the app-level user token is gone/stale (orchestrator restart, sign-out
+// elsewhere). Recover by clearing it and remounting the sign-in gate — never leave the
+// user staring at a dead "could not reach your session" loop they can't escape.
+function isAuthError(err: unknown): boolean {
+  return err instanceof Error && (/\b401\b/.test(err.message) || /sign in required/i.test(err.message));
+}
 
 // Tools that set the server-side currentRoute when they succeed. When one of
 // these completes with an "ok" outcome, the pane should follow the route.
@@ -384,6 +391,11 @@ export function useAgentSession() {
       dispatch({ type: "SET_SESSION_ID", sessionId: meta.session_id });
       await Promise.all([refreshAppState(meta.session_id, true), refreshFiles(meta.session_id)]);
     } catch (err) {
+      if (isAuthError(err)) {
+        clearUserToken();
+        window.location.assign("/");
+        return;
+      }
       dispatch({ type: "SESSION_ERROR", error: friendlyError(err, "Could not reach your session. Retry.") });
     } finally {
       dispatch({ type: "SET_INITIALIZING", value: false });
@@ -472,6 +484,11 @@ export function useAgentSession() {
       if (streamingRef.current) dispatch({ type: "DONE" });
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") return;
+      if (isAuthError(err)) {
+        clearUserToken();
+        window.location.assign("/");
+        return;
+      }
       dispatch({ type: "ERROR", message: friendlyError(err, "Message failed.") });
     } finally {
       inFlightRef.current = false;

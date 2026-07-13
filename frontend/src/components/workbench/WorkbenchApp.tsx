@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   FileText, CheckCircle2, Circle, ArrowLeft, Home as HomeIcon, AlertTriangle, Calendar as CalendarIcon, Clock,
-  BookMarked, Trash2, Upload, Plus,
+  BookMarked, Trash2, Upload, Plus, LogOut,
 } from "lucide-react";
-import type { AppFile, AppState, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
-import { getFileContent, getLibraryContent,
+import type { AppFile, AppState, AuthUser, Task, CalendarEvent, Schedule, LibraryDoc } from "@/lib/types";
+import { getFileContent, getLibraryContent, logout,
   createTask, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask,
   createEvent, deleteEvent, createSchedule, updateSchedule, deleteSchedule } from "@/lib/api";
+import { clearUserToken, getUser } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
 import MarkdownRenderer from "../MarkdownRenderer";
 import CsvTable from "../CsvTable";
@@ -119,7 +120,10 @@ export default function WorkbenchApp({
             <span className="tw-appbar-sub">{agentWorking ? "Assistant working…" : "Ready"}</span>
           </div>
         </div>
-        <Breadcrumb appState={appState} viewRoute={viewRoute} />
+        <div className="flex items-center gap-3">
+          <Breadcrumb appState={appState} viewRoute={viewRoute} />
+          <UserChip />
+        </div>
       </div>
 
       <div className="tw-body">
@@ -150,6 +154,28 @@ export default function WorkbenchApp({
         </div>
       </div>
     </div>
+  );
+}
+
+// Signed-in indicator + sign-out (spec F1). User comes from sessionStorage, read after
+// mount (never during SSR) so server prerender and client hydration always agree.
+function UserChip() {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  useEffect(() => { setUser(getUser()); }, []);
+  if (!user) return null;
+  const signOut = async () => {
+    try { await logout(); } catch { /* best effort — the local clear is what signs out */ }
+    clearUserToken();
+    window.location.assign("/");
+  };
+  return (
+    <span className="inline-flex items-center gap-2" data-testid="user-chip">
+      <span className="tw-badge tw-badge-gray">{user.displayName}</span>
+      <button type="button" style={docActionBtn} aria-label="Sign out" title="Sign out"
+        data-testid="signout-btn" onClick={signOut}>
+        <LogOut size={13} />
+      </button>
+    </span>
   );
 }
 

@@ -1,5 +1,5 @@
 import { buildAuthHeaders } from "./auth";
-import type { AppState, FileInfo } from "./types";
+import type { AppState, AuthUser, FileInfo } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -13,6 +13,34 @@ export interface SessionMetadata {
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = await buildAuthHeaders(init.headers);
   return fetch(`${API_BASE}${path}`, { ...init, headers });
+}
+
+// ── App-level auth (spec F1) — no session id required ─────────────────────────
+export async function login(username: string, password: string): Promise<{ token: string; user: AuthUser }> {
+  const res = await apiFetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Login failed (${res.status}): ${detail}`);
+  }
+  return res.json();
+}
+
+export async function fetchMe(): Promise<{ user: AuthUser }> {
+  const res = await apiFetch("/auth/me");
+  if (!res.ok) throw new Error(`Auth check failed: ${res.status}`);
+  return res.json();
+}
+
+export async function logout(): Promise<void> {
+  const res = await apiFetch("/auth/logout", { method: "POST" });
+  if (!res.ok && res.status !== 204) {
+    const detail = await res.text();
+    throw new Error(`Logout failed (${res.status}): ${detail}`);
+  }
 }
 
 export async function getAppState(sessionId: string): Promise<AppState> {

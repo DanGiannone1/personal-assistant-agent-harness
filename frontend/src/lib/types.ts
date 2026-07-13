@@ -15,6 +15,13 @@ export type AGUIEvent =
 
 export type ToolOutcome = "ok" | "noop" | "error";
 
+// The signed-in app-level user (spec F1). Shape mirrors the /auth/login + /auth/me payloads.
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+}
+
 export type MessagePart =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }

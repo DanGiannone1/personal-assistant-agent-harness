@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 import AuthGate from "@/components/AuthGate";
+import SignInGate from "@/components/SignInGate";
 import { SessionProvider } from "@/components/SessionProvider";
 
 const geistSans = Geist({
@@ -40,10 +41,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${serif.variable} font-sans antialiased`}
       >
-        {/* AuthGate + SessionProvider wrap ALL routes so the agent session is one
-            continuous session shared across the host app and the /assistant workspace. */}
+        {/* AuthGate (caller auth) > SignInGate (app user, spec F1) > SessionProvider: the
+            agent session 401s without a signed-in user, so the provider must not mount
+            until the gate has a token. One continuous session across all routes. */}
         <AuthGate>
-          <SessionProvider>{children}</SessionProvider>
+          <SignInGate>
+            <SessionProvider>{children}</SessionProvider>
+          </SignInGate>
         </AuthGate>
       </body>
     </html>

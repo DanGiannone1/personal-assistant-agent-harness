@@ -7,6 +7,8 @@ import {
   type Configuration,
 } from "@azure/msal-browser";
 
+import { getUserToken } from "./session";
+
 const authEnabled = (process.env.NEXT_PUBLIC_AUTH_ENABLED || "").toLowerCase() === "true";
 const tenantId = process.env.NEXT_PUBLIC_ENTRA_TENANT_ID || "";
 const clientId = process.env.NEXT_PUBLIC_ENTRA_CLIENT_ID || "";
@@ -166,6 +168,13 @@ export async function getAccessToken(): Promise<string> {
 
 export async function buildAuthHeaders(headersInit?: HeadersInit): Promise<Headers> {
   const headers = new Headers(headersInit);
+
+  // App-level user token (spec F1). The single seam that authenticates the signed-in user
+  // on every REST + SSE call — independent of the MSAL caller-auth below, so it attaches
+  // whether or not Entra sign-in is enabled.
+  const userToken = getUserToken();
+  if (userToken) headers.set("x-user-token", userToken);
+
   if (!authEnabled) return headers;
 
   const accessToken = await getAccessToken();

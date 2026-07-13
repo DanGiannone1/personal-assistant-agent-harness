@@ -19,8 +19,16 @@ if not (ROOT / ".env").exists():
     sys.exit(1)
 
 load_dotenv(ROOT / ".env")
-os.environ["POOL_MANAGEMENT_ENDPOINT"] = "http://localhost:8080"
+
+# Ports are env-overridable so multiple checkouts/worktrees can run stacks side by side.
+FE_PORT = os.getenv("DEV_FE_PORT", "3000")
+API_PORT = os.getenv("DEV_API_PORT", "8000")
+SC_PORT = os.getenv("DEV_SC_PORT", "8080")
+
+os.environ["POOL_MANAGEMENT_ENDPOINT"] = f"http://localhost:{SC_PORT}"
 os.environ["WORKSPACE"] = str(ROOT / "workspace")
+os.environ.setdefault("FRONTEND_URL", f"http://localhost:{FE_PORT}")
+os.environ.setdefault("NEXT_PUBLIC_API_URL", f"http://localhost:{API_PORT}")
 
 # Trace logging — fresh file each dev session
 logs_dir = ROOT / "logs"
@@ -58,28 +66,28 @@ def cleanup(*_):
 signal.signal(signal.SIGINT, cleanup)
 signal.signal(signal.SIGTERM, cleanup)
 
-print("Starting session container on :8080...")
+print(f"Starting session container on :{SC_PORT}...")
 procs.append(subprocess.Popen(
-    ["uv", "run", "uvicorn", "server:app", "--port", "8080"],
+    ["uv", "run", "uvicorn", "server:app", "--port", SC_PORT],
     cwd=ROOT / "session-container",
 ))
 
-print("Starting orchestrator on :8000...")
+print(f"Starting orchestrator on :{API_PORT}...")
 procs.append(subprocess.Popen(
-    ["uv", "run", "uvicorn", "app:app", "--port", "8000"],
+    ["uv", "run", "uvicorn", "app:app", "--port", API_PORT],
     cwd=ROOT,
 ))
 
-print("Starting frontend on :3000...")
+print(f"Starting frontend on :{FE_PORT}...")
 procs.append(subprocess.Popen(
-    ["npm", "run", "dev"],
+    ["npm", "run", "dev", "--", "-p", FE_PORT],
     cwd=ROOT / "frontend",
 ))
 
 print()
-print("  Frontend:  http://localhost:3000")
-print("  API:       http://localhost:8000")
-print("  Session:   http://localhost:8080")
+print(f"  Frontend:  http://localhost:{FE_PORT}")
+print(f"  API:       http://localhost:{API_PORT}")
+print(f"  Session:   http://localhost:{SC_PORT}")
 print(f"  Trace log: {trace_file}")
 print()
 

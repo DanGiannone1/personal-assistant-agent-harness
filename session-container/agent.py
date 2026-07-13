@@ -381,14 +381,25 @@ class DeleteScheduleParams(BaseModel):
 
 # ── Tool builders (closures over the session workspace) ─────────────────────
 
-def _build_flow_tools(working_dir: str) -> list:
+def _build_flow_tools(working_dir: str, get_user) -> list:
     workspace_root = Path(working_dir).resolve()
 
+    def _as_user(fn):
+        """Bind the signed-in user around an appdb call. The SDK runs tools on ITS OWN
+        thread, so the request-scoped contextvar set in server.py never reaches them —
+        the user must be re-bound here, in the thread the tool actually executes on.
+        `get_user()` reads the session's current user (set per turn from X-User-Id)."""
+        token = appdb.set_current_user(get_user())
+        try:
+            return fn()
+        finally:
+            appdb.reset_current_user(token)
+
     def _load() -> dict:
-        return appdb.load()
+        return _as_user(appdb.load)
 
     def _update(mutator):
-        """Concurrency-safe owner-doc mutation (ETag + retry, see appdb.update).
+        """Concurrency-safe user-doc mutation (ETag + retry, see appdb.update).
         `mutator(data)` mutates and returns the tool's result string; raise
         appdb.AbortWrite(msg) to return a message without writing (validation/no-op).
 
@@ -396,7 +407,7 @@ def _build_flow_tools(working_dir: str) -> list:
         frequency) return early BEFORE _update; checks that inspect the current doc
         (resolve-by-ref, ambiguity, not-found) raise AbortWrite INSIDE the mutator so they
         re-evaluate against the fresh read on each retry."""
-        return appdb.update(mutator)
+        return _as_user(lambda: appdb.update(mutator))
 
     def _resolve_task_strict(data: dict, ref: str):
         """Resolve a task ref to (task, error). Prefer exact id/title; fall back to a
@@ -848,11 +859,13 @@ _HIDDEN_TOOLS: set[str] = set()
 class AgentSession:
     """Async context manager holding a persistent Copilot session (SDK 1.0.x)."""
 
-    def __init__(self, working_dir: str, token: str | None = None, session_id: str = "default"):
+    def __init__(self, working_dir: str, token: str | None = None, session_id: str = "default",
+                 user_id: str | None = None):
         self._working_dir = working_dir
         self._initial_token = token
         self._token = token
         self._session_id = session_id
+        self._user_id = user_id
         self._client: CopilotClient | None = None
         self._session = None
         self._unsubscribe = None
@@ -922,7 +935,7 @@ class AgentSession:
         self._loop = asyncio.get_running_loop()
 
         skills_dir = str(Path(__file__).parent / "skills")
-        custom_tools = _build_flow_tools(self._working_dir)
+        custom_tools = _build_flow_tools(self._working_dir, lambda: self._user_id)
         available_tools = [t.name for t in custom_tools] + ["skill"]
 
         deployment = os.environ["AZURE_DEPLOYMENT"]
@@ -1137,6 +1150,10 @@ class AgentSession:
             self._enqueue(RunErrorEvent(message=msg))
             self._enqueue(RunFinishedEvent(thread_id=self._thread_id, run_id=self._run_id))
             self._finish()
+
+    def set_user(self, user_id: str | None) -> None:
+        """Bind the signed-in user for subsequent turns (tools read it via closure)."""
+        self._user_id = user_id
 
     async def send(self, prompt: str) -> AsyncGenerator[str, None]:
         """Send a prompt; yield SSE-formatted AG-UI events until the session is idle."""
