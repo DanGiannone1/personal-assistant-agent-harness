@@ -89,6 +89,10 @@ Open <http://localhost:3000>. Full setup, configuration, and testing: [docs/deve
 | [docs/development.md](docs/development.md) | Local setup, configuration, running, switching harnesses, testing |
 | [docs/deployment.md](docs/deployment.md) | Azure Container Apps deployment, RBAC, and the deploy-time gotchas |
 
+Portable, inactive-by-default developer governance and PPEL templates live in
+[`developer-harness/`](developer-harness/README.md). They are not loaded by the
+application or agent runtime unless deliberately adopted.
+
 ## Key files
 
 The **orchestrator is the repo root** (there is no `orchestrator/` directory).
