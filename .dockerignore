@@ -3,6 +3,11 @@
 .env
 frontend/
 session-container/
+# ...except the shared modules app.py imports (see Dockerfile)
+!session-container/appdb.py
+!session-container/library.py
+!session-container/seed_docs
+!session-container/seed_docs/**
 workspace/
 infra/
 __pycache__/
