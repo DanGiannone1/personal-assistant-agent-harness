@@ -33,7 +33,8 @@ type Action =
   | { type: "SET_VIEW_ROUTE"; route: string }
   | { type: "QUICKLINKS_LOADED"; links: QuickLink[] }
   | { type: "BUNDLE_USED"; bundle: ContextBundle | null }
-  | { type: "SESSION_ERROR"; error: string | null };
+  | { type: "SESSION_ERROR"; error: string | null }
+  | { type: "WORKSPACE_REFRESH_FAILED"; error: string | null };
 
 interface State {
   messages: ChatMessage[];
@@ -49,6 +50,7 @@ interface State {
   quickLinks: QuickLink[]; // rank_destinations(context) — the no-AI quick links
   lastBundle: ContextBundle | null; // what personalized the most recent turn (inspector)
   sessionError: string | null;
+  workspaceStale: string | null;
 }
 
 const SESSION_TIMEOUT_MS = 12_000;
@@ -101,10 +103,11 @@ function reducer(state: State, action: Action): State {
     case "SET_SESSION_ID": return { ...state, sessionId: action.sessionId };
     case "SET_INITIALIZING": return { ...state, isInitializing: action.value };
     case "SESSION_ERROR": return { ...state, sessionError: action.error };
+    case "WORKSPACE_REFRESH_FAILED": return { ...state, workspaceStale: action.error };
     case "RESET_FOR_NEW_CHAT":
       return {
         ...state, messages: [], isStreaming: false, sessionId: null, currentRunId: null,
-        files: [], appState: null, viewRoute: "/home", appRoute: "/home", newRecordIds: [], sessionError: null,
+        files: [], appState: null, viewRoute: "/engagements", appRoute: "/engagements", newRecordIds: [], sessionError: null, workspaceStale: null,
       };
     case "USER_SEND":
       return {
@@ -241,7 +244,7 @@ function reducer(state: State, action: Action): State {
       return { ...state, files: [...stillPending, ...action.files] };
     }
     case "APP_STATE_LOADED": {
-      const serverRoute = action.appState.currentRoute || "/home";
+      const serverRoute = action.appState.currentRoute || "/engagements";
       // Tasks/events that appeared since the last snapshot — highlight them in the pane.
       const prevIds = new Set<string>([
         ...(state.appState?.tasks ?? []).map((t) => t.id),
@@ -253,6 +256,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         appState: action.appState,
+        workspaceStale: null,
         appRoute: serverRoute,
         // Follow the server route only when a navigation-intent tool ran this
         // turn — NOT on every value change. A human clicking back to the
@@ -271,8 +275,8 @@ function reducer(state: State, action: Action): State {
 
 const initialState: State = {
   messages: [], isStreaming: false, sessionId: null, isInitializing: true,
-  currentRunId: null, files: [], appState: null, viewRoute: "/home",
-  appRoute: "/home", newRecordIds: [], quickLinks: [], lastBundle: null, sessionError: null,
+  currentRunId: null, files: [], appState: null, viewRoute: "/engagements",
+  appRoute: "/engagements", newRecordIds: [], quickLinks: [], lastBundle: null, sessionError: null, workspaceStale: null,
 };
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -283,7 +287,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 }
 
 function viewLabel(appState: AppState | null, route: string): string {
-  if (!appState) return "Home";
+  if (!appState) return "Engagements";
+  if (route === "/engagements") return "Engagements";
+  if (route.startsWith("/engagements/")) return "Engagement";
   if (route.startsWith("/todo/")) {
     const t = appState.tasks.find((x) => x.id === route.split("/").pop());
     return t ? `the "${t.title}" task` : "Tasks";
@@ -291,7 +297,7 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (route === "/todo") return "Tasks";
   if (route === "/calendar") return "Calendar";
   if (route === "/documents") return "Documents";
-  return "Home";
+  return "Engagements";
 }
 
 export function useAgentSession() {
@@ -302,7 +308,7 @@ export function useAgentSession() {
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const streamingRef = useRef(false);
-  const viewRouteRef = useRef<string>("/home");
+  const viewRouteRef = useRef<string>("/engagements");
   const appStateRef = useRef<AppState | null>(null);
   const runStartRef = useRef<number>(0);
   const stepCountRef = useRef<number>(0);
@@ -312,6 +318,9 @@ export function useAgentSession() {
   // Monotonic sequence so out-of-order app-state refetches can't apply a stale snapshot:
   // only the most-recently-issued refresh's result is allowed to dispatch (last-issued-wins).
   const appStateSeqRef = useRef(0);
+  // Superseded callers inherit the latest authoritative refresh outcome rather
+  // than treating an obsolete response as a successful refresh.
+  const latestAppStateRefreshRef = useRef<Promise<void> | null>(null);
   // Set on Stop so buffered events arriving after abort don't re-finalize/re-refresh a cancelled turn.
   const cancelledRef = useRef(false);
 
@@ -334,21 +343,33 @@ export function useAgentSession() {
     } catch { /* non-fatal */ }
   }, []);
 
-  const refreshAppState = useCallback(async (sessionId: string, follow = false) => {
+  const refreshAppState = useCallback((sessionId: string, follow = false): Promise<void> => {
     const seq = ++appStateSeqRef.current;
-    try {
-      const appState = await getAppState(sessionId);
-      // Drop a stale snapshot: if a newer refresh was issued while this one was in
-      // flight, only the newer one may apply (prevents an out-of-order resolve from
-      // clobbering the pane with pre-mutation state and miscomputing newRecordIds).
-      if (seq !== appStateSeqRef.current) return;
-      dispatch({ type: "APP_STATE_LOADED", appState, follow });
-      // Quick links ride along with every state refresh (non-fatal, last-wins).
+    const refreshPromise = Promise.resolve().then(async () => {
+      const awaitLatest = async () => {
+        const latest = latestAppStateRefreshRef.current;
+        if (latest && latest !== refreshPromise) await latest;
+      };
       try {
-        const links = await getQuickLinks();
-        if (seq === appStateSeqRef.current) dispatch({ type: "QUICKLINKS_LOADED", links });
-      } catch { /* non-fatal */ }
-    } catch { /* non-fatal — pane keeps last state */ }
+        const appState = await getAppState(sessionId);
+        // A superseded caller must adopt the latest request's result. This chains
+        // naturally if that request is itself superseded before it settles.
+        if (seq !== appStateSeqRef.current) return await awaitLatest();
+        dispatch({ type: "APP_STATE_LOADED", appState, follow });
+        // Quick links ride along with every state refresh (non-fatal, last-wins).
+        try {
+          const links = await getQuickLinks();
+          if (seq === appStateSeqRef.current) dispatch({ type: "QUICKLINKS_LOADED", links });
+        } catch { /* non-fatal */ }
+        if (seq !== appStateSeqRef.current) await awaitLatest();
+      } catch (err) {
+        if (seq !== appStateSeqRef.current) return await awaitLatest();
+        dispatch({ type: "WORKSPACE_REFRESH_FAILED", error: friendlyError(err, "Could not refresh the workspace. Your last saved view may be out of date.") });
+        throw err;
+      }
+    });
+    latestAppStateRefreshRef.current = refreshPromise;
+    return refreshPromise;
   }, []);
 
   const restoreStoredSession = useCallback(async (storedId: string): Promise<boolean> => {
@@ -423,16 +444,16 @@ export function useAgentSession() {
         break;
       case "TOOL_CALL_END":
         dispatch({ type: "TOOL_END", toolCallId: event.tool_call_id });
-        if (sessionIdRef.current) void refreshAppState(sessionIdRef.current);
+        if (sessionIdRef.current) void refreshAppState(sessionIdRef.current).catch(() => undefined);
         break;
       case "RUN_FINISHED":
         if (runStartRef.current) dispatch({ type: "SET_TURN_META", steps: stepCountRef.current, durationMs: Math.round(performance.now() - runStartRef.current) });
         dispatch({ type: "DONE" });
-        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current); void refreshFiles(sessionIdRef.current); }
+        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current).catch(() => undefined); void refreshFiles(sessionIdRef.current); }
         break;
       case "RUN_ERROR":
         dispatch({ type: "ERROR", message: event.message || "Error during generation." });
-        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current); void refreshFiles(sessionIdRef.current); }
+        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current).catch(() => undefined); void refreshFiles(sessionIdRef.current); }
         break;
     }
   }, [refreshAppState, refreshFiles]);

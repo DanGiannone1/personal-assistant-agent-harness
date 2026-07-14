@@ -261,14 +261,16 @@ def _seed_library() -> list[dict]:
 def _seed_space() -> dict:
     """A fresh personal space — empty records, seeded Library, the static route catalog."""
     return {
-        "currentRoute": "/home",
+        # Engagements is the product's landing surface. Personal utilities remain
+        # available in the route catalog, but do not displace shared delivery work.
+        "currentRoute": "/engagements",
         "tasks": [],
         "events": [],
         "schedules": [],
         "library": _seed_library(),
-        # Catalog of navigable pages. `keywords` help the navigate tool resolve
-        # free-text destinations deterministically without a separate LLM routing pass.
+        # Static, authorized destinations used by the typed navigation contract.
         "routes": [
+            {"path": "/engagements", "title": "Engagements", "keywords": ["engagements", "engagement", "portfolio", "customers", "delivery"]},
             {"path": "/home", "title": "Home", "keywords": ["home", "today", "overview", "agenda", "start", "dashboard"]},
             {"path": "/todo", "title": "Tasks", "keywords": ["todo", "to do", "to-do", "tasks", "task", "list", "checklist"]},
             {"path": "/calendar", "title": "Calendar", "keywords": ["calendar", "schedule", "events", "event", "meetings", "agenda"]},
@@ -285,7 +287,7 @@ def _doc_to_state(doc: dict) -> dict:
         if state.get(k) is None:
             state[k] = []
     if state.get("currentRoute") is None:
-        state["currentRoute"] = "/home"
+        state["currentRoute"] = "/engagements"
     return state
 
 

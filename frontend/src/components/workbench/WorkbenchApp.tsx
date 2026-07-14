@@ -32,6 +32,9 @@ interface WorkbenchAppProps {
   onRemoveFromLibrary: (filename: string) => Promise<void>;
   onUpload: (file: File) => Promise<void>;
   onRefresh: () => Promise<void>;
+  workspaceStale?: string | null;
+  sessionError?: string | null;
+  onRetrySession?: () => Promise<void>;
 }
 
 // A task is overdue iff its due date is past today and it isn't Done — computed
@@ -66,42 +69,8 @@ function OverdueBadge() {
 
 export default function WorkbenchApp({
   appState, loading, viewRoute, onNavigate, sessionId, uploadedFiles, generatedFiles, newRecordIds, agentWorking,
-  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh, quickLinks = [],
+  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh, quickLinks = [], workspaceStale, sessionError, onRetrySession,
 }: WorkbenchAppProps) {
-  const [doc, setDoc] = useState<{ filename: string; content: string; mime?: string; loading: boolean; error: string | null } | null>(null);
-  const [pulse, setPulse] = useState(false);
-  const prevRoute = useRef(viewRoute);
-
-  // Briefly pulse the app header when the view changes (e.g. agent navigation) so
-  // it's obvious the pane moved.
-  useEffect(() => {
-    if (prevRoute.current !== viewRoute) {
-      prevRoute.current = viewRoute;
-      setPulse(true);
-      const id = setTimeout(() => setPulse(false), 1100);
-      return () => clearTimeout(id);
-    }
-  }, [viewRoute]);
-
-  // Leaving the Documents view closes any open document so returning shows the
-  // list, not a stale previously-opened doc.
-  useEffect(() => {
-    if (viewRoute !== "/documents") setDoc(null);
-  }, [viewRoute]);
-
-  const openDoc = async (filename: string, fromLibrary = false) => {
-    if (!sessionId) return;
-    setDoc({ filename, content: "", mime: undefined, loading: true, error: null });
-    try {
-      const data = fromLibrary
-        ? await getLibraryContent(sessionId, filename)
-        : await getFileContent(sessionId, filename);
-      setDoc({ filename, content: data.content, mime: data.mime_type, loading: false, error: null });
-    } catch (err) {
-      setDoc({ filename, content: "", mime: undefined, loading: false, error: friendlyError(err, "Could not open document.") });
-    }
-  };
-
   return (
     <div className="tw-app" data-testid="workbench-app">
       {/* Workspace-scoped a11y/polish overrides (kept here, not in the contended globals.css):
@@ -115,7 +84,7 @@ export default function WorkbenchApp({
         .tw-app .tw-rowlink:focus-visible { outline-offset: -2px; }
       `}</style>
       {/* App header */}
-      <div className={`tw-appbar ${pulse ? "tw-appbar-pulse" : ""}`}>
+      <div className="tw-appbar">
         <div className="tw-appbar-brand">
           <div className="tw-logo"><HomeIcon size={16} strokeWidth={2.5} /></div>
           <div className="flex flex-col leading-tight">
@@ -132,9 +101,11 @@ export default function WorkbenchApp({
         {/* Content */}
         <div className="tw-content" data-testid="workbench-content">
           {loading && !appState ? (
-            <div className="tw-empty">Loading workspace…</div>
-          ) : doc && viewRoute === "/documents" ? (
-            <DocViewer doc={doc} onBack={() => setDoc(null)} />
+            <div className="tw-empty" data-testid="workspace-loading" role="status">Loading workspace…</div>
+          ) : sessionError && !appState ? (
+            <div className="tw-empty" role="alert">{sessionError} <button type="button" className="tw-btn" data-testid="workspace-retry" onClick={() => void onRetrySession?.()}>Retry</button></div>
+          ) : workspaceStale && !appState ? (
+            <div className="tw-empty" role="alert">{workspaceStale} <button type="button" className="tw-btn" data-testid="workspace-retry" onClick={() => void onRefresh().catch(() => undefined)}>Retry</button></div>
           ) : (
             <RouteContent
               appState={appState}
@@ -144,7 +115,6 @@ export default function WorkbenchApp({
               uploadedFiles={uploadedFiles}
               generatedFiles={generatedFiles}
               newRecordIds={newRecordIds}
-              onOpenDoc={openDoc}
               onSaveToLibrary={onSaveToLibrary}
               onRemoveFromLibrary={onRemoveFromLibrary}
               onUpload={onUpload}
@@ -152,6 +122,7 @@ export default function WorkbenchApp({
               onRefresh={onRefresh}
             />
           )}
+          {workspaceStale && appState && <div className="tw-workspace-stale" data-testid="workspace-stale" role="status">Showing the last refreshed workspace. {workspaceStale} <button type="button" className="tw-btn-ghost" data-testid="workspace-retry" onClick={() => void onRefresh().catch(() => undefined)}>Retry</button></div>}
         </div>
       </div>
     </div>
@@ -179,10 +150,9 @@ function Breadcrumb({ appState, viewRoute }: { appState: AppState | null; viewRo
   return <div className="tw-breadcrumb" data-testid="breadcrumb">{trail}</div>;
 }
 
-function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generatedFiles, newRecordIds, onOpenDoc, onSaveToLibrary, onRemoveFromLibrary, onUpload, sessionId, onRefresh, quickLinks }: {
+function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generatedFiles, newRecordIds, onSaveToLibrary, onRemoveFromLibrary, onUpload, sessionId, onRefresh, quickLinks }: {
   appState: AppState | null; viewRoute: string; onNavigate: (r: string) => void; quickLinks: QuickLink[];
   uploadedFiles: AppFile[]; generatedFiles: AppFile[]; newRecordIds: string[];
-  onOpenDoc: (f: string, fromLibrary?: boolean) => void;
   onSaveToLibrary: (f: string) => Promise<void>; onRemoveFromLibrary: (f: string) => Promise<void>;
   onUpload: (file: File) => Promise<void>;
   sessionId: string | null; onRefresh: () => Promise<void>;
@@ -353,21 +323,7 @@ function RouteContent({ appState, viewRoute, onNavigate, uploadedFiles, generate
 
   // ── Documents (/documents) — Library (persistent KB) vs this session (ephemeral) ──
   if (viewRoute === "/documents") {
-    const library = appState.library ?? [];
-    const libNames = new Set(library.map((d) => d.filename));
-    // Session files that haven't been promoted yet (a promoted file shows under Library).
-    const sessionUploaded = uploadedFiles.filter((f) => !libNames.has(f.filename));
-    const sessionGenerated = generatedFiles.filter((f) => !libNames.has(f.filename));
-    return (
-      <div className="tw-screen" data-testid="documents-screen">
-        <h1 className="tw-h1">Documents</h1>
-        <LibraryGroup docs={library} onOpen={(f) => onOpenDoc(f, true)} onRemove={onRemoveFromLibrary} />
-        <SessionDocs label="Uploaded this session" files={sessionUploaded} testid="uploaded-group"
-          emptyLabel="No uploads this session. Upload a file to work with it here." onOpen={onOpenDoc} onSave={onSaveToLibrary} onUpload={onUpload} />
-        <SessionDocs label="Generated this session" files={sessionGenerated} testid="generated-group"
-          emptyLabel="No generated documents yet. Ask the assistant to draft one." onOpen={onOpenDoc} onSave={onSaveToLibrary} />
-      </div>
-    );
+    return <DocumentsScreen key={viewRoute} appState={appState} sessionId={sessionId} uploadedFiles={uploadedFiles} generatedFiles={generatedFiles} onSaveToLibrary={onSaveToLibrary} onRemoveFromLibrary={onRemoveFromLibrary} onUpload={onUpload} />;
   }
 
   // ── Reminders (/reminders) — scheduled prompts emailed on a cadence ────────
@@ -554,6 +510,38 @@ const docActionBtn: React.CSSProperties = {
 const rowTitleBtn: React.CSSProperties = { background: "none", border: "none", padding: 0, margin: 0, font: "inherit", color: "inherit", cursor: "pointer", textAlign: "left", width: "100%" };
 const docRow: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const docMainBtn: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit" };
+
+// This component only exists while the Documents route is visible. Its selected
+// document therefore closes naturally when the route changes, without a state
+// reset effect in the host shell.
+function DocumentsScreen({ appState, sessionId, uploadedFiles, generatedFiles, onSaveToLibrary, onRemoveFromLibrary, onUpload }: {
+  appState: AppState; sessionId: string | null; uploadedFiles: AppFile[]; generatedFiles: AppFile[];
+  onSaveToLibrary: (filename: string) => Promise<void>; onRemoveFromLibrary: (filename: string) => Promise<void>;
+  onUpload: (file: File) => Promise<void>;
+}) {
+  const [doc, setDoc] = useState<{ filename: string; content: string; mime?: string; loading: boolean; error: string | null } | null>(null);
+  const library = appState.library ?? [];
+  const libraryNames = new Set(library.map((item) => item.filename));
+  const openDoc = async (filename: string, fromLibrary = false) => {
+    if (!sessionId) return;
+    setDoc({ filename, content: "", mime: undefined, loading: true, error: null });
+    try {
+      const data = fromLibrary ? await getLibraryContent(sessionId, filename) : await getFileContent(sessionId, filename);
+      setDoc({ filename, content: data.content, mime: data.mime_type, loading: false, error: null });
+    } catch (err) {
+      setDoc({ filename, content: "", mime: undefined, loading: false, error: friendlyError(err, "Could not open document.") });
+    }
+  };
+  if (doc) return <DocViewer doc={doc} onBack={() => setDoc(null)} />;
+  const uploaded = uploadedFiles.filter((file) => !libraryNames.has(file.filename));
+  const generated = generatedFiles.filter((file) => !libraryNames.has(file.filename));
+  return <div className="tw-screen" data-testid="documents-screen">
+    <h1 className="tw-h1">Documents</h1>
+    <LibraryGroup docs={library} onOpen={(filename) => void openDoc(filename, true)} onRemove={onRemoveFromLibrary} />
+    <SessionDocs label="Uploaded this session" files={uploaded} testid="uploaded-group" emptyLabel="No uploads this session. Upload a file to work with it here." onOpen={(filename) => void openDoc(filename)} onSave={onSaveToLibrary} onUpload={onUpload} />
+    <SessionDocs label="Generated this session" files={generated} testid="generated-group" emptyLabel="No generated documents yet. Ask the assistant to draft one." onOpen={(filename) => void openDoc(filename)} onSave={onSaveToLibrary} />
+  </div>;
+}
 
 // The persistent Library: documents indexed in the KB, searchable across every session.
 function LibraryGroup({ docs, onOpen, onRemove }: { docs: LibraryDoc[]; onOpen: (f: string) => void; onRemove: (f: string) => Promise<void> }) {

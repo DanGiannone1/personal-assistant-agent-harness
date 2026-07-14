@@ -1058,8 +1058,8 @@ async def delete_convention(engagement_id: str, conv_id: str, uid: str = Depends
 
 
 # ── Engagement artifacts — durable files, metadata on the doc (R9/R10) ────────
-# Bytes live in artifact_store (local dir or Azure Blob); any member can add,
-# list, and open; removing needs editor+. Non-members always see 404.
+# Bytes live in artifact_store (local dir or Azure Blob); members can list and
+# open, while editors and owners can add or remove. Non-members always see 404.
 
 _ARTIFACT_MAX_BYTES = 20 * 1024 * 1024
 _ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()-]+")
@@ -1084,7 +1084,7 @@ async def list_artifacts(engagement_id: str, uid: str = Depends(current_user)) -
 @app.post("/engagements/{engagement_id}/artifacts", status_code=201)
 async def upload_artifact(engagement_id: str, file: UploadFile,
                           uid: str = Depends(current_user)) -> dict:
-    eng = await _load_engagement_authed(engagement_id, uid)  # any member may add (R10)
+    eng = await _load_engagement_authed(engagement_id, uid, "editor")
     # Read at most cap+1 bytes so an oversized body 413s without buffering it all
     # (same idiom as session_manager upload).
     data = await file.read(_ARTIFACT_MAX_BYTES + 1)
@@ -1111,7 +1111,7 @@ async def upload_artifact(engagement_id: str, file: UploadFile,
         appdb.log_activity(doc, uid, "artifact.added", entry["name"])
 
     try:
-        await _mutate_engagement(eng["id"], uid, "viewer", _mut)
+        await _mutate_engagement(eng["id"], uid, "editor", _mut)
     except Exception:
         await asyncio.to_thread(artifact_store.delete, eng["id"], entry["id"])
         raise

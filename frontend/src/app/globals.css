@@ -610,6 +610,70 @@ html, body {
 .tw-appbar-pulse { animation: tw-route-pulse 1.1s ease-out 1; }
 .tw-rowlink { cursor: pointer; }
 
+/* Engagement-first workspace additions. Kept scoped to the workbench shell so
+   the assistant dock retains its existing visual system. */
+.tw-nav-toggle, .tw-nav-mobile-head, .tw-nav-backdrop { display: none; }
+.tw-nav-toggle { min-width: 44px; min-height: 44px; width: 44px; height: 44px; }
+.tw-role-note { margin: 0.15rem 0; padding: 0.55rem 0.7rem; border-left: 3px solid var(--border-subtle); color: var(--text-muted); font-size: 0.8rem; }
+.tw-engagement-header, .tw-section-heading, .tw-form-actions, .tw-confirm-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.tw-section-heading { justify-content: space-between; gap: 0.75rem; }
+.tw-section-heading .tw-h2 { margin-bottom: 0; }
+.tw-optional { color: var(--text-muted); font-size: 0.7rem; font-weight: 400; }
+.tw-required { color: #c44; font-size: 0.7rem; }
+.tw-addform, .tw-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; align-items: end; margin-top: 0.75rem; }
+.tw-addform label, .tw-edit-grid label { display: grid; gap: 0.3rem; color: var(--text-secondary); font-size: 0.75rem; font-weight: 700; }
+.tw-edit-grid textarea.tw-input { min-height: 4.5rem; resize: vertical; }
+.tw-form-actions { align-self: end; min-height: 2.5rem; }
+.tw-engagement-card { width: 100%; cursor: pointer; }
+.tw-engagement-main { display: grid; min-width: 0; gap: 0.15rem; }
+.tw-engagement-main .tw-td-sub { overflow-wrap: anywhere; }
+.tw-engagement-meta { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 0.45rem; }
+.tw-engagement-meta .tw-td-sub { display: inline-flex; align-items: center; gap: 0.2rem; }
+.tw-task-list { display: grid; gap: 0.4rem; }
+.tw-task-row { display: flex; gap: 0.45rem; align-items: center; padding: 0.35rem; border: 1px solid var(--border-subtle); border-radius: 0.7rem; background: var(--surface-1); }
+.tw-task-open { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(12rem, 1fr) auto auto; align-items: center; gap: 0.7rem; padding: 0.4rem; text-align: left; }
+.tw-member-row { justify-content: space-between; }
+.tw-member-row > span:first-child { display: grid; min-width: 0; }
+.tw-member-actions { margin-left: auto; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
+.tw-member-actions .tw-input { min-width: 6.25rem; }
+.tw-stable-id { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.tw-artifact-row .tw-td-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.tw-artifact-row { flex-wrap: wrap; }
+.tw-activity { flex-wrap: wrap; }
+.tw-workspace-stale { position: sticky; bottom: 0.5rem; margin: 0.75rem; padding: 0.55rem 0.75rem; border: 1px solid #d7a93b; border-radius: 0.6rem; background: #fff8df; color: #6d5314; font-size: 0.78rem; box-shadow: 0 4px 16px rgba(0,0,0,.08); }
+.tw-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; clip-path: inset(50%); }
+
+@media (max-width: 1199px) {
+  .tw-nav-toggle { display: inline-flex; position: absolute; z-index: 4; left: 0.75rem; top: 0.75rem; align-items: center; justify-content: center; border: 1px solid var(--border-subtle); border-radius: 0.7rem; background: var(--surface-1); color: var(--text-primary); }
+  .tw-appbar { padding-left: 3.75rem; }
+  .tw-nav { position: absolute; z-index: 30; inset: 0 auto 0 0; width: min(290px, 82vw); visibility: hidden; pointer-events: none; transform: translateX(-105%); transition: transform .2s ease, visibility .2s; box-shadow: 8px 0 24px rgba(0,0,0,.14); }
+  .tw-nav-drawer-open { visibility: visible; pointer-events: auto; transform: translateX(0); }
+  .tw-nav-mobile-head { display: flex; align-items: center; justify-content: space-between; padding: 0.1rem 0.25rem 0.6rem; color: var(--text-primary); font-size: .86rem; font-weight: 800; }
+  .tw-nav-backdrop { display: block; position: absolute; z-index: 20; inset: 0; border: 0; background: rgba(20, 24, 34, .35); }
+  .tw-content { padding: 1.25rem; }
+}
+
+@media (max-width: 767px) {
+  .tw-content { padding: 1rem; }
+  .tw-appbar { height: 54px; gap: .5rem; }
+  .tw-breadcrumb { max-width: 45%; }
+  .tw-screen { max-width: 100%; min-width: 0; }
+  .tw-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+  .tw-stat { padding: .75rem; }
+  .tw-stat-value { font-size: 1.45rem; }
+  .tw-addform, .tw-edit-grid { grid-template-columns: minmax(0, 1fr); }
+  .tw-addform label, .tw-edit-grid label { min-width: 0; }
+  .tw-input { max-width: 100%; }
+  .tw-engagement-card { align-items: flex-start; flex-wrap: wrap; }
+  .tw-engagement-main { flex: 1 1 calc(100% - 2rem); }
+  .tw-engagement-meta { width: 100%; margin-left: 1.9rem; justify-content: flex-start; }
+  .tw-task-row { align-items: flex-start; }
+  .tw-task-open { grid-template-columns: 1fr; gap: .3rem; }
+  .tw-artifact-row { align-items: center; }
+  .tw-empty-card { align-items: flex-start; }
+  .tw-btn, .tw-btn-ghost, .tw-nav-toggle { min-height: 44px; }
+}
+
 
 /* ── Tool preview cards (M4): record previews + confirm-first actions ── */
 .step-card {

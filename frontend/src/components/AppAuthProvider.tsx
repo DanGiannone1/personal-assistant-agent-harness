@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react";
 import { KeyRound, LogIn } from "lucide-react";
 
 import { AppUser, fetchMe, getAppToken, getStoredUser, login, logout } from "@/lib/appAuth";
@@ -20,6 +20,7 @@ interface AppAuthValue {
 }
 
 const AppAuthContext = createContext<AppAuthValue | null>(null);
+const subscribeHydration = () => () => undefined;
 
 export function useAppAuth(): AppAuthValue {
   const ctx = useContext(AppAuthContext);
@@ -32,27 +33,27 @@ export function useAppAuth(): AppAuthValue {
 // unauthenticated requests ever fire. Two paths resolve a user: the demo
 // token (X-Auth-Token) and, when Entra auth is enabled, the MSAL bearer.
 export default function AppAuthProvider({ children }: Readonly<{ children: React.ReactNode }>) {
-  const [user, setUser] = useState<AppUser | null>(null);
-  const [hydrated, setHydrated] = useState(false);
+  // The server snapshot deliberately remains false. A saved demo token is only
+  // read after hydration, so server and first client render agree.
+  const hydrated = useSyncExternalStore(subscribeHydration, () => true, () => false);
+  const [resolvedUser, setResolvedUser] = useState<AppUser | null>(null);
+  const [entraResolved, setEntraResolved] = useState(false);
+  const demoUser = hydrated && getAppToken() ? getStoredUser() : null;
+  const user = resolvedUser ?? demoUser;
+  const waitingForEntra = hydrated && isBrowserAuthEnabled() && !getAppToken() && !entraResolved;
 
   useEffect(() => {
-    // Demo path first: synchronous restore, identical to the pre-Entra behavior.
-    if (getAppToken()) {
-      setUser(getStoredUser());
-      setHydrated(true);
-    } else if (isBrowserAuthEnabled()) {
+    if (hydrated && isBrowserAuthEnabled() && !getAppToken()) {
       // Entra path: this also completes a pending MSAL redirect. If a signed-in
       // account exists, /auth/me resolves (auto-provisioning on first sight).
       fetchMe()
-        .then((me) => setUser(me))
-        .finally(() => setHydrated(true));
-    } else {
-      setHydrated(true);
+        .then((me) => setResolvedUser(me))
+        .finally(() => setEntraResolved(true));
     }
-    const onExpired = () => setUser(null);
+    const onExpired = () => setResolvedUser(null);
     window.addEventListener("app-auth-expired", onExpired);
     return () => window.removeEventListener("app-auth-expired", onExpired);
-  }, []);
+  }, [hydrated]);
 
   const signOut = useCallback(async () => {
     if (user?.identity === "entra") {
@@ -66,8 +67,8 @@ export default function AppAuthProvider({ children }: Readonly<{ children: React
     window.location.reload();
   }, [user]);
 
-  if (!hydrated) return null;
-  if (!user) return <SignIn onSignedIn={setUser} />;
+  if (!hydrated || waitingForEntra) return null;
+  if (!user) return <SignIn onSignedIn={setResolvedUser} />;
 
   return <AppAuthContext.Provider value={{ user, signOut }}>{children}</AppAuthContext.Provider>;
 }
