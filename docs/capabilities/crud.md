@@ -5,9 +5,13 @@
 > **State:** Target design, reconciled with integrated `master@1fcaac6`  
 > **Applies to:** Manual UI and agent actions over visible v1 personal and Engagement records  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
+
+The MVP applies this contract to basic Engagement creation, viewing, editing, membership, and
+sharing. Delete workflows, generic confirmation, broad personal-record CRUD, and advanced retry
+machinery are reference extensions unless an accepted MVP journey actually exposes them.
 
 CSA Workbench has one **change desk** behind both the application and the assistant. A person may submit a
 form or describe the same change in chat, but both paths use one versioned `workbench_core`
@@ -20,10 +24,8 @@ Only a `committed` outcome means the requested change landed. The UI then reload
 state and may follow the committed record's canonical destination. Assistant prose, tool arguments,
 an optimistic form value, or the word “yes” is never proof of a change.
 
-This is a product contract, not an enterprise workflow system. The first release has one small
-confirmation policy, one aggregate boundary per personal space or Engagement, three bounded ETag
-retries, and bounded idempotency receipts. It does not add standing approvals, bulk workflows,
-cross-Engagement mutation, an outbox, or a generic policy engine.
+This is a product contract, not an enterprise workflow system. The MVP does not add standing
+approvals, bulk workflows, cross-Engagement mutation, an outbox, or a generic policy engine.
 
 ## The jobs this contract makes dependable
 

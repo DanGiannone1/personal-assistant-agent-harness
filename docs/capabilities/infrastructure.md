@@ -1,25 +1,26 @@
 # Infrastructure Capability
 
 > **Authority:** Canonical capability detail subordinate to [CSA Workbench — Authoritative Product and System Design](../design.md)  
-> **State:** Target design, reconciled with integrated `master@1fcaac6`  
-> **Applies to:** Azure and local topology, workload boundaries, private data paths, deployment, cost, observability, and degraded infrastructure behavior  
+> **State:** Target MVP deployment profile with optional hardening called out separately
+>
+> **Applies to:** Azure and local topology, workload boundaries, deployment, cost, and degraded infrastructure behavior
+>
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
 
 CSA Workbench is a standalone workspace for solution architects, deployed as the smallest Azure system that
 proves professional agent-application boundaries. The browser, authenticated orchestrator, and agent
-runtime are separate workloads. Cosmos owns durable structured state, Blob owns durable bytes, and
-compute owns only caches and scratch. Every compute workload can reach zero replicas when idle and
-can recover because conversations, uploads, Engagement artifacts, and behavior receipts do not live
-only in a container.
+runtime are separate workloads. Cosmos owns durable product state, Blob owns retained Engagement
+artifact bytes, and compute owns only caches and scratch. Every compute workload uses a zero-minimum
+consumption profile so the demo has no intentional always-on compute floor.
 
-The baseline uses three Azure Container Apps consumption apps, Cosmos DB serverless, Blob Storage
-LRS, separate managed identities, private data-store endpoints, Azure OpenAI over
-identity-authenticated TLS, and Azure Monitor for operations. Search, Dynamic Sessions, ACA
+The baseline uses the smallest practical Azure Container Apps consumption profile, Cosmos DB
+serverless, Blob Storage LRS when artifacts are enabled, managed identity, Azure OpenAI over
+identity-authenticated TLS, and bounded telemetry. Search, Dynamic Sessions, ACA
 Sandboxes, external MCP, IDA adapters, schedulers, and enterprise edge services are not baseline
-dependencies. Azure OpenAI Private Link is an optional hardened profile, not a first-release gate.
+dependencies. Private endpoints are an optional tenant-policy or hardened profile, not an MVP gate.
 
 This document owns infrastructure contracts and evidence. Product behavior remains owned by the
 high-level design and sibling capability documents. Operational runbooks may describe the current
@@ -29,12 +30,12 @@ repository, but they do not redefine this target.
 
 The infrastructure has to make five product truths credible:
 
-1. A signed-in actor can reach CSA Workbench while its data stores remain off the public network.
+1. A signed-in actor can reach CSA Workbench while data access remains identity-authenticated and
+   application-authorized.
 2. A turn acts through an isolated application boundary, not by giving the browser or model direct
    access to data.
-3. Durable work survives cold starts, scale-in, revision replacement, and harness replacement.
-4. A user can retrieve a behavior receipt showing the context and tool outcomes for a turn.
-5. Demo-scale usage has consumption economics rather than an always-warm compute floor.
+3. Engagement work survives cold starts, scale-in, revision replacement, and harness replacement.
+4. Demo-scale usage has consumption economics rather than an always-warm compute floor.
 
 The deployment is a reference implementation of CSA Workbench, not a generic agent platform. IDA, M365,
 firm-knowledge, remote MCP, and other external adapters are excluded. A future adapter must enter
@@ -51,20 +52,20 @@ flowchart TB
     R[Session runtime\nACA consumption, internal, min 0, max 1] -->|Managed identity| AI[Azure OpenAI]
     O --> OC[workbench_core\norchestrator instance]
     R --> RC[workbench_core\nruntime instance]
-    OC -->|Managed identity and private endpoint| C[(Cosmos DB serverless\nrecords and receipts)]
-    OC -->|Managed identity and private endpoint| B[(Blob Storage LRS)]
-    RC -->|Managed identity and private endpoint| C
-    RC -->|Managed identity and private endpoint| B
+    OC -->|Managed identity| C[(Cosmos DB serverless\nproduct records)]
+    OC -->|Managed identity| B[(Blob Storage LRS)]
+    RC -->|Managed identity| C
+    RC -->|Managed identity| B
     O --> M[Application Insights]
     R --> M
     S[(Azure AI Search)] -. off in baseline .-> RC
 ```
 
-One VNet contains the Container Apps infrastructure subnet and a separate private-endpoint subnet.
-Cosmos and Blob use private endpoints and private DNS. The frontend and orchestrator are the only
-externally reachable application workloads; the runtime accepts only internal traffic and an
-orchestrator workload identity. No VPN, NAT Gateway, Front Door, APIM, or premium workload profile is
-required for the baseline.
+The frontend and orchestrator are the only externally reachable application workloads; the runtime
+accepts only internal traffic and an orchestrator workload identity. Cosmos and Blob use managed
+identity and disable shared-key application access. Private networking may be layered on when tenant
+policy requires it, without changing product contracts. No VPN, NAT Gateway, Front Door, APIM, or
+premium workload profile is required for the baseline.
 
 The orchestrator remains externally reachable because the current browser streams directly from it.
 A later same-origin backend-for-frontend may make the orchestrator internal, but that is a product
@@ -78,8 +79,8 @@ and threat-model decision, not required to prove the first release.
 | Orchestrator | Public trust boundary, user/session binding, application APIs, server-side context composition, turn coordination, SSE proxy, receipt persistence, and one local `workbench_core` instance | Cosmos and Blob through its local core; internal runtime; Azure Monitor |
 | Session runtime | Internal model/harness host, ephemeral workspace, rehydration, normalized AG-UI stream, bound product-tool adapter, and one local `workbench_core` instance | Cosmos and Blob through its local core; Azure OpenAI; Azure Monitor; Search only in a future approved profile |
 | `workbench_core` package | One versioned application/domain implementation embedded in both Python workloads; no ingress or separate deployment | Repository adapters under the host workload's identity |
-| Cosmos | Actors, personal state, Engagement aggregates, conversations, idempotency records, and behavior receipts | Private data plane; scoped managed identities only |
-| Blob | Private chat uploads, Personal Library bytes, and durable Engagement artifact bytes | Private data plane; scoped managed identities only |
+| Cosmos | Actors, personal state, and Engagement aggregates | Scoped managed identities; no application key path |
+| Blob | Durable Engagement artifact bytes when enabled | Scoped managed identities; no application key path |
 | Azure OpenAI | Model inference for the selected harness | Identity-authenticated TLS from the runtime; no API key |
 | Application Insights / Log Analytics | Operational traces, metrics, logs, dashboards, and alerts | Telemetry exporters; never the sole product receipt store |
 | Azure Container Registry | Immutable workload images | GitHub OIDC for build/publish; managed identity for pull |
@@ -191,8 +192,8 @@ production stores.
 | Concern | Local profile | Azure reference profile |
 |---|---|---|
 | Frontend, orchestrator, runtime | Three processes or Compose services | Three Container Apps consumption apps |
-| Structured data | Cosmos DB emulator | Cosmos DB serverless, private endpoint |
-| Durable bytes | Azurite using the Blob adapter | Blob Storage LRS, private endpoint |
+| Structured data | Cosmos DB emulator | Cosmos DB serverless with managed identity |
+| Durable bytes | Azurite using the Blob adapter | Blob Storage LRS with managed identity |
 | Model | Azure OpenAI with developer identity, or an explicitly selected deterministic stub | Azure OpenAI with runtime managed identity |
 | Search | Disabled | Disabled |
 | Conversion | Disabled by default; text formats remain usable | Optional Content Understanding profile |
@@ -215,8 +216,8 @@ Infrastructure enforces the boundaries detailed in [Identity and access](identit
 - The real-user path accepts only validated tokens from the configured Entra tenant and audience.
 - Synthetic demo identities are a separate realm, carry only synthetic data, and can be disabled by
   runtime configuration without rebuilding images.
-- Cosmos and Blob have public network access disabled, private DNS configured, and local/shared-key
-  authentication disabled.
+- Cosmos and Blob use managed identity and disable local/shared-key application authentication.
+  Private endpoints are optional when tenant policy or a later threat model requires them.
 - Azure OpenAI uses managed identity and TLS in the baseline. A model private endpoint is an optional
   hardened deployment profile, not a first-release product gate.
 - Workload-to-workload access is identity-based. Internal ingress is defense in depth, not the only
@@ -230,19 +231,19 @@ Infrastructure enforces the boundaries detailed in [Identity and access](identit
 - Health endpoints reveal availability only. Diagnostics and receipt APIs remain authenticated and
   actor-scoped.
 
-Private endpoints are created declaratively before public access is disabled or workloads are
-started. Blob containers are control-plane/IaC resources, not best-effort application startup side
-effects. Private DNS resolution and managed-identity data access are deployment acceptance checks.
+Blob containers and other required resources are created by deployment automation rather than
+best-effort application startup. Managed-identity data access is a deployment acceptance check.
 
 ## Cost boundary
 
-The demo target remains below approximately `$100/month` at representative usage, with idle compute
-consumption at zero. The architecture supports that target by excluding fixed-cost services that do
-not prove the product.
+The deployment records its resource/SKU inventory and projected cost before acceptance, with idle
+compute configured at zero. No numeric budget is invented in this design; the owner may set one from
+the actual Azure estimate. The architecture excludes fixed-cost services that do not prove the
+product.
 
 Expected baseline cost drivers are:
 
-- private endpoints and Azure Container Registry Basic as small fixed infrastructure costs;
+- Azure Container Registry and bounded telemetry as possible fixed infrastructure costs;
 - Cosmos serverless request units and storage;
 - Blob capacity, operations, and transfer;
 - Azure OpenAI tokens;

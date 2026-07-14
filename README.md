@@ -4,10 +4,9 @@ Run the engagement. Shape the solution. Keep the record.
 
 The agent-powered engagement workspace for solution architects.
 
-CSA Workbench gives solution architects one durable place to run customer engagements: shared status and its
-reason, tasks, people, conventions, activity, and artifacts. An embedded assistant can navigate and
-operate the same records the UI renders, so a claim cannot outrun the state that was actually read or
-changed.
+CSA Workbench gives solution architects a personal place to organize their work and a shared place
+to run customer engagements. An embedded assistant can navigate and operate the same records the UI
+renders, so a claim cannot outrun the state that was actually read or changed.
 
 The application is the product; chat is one control surface. The repository also serves as a
 reference implementation for modern agent-harness patterns—trusted context, replaceable runtimes,
@@ -28,15 +27,11 @@ linked from a work item or review record.
 
 ## Product shape
 
-- **Engagement portfolio** — triage Green/Yellow/Red work and understand why it needs attention.
-- **Shared Engagement workspace** — role-gated tasks, conventions, activity, and durable artifacts.
-- **Private workbench** — resumable conversations and uploads, explicitly unsaved generated drafts,
-  a small Personal Library for intentionally kept documents, and minimal user preferences.
+- **Personal CSA space** — see the Engagements that belong to the signed-in user.
+- **Shared Engagement workspace** — create, open, edit, and share role-gated Engagement records.
 - **Embedded assistant** — the same conversation in a dock or full artifact workbench.
-- **Truthful operations** — one backend path for manual and agent actions, structured outcomes, and
+- **Truthful operations** — shared rules for manual and agent actions, structured outcomes, and
   authoritative refresh.
-- **Legible behavior** — “What I used,” tool outcomes, and turn receipts without exposing hidden
-  reasoning.
 - **Responsive professional UX** — wide, compact, and narrow web layouts with WCAG 2.2 AA intent.
 
 ## Architecture at a glance
@@ -110,7 +105,7 @@ work, or drafting.
 |---|---|
 | [UI/UX](docs/capabilities/ui-ux.md) | Information architecture, interaction, responsive behavior, accessibility |
 | [Context](docs/capabilities/context.md) | Per-turn context, projections, precedence, and inspector |
-| [Navigation](docs/capabilities/navigation.md) | Destination catalog, deterministic resolution, and route effects |
+| [Navigation](docs/capabilities/navigation.md) | Typed navigation tools, destination validation, and route effects |
 | [CRUD](docs/capabilities/crud.md) | Commands, validation, outcomes, confirmation, idempotency, and concurrency |
 | [Documents and retrieval](docs/capabilities/documents-retrieval.md) | Uploads, drafts, artifacts, retrieval, and citations |
 | [Session and state](docs/capabilities/session-state.md) | Conversation durability, rehydration, and compute boundaries |

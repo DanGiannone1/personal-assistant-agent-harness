@@ -4,9 +4,13 @@
 > **State:** Target design, reconciled with integrated `master@1fcaac6`  
 > **Applies to:** Information architecture, interaction, responsive behavior, accessibility, and visual presentation  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
+
+The MVP release bar is the personal CSA space, basic shared Engagement workflow, assistant control
+surface, and responsive evidence. Document promotion, rich context inspection, and other surfaces
+described later are optional reference directions unless retained and proven in the release.
 
 CSA Workbench is the place a solution architect runs customer engagements. The Engagement portfolio is the
 default landing page; each Engagement has one shared home for status, tasks, people, conventions,

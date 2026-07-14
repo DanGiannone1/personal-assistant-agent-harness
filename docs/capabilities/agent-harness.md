@@ -4,7 +4,7 @@
 > **State:** Target design, reconciled with integrated `master@1fcaac6`  
 > **Applies to:** Harness selection, the `AgentSession` seam, prompt and skill composition, product-tool adaptation, AG-UI events, cancellation, and turn traces  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
 

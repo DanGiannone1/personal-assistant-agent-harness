@@ -4,25 +4,25 @@
 > **State:** Target design, reconciled with integrated `master@1fcaac6`  
 > **Applies to:** Behavioral evidence, test layers, agent-evaluation datasets, verification profiles, and acceptance reporting  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
 
 Testing answers one practical question: **did CSA Workbench do the right thing for the user, and can we prove
 it?** A passing command is useful, but it is not proof by itself. For behavior a person can use, the
-primary evidence is a real browser journey that reconciles three views of the same fact:
+primary evidence is a real browser journey that reconciles the relevant views of the same fact:
 
 1. **UI** — what the signed-in user actually saw and could do;
 2. **state** — what the authoritative application service stored; and
-3. **trace** — what context, tool or command outcome, and terminal result CSA Workbench recorded.
+3. **structured result** — what tool or command outcome and terminal event the application emitted.
 
 For example, an assistant sentence saying “I changed the Engagement to Red” passes only when the
 real UI shows Red with its required reason, authoritative state contains that atomic change, and the
-turn receipt records a committed result for the same actor, Engagement, and version. Persuasive prose
+structured result reports a committed change for the same actor and Engagement. Persuasive prose
 is never the oracle.
 
 CSA Workbench needs a deliberately small evidence system: fast deterministic tests, boundary integrations,
-real-frontend Playwright journeys, four compact agent-evaluation datasets, and a deployed profile
+real-frontend Playwright journeys, one focused agent-evaluation set, and a deployed profile
 when deployment behavior changes. It does not need a general evaluation platform, a permanent QA
 environment, or a production chaos and soak program.
 

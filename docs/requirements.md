@@ -1,195 +1,125 @@
-# CSA Workbench v1 Requirements and Acceptance Bar
+# CSA Workbench MVP Success Criteria
 
-> **Authority:** Canonical v1 product requirements and acceptance criteria  
-> **State:** Target release bar subordinate to [the authoritative design](design.md)  
-> **Baseline:** Reconciled with integrated `master@1fcaac6`; target behavior is not yet accepted  
-> **Last reviewed:** 2026-07-14
+> **Authority:** Canonical MVP release bar
+>
+> **State:** Target until proven by evidence from the release revision
+>
+> **Applies to:** Product acceptance and release completion
+>
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
-## What v1 must prove
+## What the MVP must prove
 
-CSA Workbench v1 is a small but complete solution-architect Engagement workspace. It must prove that several
-people can operate shared work through either the UI or an embedded assistant without losing track
-of identity, scope, durable state, or truth.
+CSA Workbench is successful when it is a working, professional engagement workspace for solution
+architects and a clear reference implementation of agent-harness architecture. The application,
+documentation, tests, and deployed environment must describe and prove the same behavior.
 
-This is a product acceptance bar, not a wish list and not an implementation design. The detailed
-architecture lives in [design.md](design.md) and its capability documents.
+Accuracy and simplicity take precedence. Cost and latency are minimized within that boundary.
 
-## Product requirements
+## Success criteria
 
-### Identity and scope
+### R1 — Cohesive, truthful documentation
 
-- **R1 — Real identity.** Internal users sign in through one Entra tenant. External and anonymous
-  users are not supported.
-- **R2 — Safe demo identity.** Seeded synthetic accounts support repeatable local and deployed
-  journeys, can be disabled by backend configuration, use secret-managed credentials, and cannot
-  access non-synthetic data.
-- **R3 — Two explicit scopes.** Personal work is private to one actor. Engagement work is visible
-  only to current members. The UI always makes the effective scope legible.
-- **R4 — Consistent authorization.** Owner/editor/viewer rules are identical through UI, REST, and
-  agent tools. Non-membership is indistinguishable from non-existence.
-- **R5 — Attributable work.** Every committed Engagement change records the signed-in actor, source
-  channel, request/turn correlation, changed resource, and safe summary.
+The documentation flows from the executive overview in the root README to the authoritative design
+and then to focused capability designs. It explains the working release in progressively deeper
+detail without competing authorities or unlabelled aspirational claims.
 
-### Engagement workspace
+### R2 — CSA Workbench deployment
 
-- **R6 — Engagement is primary.** The default landing is an Engagement portfolio. Any signed-in
-  actor may create an Engagement and becomes its first owner.
-- **R7 — Slim delivery record.** An Engagement exposes name, customer, description, optional target
-  date, members, status, tasks, conventions, artifacts, and bounded activity.
-- **R8 — Exact status contract.** Public wording is **Green / Yellow / Red**. Yellow or Red cannot be
-  committed without a non-empty reason through any surface. Setting Green clears the blocker reason.
-- **R9 — Fixed roles.** Viewers are read-only. Editors manage description, customer, target date,
-  status, tasks, conventions, and artifacts. Owners additionally manage the name and membership. The
-  final owner cannot be removed or demoted.
-- **R10 — Authoritative state.** Manual and agent changes use the same validation, authorization,
-  confirmation, concurrency, and outcome path. The UI reloads authoritative state after mutation.
-- **R11 — Explicit keeping and sharing.** Conversation uploads and generated drafts remain private
-  until the actor explicitly keeps one in their Personal Library or an editor/owner saves a distinct
-  copy as a durable Engagement artifact.
+The product is consistently branded **CSA Workbench** and can be deployed into a new, explicitly
+named Azure resource group. The deployed profile contains only resources needed by the MVP and has
+no accidental always-on cost.
 
-### Assistant behavior
+### R3 — Real and deterministic users
 
-- **R12 — Product, not chat wrapper.** Every core Engagement journey remains available through the
-  manual UI. Agent unavailability does not make the workspace unusable.
-- **R13 — Grounded facts.** Changing Engagement facts come from live, permissioned product tools at
-  answer time, never model memory or a stale prompt snapshot.
-- **R14 — Truthful outcomes.** `noop`, confirmation, ambiguity, invalid input, denial, conflict, and
-  failure cannot be narrated or painted as committed work.
-- **R15 — Deterministic navigation.** Direct destinations navigate immediately. Natural-language
-  navigation resolves against the actor's authorized destination catalog using deterministic
-  lexical/context ranking. Bound alternatives require no second model pass.
-- **R16 — Minimal context.** Each turn receives only authenticated identity, validated current view,
-  active Engagement and membership role, minimal persona, applicable conventions, account time zone,
-  and bounded authorized visit signals.
-- **R17 — Legible context.** The user can open “What I used” for a completed turn and see the exact
-  safe context snapshot, source reasons, omissions, and freshness that the runtime applied.
-- **R18 — Harness portability.** Deep Agents is the deployed primary harness. Copilot implements the
-  same v1 product/tool/event contract locally and remains a non-blocking portability check.
+Real people from the configured Entra tenant can sign in. Deterministic fake users exercise the
+same product and authorization rules in test mode. Test identity support is explicit and cannot be
+mistaken for tenant authentication.
 
-### Experience and accessibility
+### R4 — Personal and shared work
 
-- **R19 — Professional workspace.** The interface prioritizes Engagement state and next work over
-  assistant decoration. Dock and full workbench preserve one conversation and artifact selection.
-- **R20 — Responsive web.** Core journeys work without page-level horizontal scrolling at wide,
-  compact, and narrow web widths down to 390 CSS px. Narrow support does not imply a native or offline
-  mobile application.
-- **R21 — Accessible operation.** Core journeys meet WCAG 2.2 AA intent: complete keyboard access,
-  visible focus, correct dialog behavior, status beyond color, associated errors, live updates,
-  200% zoom/reflow, and reduced motion.
+Each CSA has a personal space showing their own work. Engagements are shared only with
+their members, and the effective actor and role are clear. One CSA cannot read or change another
+CSA's private or non-member data.
 
-### Durability, platform, and evidence
+### R5 — Basic Engagement workflow
 
-- **R22 — Compute-independent state.** Actors, Engagements, conversations, transcripts, context/turn
-  receipts, and metadata live in Cosmos; durable bytes live in Blob. Runtime memory and workspace are
-  replaceable cache/scratch.
-- **R23 — Conversation continuity.** A user can resume a conversation and its uploads after runtime
-  scale-in or replacement. Starting a new conversation never resets personal or Engagement data.
-- **R24 — Scale-to-zero profile.** Azure compute uses consumption Container Apps with zero minimum
-  replicas. Cold starts are acceptable; warm pools and preview sandboxes are not v1 dependencies.
-- **R25 — Essential service security.** Durable stores use private endpoints and managed identity
-  with public/shared-key access disabled. Azure OpenAI uses workload identity; a model private
-  endpoint is an optional hardened profile.
-- **R26 — Derived Search only.** Core product behavior works with Search off. Search cannot be enabled
-  until actor/realm/scope filtering, identity-based access, and cross-user isolation are proven.
-- **R27 — Retrievable behavior receipt.** Every agent turn stores run, harness/model revision,
-  applied context, safe tool arguments, structured outcomes, terminal state, and correlation IDs.
-- **R28 — Repeatable evidence.** Synthetic seed/reset supports back-to-back test runs with equivalent
-  starting state and no cross-user or cross-run leakage.
-- **R29 — Three-view oracle.** Acceptance reconciles the real frontend, authoritative state, and the
-  stored behavior receipt. Assistant wording alone is never proof.
-- **R30 — Degraded truth.** Optional-service loss is explicit and leaves unaffected manual behavior
-  usable. Unknown freshness or commit state is shown as unknown, never guessed.
+A CSA can create, list, open, and edit an Engagement; manage its membership; and share its durable
+record with another member. The manual UI and agent tools apply the same validation and
+authorization rules and read back authoritative state after changes.
 
-## Acceptance scenarios
+### R6 — Professional responsive experience
 
-Every scenario records its starting state, action, expected result, and authoritative observation.
-Exact assistant prose is not an oracle.
+The existing polished visual character is preserved. The core journey remains clear and usable on
+wide, compact, and 390 CSS-pixel narrow layouts, including loading, empty, validation, permission,
+and failure states. Important actions are keyboard reachable and status is not communicated by
+color alone.
 
-### S1 — Portfolio and shared status
+### R7 — Structured agent behavior
 
-Two actors sign in and see only their member Engagements. On a shared Engagement, an editor commits
-Yellow with a reason; another member reloads and sees the same status/reason, and their agent reports
-it from a live read. A non-member learns nothing about the Engagement.
+The assistant reads and changes product state through explicit, typed tools and returns structured
+outcomes. Navigation and other application control flow use validated structured events. No caller
+parses user text, assistant text, marker strings, or raw stream prose to infer an action, route, or
+successful commit.
 
-### S2 — Role matrix
+### R8 — Meaningful evidence
 
-The real UI exposes no mutation affordance to a viewer. Direct viewer REST and agent attempts are
-denied with no state or activity change. Editors and owners exercise every approved row; owner-only
-membership rules and the final-owner invariant hold during concurrent updates.
+Core journeys are proven with behavioral tests, a focused agent-evaluation set, and reviewed
+Playwright screenshots of the real frontend at representative widths. Evidence identifies the
+tested source revision and distinguishes local, synthetic-user, real-Entra, and deployed results.
 
-### S3 — Status guard and common service
+## Acceptance journeys
 
-UI, direct API, Deep Agents, and Copilot all reject Yellow/Red without a reason and preserve the old
-state. Equivalent valid changes produce the same structured status, state effect, and activity shape.
-Green clears the obsolete blocker reason.
+### S1 — Personal portfolio and collaboration
 
-### S4 — Honest actions and navigation
+Two different users sign in, see their own personal space, and see only Engagements where they are
+members. One user creates an Engagement, adds the other, and both observe the same shared state.
+An outsider cannot read it.
 
-Create/update, no-op, ambiguity, invalid input, confirmation, forbidden access, conflict, deliberate
-tool failure, cancellation, and lost-response retry are exercised. Only a committed or resolved
-structured destination moves the UI. Trace, reply, and refetched state agree.
+### S2 — Basic Engagement changes
 
-### S5 — Durable private and shared files
+An authorized member edits the Engagement through the UI and through an agent tool. Invalid or
+unauthorized changes are rejected without changing authoritative state. Successful changes become
+visible after authoritative refresh.
 
-A chat upload and transcript survive runtime replacement and resume privately. An explicitly kept
-document remains in that actor's Personal Library. A generated draft is not visible to Engagement
-members before explicit promotion. After an editor saves it, another member can list and open the
-authenticated durable artifact; a viewer cannot upload or remove it.
+### S3 — Structured agent control
 
-### S6 — Context integrity
+The assistant opens an Engagement and performs one supported change through typed tools and
+structured results. Test inputs containing route names, tool names, marker-like strings, and
+success-like prose cannot trigger navigation or a false success without the corresponding
+structured event and committed outcome.
 
-The stored `CONTEXT_APPLIED` snapshot matches “What I used” and the trace. A forged or inaccessible
-route contributes no name, convention, candidate, or permission. Revocation after composition still
-blocks the tool. Changing facts are read live.
+### S4 — Responsive UI/UX
 
-### S7 — Responsive and accessible journeys
+The personal-space and Engagement journeys complete at wide, compact, and 390 CSS-pixel narrow
+widths without page-level horizontal scrolling, clipped critical controls, or unusable navigation.
+Reviewed screenshots capture the important states.
 
-At representative wide, compact, and 390 px narrow viewports, a user can sign in, triage, open an
-Engagement, change status, use the assistant, inspect context, confirm/cancel, and work with an
-artifact without clipped controls or page-level horizontal scrolling. Automated accessibility
-checks and manual keyboard/dialog/zoom/reduced-motion checks meet the documented bar.
+### S5 — Clean Azure deployment
 
-### S8 — Harness and event contract
+The release revision deploys into the new CSA Workbench resource group. Real Entra sign-in and the
+core Engagement journey work there. The resource inventory and configuration show the intended
+scale-to-zero and low-cost profile, and observed latency is recorded rather than hidden.
 
-Deep Agents passes the complete release profile. Copilot passes the core contract locally. Both
-expose the same approved tool schemas and structured outcomes, keep context separate from user text,
-emit valid normalized event ordering with exactly one terminal event, and expose no shell, code,
-filesystem escape, or subagent capability.
+## Evidence map
 
-### S9 — Session and identity isolation
-
-Switching actors clears the prior actor's browser/session state. Another actor cannot read, chat,
-upload, trace, delete, or resume using a known foreign session ID. Session ownership remains bound
-after cold start and all credential ambiguity fails closed.
-
-### S10 — Azure reference profile
-
-When deployment behavior changes, the Azure profile proves Entra/demo sign-in, private Cosmos/Blob
-access through managed identity, no production shared keys, conversation/artifact rehydration after
-scale-in, retrievable receipts, immutable deployed revision identity, and successful cold start from
-zero replicas. Cost/billing observation is periodic architecture evidence, not a 24-hour gate on
-unrelated product changes.
-
-## Verification profiles
-
-Use the smallest profile that covers the changed behavior; widening evidence without a risk reason is
-not quality.
-
-| Profile | Required evidence | When it applies |
+| Criterion | Detailed authority | Minimum acceptance evidence |
 |---|---|---|
-| Documentation | Links, terminology, authority, current/target labels, diff scope | Documentation-only changes |
-| Core product | Deterministic tests, relevant integration contracts, real-UI journeys, state/trace reconciliation | Product/domain/UI changes |
-| Harness | Core product plus both adapters, event/cancel/failure cases, small eval set | Prompt, skill, tool, harness, or orchestration changes |
-| Deployment | Deep Agents deployed journeys plus identity, private stores, durability, trace, scale-to-zero smoke | Infrastructure/deployment or runtime-boundary changes |
+| R1 | [Authoritative design](design.md) | Link/authority/terminology audit against the release revision |
+| R2 | [Infrastructure](capabilities/infrastructure.md) | Clean deployment record, resource inventory, branding scan |
+| R3–R4 | [Identity and access](capabilities/identity-access.md) | Fake-user journey, real-Entra smoke, isolation probes |
+| R5 | [CRUD](capabilities/crud.md) | UI/API/tool behavior reconciled with authoritative state |
+| R6 | [UI/UX](capabilities/ui-ux.md) | Multi-width Playwright journey and reviewed screenshots |
+| R7 | [Agent harness](capabilities/agent-harness.md) and [navigation](capabilities/navigation.md) | Typed contract tests and adversarial no-text-parsing cases |
+| R8 | [Testing and evals](capabilities/testing-evals.md) | Criterion-level test, eval, screenshot, and deployment record |
 
-Runtime claims remain **UNVERIFIED** until supported by current captured evidence. Historical review
-artifacts and static code inspection are useful inputs but do not accept the current build.
+## MVP boundary
 
-## Non-goals for v1
+The MVP does not require broad project-management modules, enterprise search, generalized
+connectors, multi-agent orchestration, native mobile or offline support, high-scale topology,
+multi-region recovery, or other production-hardening programs. A capability document may explain a
+future reference pattern, but it cannot make that pattern an MVP requirement unless this file is
+explicitly changed.
 
-Stage/milestone/risk/action modules; Engagement calendar and reminder scheduler; standing approvals;
-free-form durable memory; external identities; fine-grained policy; generalized connectors or
-semantic layer; cross-Engagement search by default; generic workflows; agent code execution;
-multi-agent orchestration; native/offline mobile; horizontal runtime scale; SLA, multi-region, DR,
-enterprise security operations, and other production-hardening programs outside the essential trust
-and durability boundaries above.
+Completion is not inferred from code, prose, or a green build. Every criterion remains unverified
+until the final release revision has the evidence named above.

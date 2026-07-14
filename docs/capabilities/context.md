@@ -1,13 +1,18 @@
 # Context — Canonical Capability Design
 
 > **Authority:** Canonical detailed design for trusted per-turn context and personalization  
-> **State:** Target design, reconciled with integrated `master@1fcaac6`  
+> **State:** Reference direction; the MVP requires trusted actor/scope binding but not the full inspector and receipt design
+>
 > **Applies to:** Context composition, projections, precedence, grounding, and the context inspector  
 > **Parent:** [CSA Workbench authoritative product and system design](../design.md)  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
+
+For the MVP, trusted actor and current Engagement scope must stay separate from the user's chat
+text, and tools must reread live facts and permissions. Persisted context events and a “What I used”
+inspector are useful reference patterns but are not release requirements.
 
 Context is the small amount of trusted information CSA Workbench prepares for one assistant turn so the user
 does not have to repeat who they are, where they are working, or how they prefer to communicate.

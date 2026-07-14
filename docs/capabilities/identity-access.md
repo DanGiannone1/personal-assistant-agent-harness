@@ -4,7 +4,7 @@
 > **State:** Target design, reconciled with integrated `master@1fcaac6`  
 > **Applies to:** Actors, sign-in, realms, session ownership, authorization policy and role matrix, privacy, audit attribution, and service identity  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
 
@@ -392,9 +392,10 @@ orchestrator-to-session access. Each workload receives only the resource roles n
 responsibility. End-user Entra tokens are validated at the public boundary and are not forwarded to
 the model, Cosmos, Blob, or Search as general service credentials.
 
-Cosmos and Blob remain behind private endpoints with public network access disabled. No production
-configuration uses Cosmos keys, Blob keys, SAS links, a shared API key, or the legacy external MCP
-key. Local emulators may use local credentials because they contain only synthetic developer data.
+Cosmos and Blob use workload managed identity, and the application has no production Cosmos-key,
+Blob-key, SAS-bypass, shared-API-key, or legacy external-MCP-key path. Private endpoints may be added
+when tenant policy requires them; they are not an MVP product gate. Local emulators may use local
+credentials because they contain only synthetic developer data.
 
 Search remains off until it supports managed identity, the required private/network posture, and
 the actor/Engagement filters above. Infrastructure RBAC limits what CSA Workbench's service principal can

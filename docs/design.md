@@ -4,7 +4,7 @@
 > **State:** Target design, reconciled with integrated `master@1fcaac6`  
 > **Applies to:** Product scope, system boundaries, capability ownership, and architectural direction  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
 
@@ -53,45 +53,34 @@ CSA Workbench has three product roles inside an Engagement:
 Any signed-in user may create an Engagement and becomes its first owner. Personal work remains
 private to the signed-in user; Engagement work is shared only with current members.
 
-The priority journeys are:
+The MVP priority journeys are:
 
-1. **Triage the portfolio.** See Green/Yellow/Red status, the reason for concern, and overdue or next
-   work; open the right Engagement without hunting.
-2. **Run an Engagement.** Maintain status, tasks, conventions, artifacts, and membership through the
-   UI or assistant with the same rules and outcomes.
-3. **Prepare a deliverable.** Use private chat uploads and generated drafts, then explicitly save a
-   reviewed result to the Engagement when it should become shared and durable.
-4. **Navigate and act from anywhere.** Use direct UI navigation immediately or natural language
-   against an authorized destination catalog; never move the UI after a failed or ambiguous action.
-5. **Verify the assistant.** Inspect the context and tool outcomes used for a turn and reconcile them
-   with current application state.
+1. **Work in a personal space.** See the Engagements that belong to the signed-in CSA.
+2. **Collaborate on an Engagement.** Create, open, edit, and share an Engagement with another member.
+3. **Use the assistant safely.** Read, change, and navigate product state through typed tools and
+   structured outcomes rather than chat-text conventions.
+4. **Trust what the product shows.** Refresh authoritative state after changes and keep failures or
+   denied actions visibly distinct from success.
 
 ## Product boundary
 
 ### In the first professional release
 
-- An Engagement portfolio and Engagement detail workspace.
-- Name, customer, description, optional target date, Green/Yellow/Red status, and a required reason
-  for Yellow or Red.
-- Owner/editor/viewer membership.
-- Engagement tasks, working conventions, artifacts, and a bounded activity feed.
-- A private user workbench for conversations, uploads, drafts, a small Personal Library for
-  explicitly kept documents, and minimal preferences.
-- Embedded and full-workbench assistant surfaces with the same conversation.
-- Deterministic navigation, permissioned CRUD, explicit confirmations, grounded reads, and
-  structured outcomes.
-- Durable conversations, uploads, Engagement artifacts, and behavior receipts independent of
-  agent compute.
-- Entra sign-in plus disable-able synthetic demo identities.
-- Responsive web behavior, accessibility, repeatable tests, and a small agent-evaluation set.
+- A personal CSA space, Engagement portfolio, and Engagement detail workspace.
+- Basic Engagement creation, viewing, editing, membership, and sharing.
+- Manual and agent paths that enforce the same authorization, validation, and outcome rules.
+- Entra sign-in plus deterministic synthetic users for testing.
+- Typed tools and structured navigation/outcomes with no chat-text control protocol.
+- Responsive professional web behavior backed by tests, evals, and Playwright screenshots.
+- A reproducible, low-cost deployment in a newly named CSA Workbench resource group.
 
 ### Deliberately not in the first release
 
 - Stage pipelines, milestones, risk registers, action registers, Engagement calendars, approvals,
   free-form agent memory, schedulers, or workflow engines.
 - External tenants, guests, group policy, fine-grained permissions, or customer identity federation.
-- General M365 or firm-knowledge connectors, a semantic enterprise layer, or cross-Engagement
-  retrieval by default.
+- Personal document libraries, drafting/promotion workflows, general M365 or firm-knowledge
+  connectors, a semantic enterprise layer, or cross-Engagement retrieval by default.
 - A public/shared-key MCP endpoint, IDA-specific implementation, or a generic agent platform.
 - Shell, arbitrary code execution, autonomous subagents, or multi-agent workflow features.
 - Search as a required dependency. Scoped semantic retrieval may be enabled only after its
@@ -109,12 +98,12 @@ The priority journeys are:
 3. **The product works without AI.** The UI and application APIs remain complete manual paths.
 4. **One rule, every caller.** Manual REST operations and agent tools use the same versioned
    application-core package for authorization, validation, mutation, and outcomes.
-5. **Deterministic where possible.** Use rules for authorization, validation, destination resolution,
-   concurrency, and routing; use the model for interpretation, drafting, and judgment.
+5. **Structured at the boundary.** The model may interpret an instruction, but application control
+   happens only through typed tools, validated identifiers, and structured outcomes.
 6. **Context is small and legible.** Compose trusted context once per turn, expose only safe
    projections, and read changing facts through live tools.
-7. **Durability is explicit.** Cosmos owns structured records, Blob owns durable bytes, and compute
-   owns only caches and scratch. Sharing a private draft is an explicit promotion.
+7. **Durability is explicit.** Cosmos owns durable product records, Blob owns durable Engagement
+   bytes, and compute owns only caches and scratch.
 8. **Frameworks are replaceable.** Harnesses adapt to product contracts; they do not own product
    rules or durable state.
 9. **Failure stays visible.** Ambiguity, denial, no-op, conflict, degraded state, and unknown commit
@@ -128,11 +117,8 @@ The domain has two scopes and three kinds of bytes/state:
 
 | Scope or state | Owner | System of record | Visibility |
 |---|---|---|---|
-| Personal profile and workbench | Actor | Cosmos | That actor only |
+| Personal profile and portfolio | Actor | Cosmos | That actor only |
 | Engagement record | Engagement | Cosmos, one aggregate/partition | Current members, role-gated |
-| Conversation and turn receipts | Actor; optionally tagged to an Engagement | Cosmos | That actor only in v1 |
-| Chat uploads | Conversation | Blob plus Cosmos metadata | That actor only |
-| Personal Library documents | Actor | Blob plus Cosmos metadata | That actor only |
 | Engagement artifacts | Engagement | Blob plus Engagement metadata | Current members |
 | Search index | Derived from an authorized durable source | Optional Search index | Never broader than source scope |
 | Runtime memory and workspace | Session runtime | None | Ephemeral cache/scratch |
@@ -156,10 +142,9 @@ Yellow and Red require a non-empty `statusWhy`. Setting Green clears the blocker
 warning text cannot survive a recovery. Stable IDs are authoritative; names may be duplicated and
 therefore can be ambiguous.
 
-Conversations remain private even when associated with an Engagement. Chat uploads are durable
-private conversation files; generated drafts remain labelled scratch until the actor chooses
-**Keep in Personal Library** or an owner/editor chooses **Save to Engagement**. The latter action
-creates a distinct durable shared artifact and records attribution. Nothing is shared automatically.
+Conversations remain private even when associated with an Engagement. Engagement records and
+artifacts become visible only through explicit membership; nothing in a personal session is shared
+automatically.
 
 ## Reference architecture
 
@@ -211,12 +196,11 @@ confirmation, idempotency, optimistic concurrency, activity, and structured outc
 orchestrator imports one instance for manual REST calls; the runtime's bound product-tool adapter
 imports another instance. There is no application-service network hop between them.
 
-Both workloads deploy the same Git revision and application-contract version. Startup/session
-handshake fails on a version mismatch, and the version is stored on every turn receipt. The two
-instances share correctness through Cosmos ETags and same-aggregate idempotency receipts rather than
-process memory. Each receives trusted actor/session context from its own adapter, reauthorizes live
-state, and uses its workload's scoped managed identity for repositories. Caller-specific policy
-branches are prohibited; parity tests execute the same commands through both adapters.
+Both workloads deploy the same Git revision and application contract. The two instances share
+correctness through the durable store rather than process memory. Each receives trusted actor and
+session context from its own adapter, reauthorizes live state, and uses its workload's scoped managed
+identity for repositories. Caller-specific policy branches are prohibited; parity tests execute the
+same commands through both adapters.
 
 REST handlers and model-visible tools remain thin adapters. MCP may be used within the runtime as a
 session-bound protocol adapter around the local core instance, but it is never the domain layer and
@@ -224,11 +208,11 @@ never carries model-supplied identity.
 
 ### Data and optional services
 
-Cosmos stores actors, personal state, Engagement aggregates, conversations, and behavior receipts.
-Blob stores chat uploads, Personal Library documents, and durable Engagement artifact bytes. Search
-is a permission-filtered, rebuildable projection and is off in the baseline until identical
-filenames and multiple users are provably isolated. Azure Monitor supports operations; it does not
-replace the user-retrievable turn receipt.
+Cosmos stores actors, personal state, and Engagement aggregates. Blob stores durable Engagement
+artifact bytes when that existing capability is retained. Search remains off for the MVP.
+Additional conversation, private-document, or behavior-receipt patterns may be documented for
+reference, but they are not release requirements unless [requirements.md](requirements.md) adds
+them.
 
 ## Trust and authorization boundaries
 
@@ -265,20 +249,19 @@ A trustworthy agent turn follows one sequence:
 
 1. Authenticate the actor and verify the owned conversation/session.
 2. Validate the UI destination hint against that actor's destination catalog.
-3. Compose an immutable, minimal `TurnContext`; persist and emit `CONTEXT_APPLIED`.
+3. Compose the minimal trusted context required by the supported tools.
 4. Invoke the primary harness with user text kept distinct from trusted context.
 5. Bind actor/session/context outside model-visible tool arguments.
 6. Execute a narrow tool through the runtime's instance of the shared application core.
 7. Return a structured result such as `committed`, `noop`, `needs_confirmation`, `ambiguous`,
    `invalid`, `not_found`, `forbidden`, `conflict`, or `failed`.
-8. Persist the tool outcome and exactly one terminal run state.
+8. Emit exactly one structured terminal run state.
 9. Refetch authoritative application state. Follow a canonical destination only after a committed or
    resolved result and only if a newer user navigation has not superseded it.
 
-Destructive operations and membership changes use a backend-issued, actor-bound confirmation ID.
-The confirmation button calls the backend directly; sending the word “yes” through another model
-pass is not approval. Retries reuse a bounded idempotency receipt so a lost response cannot create a
-second record.
+Destructive operations are not required for the MVP. Any destructive operation added later requires
+a backend-bound confirmation contract; sending prose such as “yes” through another model pass is
+not approval.
 
 ## Context and navigation
 
@@ -287,19 +270,17 @@ The MVP context contains only:
 - actor display identity;
 - validated current destination and active Engagement;
 - current membership role;
-- minimal persona: job role, tone, language, and time zone;
-- active Engagement conventions; and
-- bounded, authorized recent visits used for ranking.
+- minimal user preferences needed by the supported experience; and
+- active Engagement conventions when the product supports them.
 
 Mutable Engagement facts, documents, member lists, credentials, approvals, memories, and connector
 signals are not prompt context. Tools read live facts. Style precedence is `turn instruction >
 Engagement convention > persona > app default`.
 
-Known UI navigation is immediate. Natural-language navigation resolves against one permission-
-trimmed destination catalog with deterministic lexical/context ranking. Context can rank relevant
-candidates but cannot make an irrelevant or unauthorized route valid. Bound alternate chips navigate
-directly with no second model pass. A sticky Engagement may restore or rank navigation, but it never
-silently scopes a shared write from a neutral screen.
+Known UI navigation is immediate. In chat, the model requests navigation through a typed tool whose
+destination and entity identifiers are checked against the actor's authorized catalog. Neither the
+frontend nor backend infers a route by scanning user text, assistant prose, marker strings, or raw
+stream output. Manual search may rank a typed search-box query, but it is not a chat control channel.
 
 ## UI/UX contract
 
@@ -312,10 +293,8 @@ CSA Workbench should feel like a calm professional workspace, not a chat demo.
   Chat/Artifact switching. Native mobile and offline behavior remain out of scope.
 - The dock and full workbench preserve the same conversation, pending confirmations, selected
   artifact, input, and scroll state.
-- Tool progress uses plain outcome language. Unknown or missing results remain neutral; errors,
-  confirmations, and ambiguity stay visible.
-- “What I used” renders the stored `CONTEXT_APPLIED` snapshot, not a browser reconstruction and not
-  hidden chain-of-thought.
+- Tool progress uses plain outcome language. Unknown or missing results remain neutral; errors and
+  denied actions stay visible.
 - Target accessibility is WCAG 2.2 AA, including keyboard operation, dialog focus, non-color status,
   live announcements, 200% zoom/reflow, and reduced motion.
 
@@ -325,18 +304,18 @@ The reference Azure profile keeps professional boundaries without turning the sh
 production-hardening program:
 
 - one region and one Azure Container Apps consumption environment;
-- frontend, orchestrator, and internal session runtime as scale-to-zero apps;
+- frontend, orchestrator, and internal session runtime using the smallest supported scale-to-zero
+  profile that preserves correct behavior;
 - at most one orchestrator and one session-runtime replica until durable ownership and concurrency
   no longer depend on process memory;
-- Cosmos serverless and Blob LRS behind private endpoints with local/shared-key auth disabled;
+- Cosmos serverless and Blob LRS with managed identity and shared-key application paths disabled;
 - managed identity for Cosmos, Blob, Azure OpenAI, image pull, and workload-to-workload access;
 - Azure OpenAI over identity-authenticated TLS in the baseline; a private endpoint is an optional
   hardened profile rather than a v1 product gate;
 - Search, Dynamic Sessions warm pools, ACA Sandboxes preview, external MCP, schedulers, Front Door,
   APIM, VPN, and NAT Gateway excluded from the baseline;
-- Application Insights for operations plus Cosmos behavior receipts for product evidence;
-- GitHub OIDC, immutable SHA image tags, Bicep as the desired declarative source, and a thin deploy
-  wrapper.
+- bounded platform telemetry; and
+- immutable revision identification plus a repeatable deployment command.
 
 Scale-to-zero cold starts are an accepted tradeoff. Conversations and uploads must rehydrate from
 Cosmos and Blob before scale-in can be called safe. Preview sandboxes may be investigated later for
@@ -344,18 +323,17 @@ faster resume or stronger isolation, but they are not a state store or v1 depend
 
 ## Evidence and quality bar
 
-Verification reconciles three observations: what the real UI shows, what authoritative state stores,
-and what the turn receipt records. A model-written sentence is not an oracle.
+Verification reconciles what the real UI shows, what authoritative state stores, and what structured
+tool/event results report. A model-written sentence is not an oracle.
 
 The lean evidence stack is:
 
-1. deterministic domain and contract tests for validation, roles, outcomes, event framing, and
-   concurrency;
+1. deterministic domain and contract tests for validation, roles, outcomes, and event framing;
 2. adapter/integration tests showing manual REST and both harness tool paths use the same rules;
 3. Playwright journeys through the real responsive frontend with repeatable synthetic data;
 4. a small deterministic agent-evaluation dataset for grounding, honesty, ambiguity, and recovery;
-5. a deployed Deep Agents smoke/profile for identity, private stores, durability, trace retrieval,
-   and scale-to-zero—run when deployment behavior changes, not as ceremony for every docs edit.
+5. a deployed Deep Agents smoke/profile for identity, collaboration, structured agent behavior, and
+   scale-to-zero—run when deployment behavior changes, not as ceremony for every docs edit.
 
 Copilot must satisfy the core behavioral contract locally, but it does not block a release. Exact
 assistant wording, token timing, and raw SDK event equality are not parity criteria.
@@ -393,7 +371,8 @@ dock/workbench, and scale-to-zero deployment work. Static inspection also found 
   stored turn event;
 - REST and two harness files duplicate authorization, validation, mutation, and route behavior;
 - structured outcomes are reduced to marker text and a small `ok/noop/error` UI vocabulary;
-- conversations, chat uploads, and turn receipts are not yet durable independently of compute;
+- conversations, chat uploads, and reference turn receipts are not durable independently of compute;
+  those optional patterns must not be presented as implemented MVP behavior;
 - Search is global rather than actor/Engagement filtered and must remain off;
 - session ownership and tool identity still depend partly on process-local or caller-supplied state;
 - responsive Engagement UX, trace retrieval, and the default Azure deployment are not currently
@@ -407,12 +386,11 @@ baseline remains **UNVERIFIED** unless separately captured by current behavioral
 The implementation sequence should follow dependency order:
 
 1. shared application-core package and structured outcomes;
-2. actor/session binding plus server-side context and behavior receipts;
-3. durable conversations/uploads and compute rehydration;
-4. responsive UI/UX wired to structured outcomes;
-5. shared harness/tool adapters and parity evidence;
-6. declarative Azure baseline and deployed verification; then
-7. optional scoped retrieval or reference adapters only when evidence justifies them.
+2. actor/session binding and multi-user Engagement rules;
+3. structured harness tools, events, and navigation;
+4. responsive UI/UX wired to authoritative state;
+5. behavioral tests, evals, and Playwright screenshots; then
+6. the low-cost Azure baseline and deployed verification.
 
 ## Relationship to IDA
 

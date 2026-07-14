@@ -2,14 +2,22 @@
 
 > **Authority:** Canonical subordinate design for uploads, drafts, artifacts, document reads,
 > retrieval, and citations  
-> **State:** Target design, reconciled with integrated `master@1fcaac6`  
+> **State:** Reference direction; not part of the MVP release bar except where an existing Engagement artifact surface is retained
+>
 > **Parent:** [Authoritative Product and System Design](../design.md)  
 > **Applies to:** Private conversation files, Personal Library documents, Engagement artifacts,
 > conversion, optional Search, artifact-canvas behavior, and document-grounded assistant answers  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
+
+The MVP does not require Personal Library, draft promotion, document conversion, semantic Search,
+or retrieval. Those patterns remain here as reference material rather than implied release scope.
+If the existing Engagement artifact surface remains in the MVP, it must still enforce current
+membership and role rules and must never expose private bytes by inference.
+
+The remainder of this document describes the optional direction for a later document capability.
 
 Think of CSA Workbench as having a desk, a bookshelf, and a filing cabinet:
 

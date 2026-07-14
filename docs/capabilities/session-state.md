@@ -1,12 +1,17 @@
 # Session and State Capability
 
 > **Authority:** Canonical capability detail subordinate to [CSA Workbench — Authoritative Product and System Design](../design.md)  
-> **State:** Target design, reconciled with integrated `master@1fcaac6`  
+> **State:** Reference direction; the MVP requires correct actor/session isolation but does not require the full durable-conversation design
+>
 > **Applies to:** Conversation ownership, durable state, rehydration, runtime coordination, and compute lifecycle  
 > **Last reviewed:** 2026-07-14  
-> **Issue:** [#15](https://github.com/DanGiannone1/personal-assistant-agent-harness/issues/15)
+> **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## The short version
+
+The MVP release bar requires that one CSA cannot use another CSA's session and that scale-to-zero
+does not lose Engagement data. Full transcript rehydration, durable private chat uploads, turn
+receipts, and draft promotion are documented below as reference patterns, not as implied MVP scope.
 
 CSA Workbench separates the place where work is kept from the compute that temporarily helps with it:
 
