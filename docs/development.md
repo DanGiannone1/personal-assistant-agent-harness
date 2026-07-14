@@ -1,120 +1,93 @@
-# Local Development
+# Local development
 
-## Prerequisites
+This is the runbook for the **current checkout**, not a promise that it meets the
+[target design](design.md). Local runtime behavior is **UNVERIFIED** until you run
+the relevant journey and record its UI, state, and trace evidence. The target local
+topology and evidence bar live in [Infrastructure](capabilities/infrastructure.md)
+and [Testing and evals](capabilities/testing-evals.md).
 
-- **Python 3.12+** with [`uv`](https://docs.astral.sh/uv/)
-- **Node 20+** with `npm` (Next.js 16 requires Node ≥ 20.9)
-- **Azure CLI** signed in (`az login`) — app state lives in Cosmos DB (AAD-only) and the agent
-  calls Azure OpenAI; both authenticate via `DefaultAzureCredential` locally
-- **AAD data-plane roles on your signed-in principal** — `az login` alone is not enough. Without
-  these you'll boot but get `403 Forbidden` on the first request:
-  - **Cosmos DB Built-in Data Contributor** on the Cosmos account (required — app state)
-  - **Cognitive Services User** on the Azure OpenAI/Foundry resource (the agent)
-  - For optional RAG: today the Library uses the Search **admin key** (`AZURE_SEARCH_KEY`); a
-    managed-identity path is a known follow-up (see [deployment.md](deployment.md))
-  - Also ensure the Cosmos account's **network firewall allows your IP** (`publicNetworkAccess`
-    enabled, or your IP in the allow-list) — a blocked IP surfaces as the same `403`
-- A `.env` file at the repo root (`cp .env.example .env`)
+## Before you start
 
-The repo is **two independent `uv` projects**: the root (orchestrator) and `session-container/`,
-each with its own `pyproject.toml` + `uv.lock`. Add orchestrator deps with `uv add` from the root;
-add agent deps with `uv add` from `session-container/`.
+Install Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 20.9+ with npm, and
+Docker only if you will supply a Cosmos emulator. You also need an Azure OpenAI
+endpoint and deployment.
 
-## Setup
+The current application requires Cosmos for app state; it fails rather than falling
+back to a file. A laptop should use a Cosmos emulator and its emulator key
+(`COSMOS_KEY`), not a private Azure Cosmos account. **Gap:** this repository does
+not currently start or configure a Cosmos emulator (the checked-in Compose file
+starts only the three application services). Obtain and configure that emulator
+separately before expecting the stack to start. Do not infer local/Azure parity from
+the code or this page.
 
-```bash
-cp .env.example .env          # fill in Azure OpenAI + Cosmos (+ optional Search/ADLS) values
-az login                      # Cosmos + Azure OpenAI auth
-uv sync                       # root (orchestrator) deps
-cd session-container && uv sync && cd ..   # agent deps
-cd frontend && npm install && cd ..        # frontend deps
-```
-
-## Run the stack
+## Configure and start
 
 ```bash
-uv run dev.py                 # starts all three services
+cp .env.example .env
+az login
+uv sync
+(cd session-container && uv sync)
+(cd frontend && npm install)
+uv run dev.py
 ```
 
-| Service | Port | Command (run by `dev.py`) |
-|---|---|---|
-| Frontend (Next.js) | 3000 | `npm run dev` |
-| Orchestrator (FastAPI) | 8000 | `uv run uvicorn app:app` |
-| Session container (FastAPI) | 8080 | `uv run uvicorn server:app` |
+Set `AZURE_ENDPOINT`, `AZURE_DEPLOYMENT`, `COSMOS_ENDPOINT`, and the appropriate
+Cosmos settings in `.env` first. `az login` supplies the developer identity used by
+Azure OpenAI and any AAD-authenticated service. `dev.py` requires `.env`, points the orchestrator
+to the local runtime, clears `workspace/` and local traces, then starts:
 
-Open <http://localhost:3000>.
-
-`dev.py` owns all three child processes and sets the environment they need (`WORKSPACE`,
-`POOL_MANAGEMENT_ENDPOINT=http://localhost:8080`, the `LOG_*` trace vars) and loads `.env`.
-(`POOL_MANAGEMENT_ENDPOINT` points the orchestrator at the single local session container as if it
-were the production ACA session pool.) To restart, stop `dev.py` and relaunch it — don't run the
-services by hand without those vars, or uploads and tracing will misbehave.
-
-### Selecting the agent harness
-
-The session container runs either harness, chosen at launch by `AGENT_BACKEND` (default `copilot`):
-
-```bash
-uv run dev.py                          # GitHub Copilot SDK (default)
-AGENT_BACKEND=deepagents uv run dev.py  # LangGraph Deep Agents
-```
-
-See [harnesses.md](harnesses.md). The startup log prints `Agent backend: <name>` so the active
-harness is unambiguous.
-
-## Configuration
-
-**Minimum to boot:** `AZURE_ENDPOINT`, `AZURE_DEPLOYMENT`, and the `COSMOS_*` vars — app state is
-required and fails loud if Cosmos is unreachable. Search and ADLS are optional and unlock RAG and
-upload-conversion respectively. Core variables (see [`.env.example`](../.env.example) for the
-complete, annotated list):
-
-| Var | Purpose |
+| Service | Address |
 |---|---|
-| `AZURE_ENDPOINT` | Azure OpenAI / Foundry resource endpoint |
-| `AZURE_DEPLOYMENT` | Model deployment name (e.g. `gpt-4.1`) |
-| `AZURE_API_VERSION` | Azure OpenAI API version (default `2024-10-21`) |
-| `COSMOS_ENDPOINT` / `COSMOS_DATABASE` / `COSMOS_CONTAINER` | App-state store (AAD-only) |
-| `AZURE_SEARCH_ENDPOINT` / `AZURE_SEARCH_KEY` | Document retrieval — see [retrieval.md](retrieval.md) |
-| `ADLS_ACCOUNT_NAME` / `ADLS_FILESYSTEM` | Upload + conversion pipeline — see [retrieval.md](retrieval.md#document-upload-and-conversion) |
-| `AGENT_BACKEND` | `copilot` (default) or `deepagents` |
-| `CHAT_TIMEOUT_SECONDS` | Per-turn agent timeout (default 300) |
-| `LOG_TRACE` / `LOG_RAW_SDK_EVENTS` / `LOG_TRACE_DIR` | Local trace logging (below) |
+| Next.js frontend | <http://localhost:3000> |
+| FastAPI orchestrator | <http://localhost:8000> |
+| Session runtime | <http://localhost:8080> |
 
-Authentication (`API_AUTH_REQUIRED`, `ENTRA_*`) and the deployment-only variables are documented in
-[`.env.example`](../.env.example) and [deployment.md](deployment.md).
+Stop the launcher with Ctrl-C. It owns all three child processes; restart the
+launcher instead of assuming an individually started service has the same local
+environment.
 
-## Tracing
+## Harness selection
 
-With `LOG_TRACE=true` and `LOG_RAW_SDK_EVENTS=true` (both set by `dev.py`), each run writes:
-
-- `logs/trace.jsonl` — structured cross-tier trace (HTTP requests, tool starts/ends with outcomes,
-  turn boundaries), truncated per session for easy isolation.
-- `logs/sdk-events/<session_id>.jsonl` — the per-session raw agent event stream.
-
-These are the source of truth for reconciling what the UI showed against what the agent actually
-did.
-
-## Testing
-
-The only meaningful test is **Playwright driving the real frontend as a user**, with screenshots
-examined and reconciled against the traces above — not API-only checks or "it compiles."
-
-The core journey runner walks the core capabilities (navigation, task/event CRUD, document draft,
-RAG), screenshots each step, and reconciles the rendered UI against `/app/state`:
+Deep Agents is the current code default. Select Copilot only for the local,
+non-release-blocking portability check:
 
 ```bash
-node scripts/deepagents_poc.mjs      # → screenshots/deepagents-poc/ + state dumps
+uv run dev.py
+AGENT_BACKEND=copilot uv run dev.py
 ```
 
-It is named for its origin (the Deep Agents POC) but is harness-agnostic — it runs against whichever
-harness the stack was launched with, so the same journey validates both. It does **not** cover the
-Copilot-only Schedules/Library tools; `scripts/` holds additional targeted journeys (e.g.
-`flow_crud_e2e.mjs`, `flow_reminders_e2e.mjs`) for those.
+The runtime recognizes `deepagents` and otherwise selects the Copilot adapter; use
+those two documented values. The startup log identifies the selected backend.
 
-Frontend checks:
+## Optional current configuration
+
+Search is optional and off when its endpoint/key are absent. Its present adapter
+uses an admin key and is not the target baseline; an unavailable search capability
+must remain visibly unavailable rather than being treated as grounded retrieval.
+ADLS/Content Understanding configuration is also optional in the current code;
+without it, conversion is disabled. Authentication and deployment-only settings are
+annotated in [`.env.example`](../.env.example).
+
+## What you can check
+
+With the stack running and an independently supplied configured Cosmos emulator,
+the historical browser driver can be invoked as follows:
 
 ```bash
-cd frontend && npm run lint     # eslint
-cd frontend && npm run build    # production build
+node scripts/deepagents_poc.mjs
 ```
+
+It is legacy coverage, not proof of the target CSA Workbench acceptance matrix. Inspect its
+screenshots and the `logs/trace.jsonl`/`logs/sdk-events/` outputs alongside the
+authoritative state; a green process exit alone is not behavioral proof.
+
+These supporting static checks do not start the stack:
+
+```bash
+(cd frontend && npm run lint)
+(cd frontend && npm run build)
+```
+
+No current command in this checkout proves the required emulator topology,
+multi-user authorization, durable rehydration, receipts, or deployment behavior.
+Those remain **UNVERIFIED**.
