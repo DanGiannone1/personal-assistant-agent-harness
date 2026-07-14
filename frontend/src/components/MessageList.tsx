@@ -10,8 +10,6 @@ interface MessageListProps {
   // Instant, client-side navigation targets — no agent turn, no LLM. The common case.
   quickNav?: { label: string; route: string }[];
   onQuickNav?: (route: string) => void;
-  // Fully-bound navigate chips (picker / "Did you mean") — a plain manual nav on click.
-  onNavigate?: (route: string) => void;
   // Overdue / needs-attention items surfaced on open, one click to the right work area.
   attention?: { label: string; sublabel: string; route: string }[];
 }
@@ -42,7 +40,7 @@ function SuggestionIcon({ icon }: { icon: string }) {
   }
 }
 
-export default function MessageList({ messages, onSuggestion, quickNav, onQuickNav, onNavigate, attention }: MessageListProps) {
+export default function MessageList({ messages, onSuggestion, quickNav, onQuickNav, attention }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
@@ -154,7 +152,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
                 className="animate-fade-in"
                 style={{ animationDelay: `${Math.min(index * 30, 160)}ms` }}
               >
-                <MessageBubble message={msg} onPick={onSuggestion} onNavigate={onNavigate} />
+                <MessageBubble message={msg} />
               </div>
             ))}
           </div>

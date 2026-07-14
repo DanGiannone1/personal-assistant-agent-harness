@@ -5,15 +5,32 @@ export type AGUIEvent =
   | { type: "TEXT_MESSAGE_END"; message_id: string }
   | { type: "TOOL_CALL_START"; tool_call_id: string; tool_call_name: string; parent_message_id?: string }
   | { type: "TOOL_CALL_ARGS"; tool_call_id: string; delta: string }
-  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; outcome: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard }
+  | { type: "TOOL_CALL_RESULT"; tool_call_id: string; result: ProductToolResult }
   | { type: "TOOL_CALL_END"; tool_call_id: string }
+  | { type: "NAVIGATION_RESOLVED"; runId: string; destination: Destination; requestedAtNavigationVersion: number }
   | { type: "RUN_FINISHED"; thread_id: string; run_id: string }
   | { type: "RUN_ERROR"; message: string }
   | { type: "REASONING_START" }
   | { type: "REASONING_DELTA"; delta: string }
   | { type: "REASONING_END" };
 
-export type ToolOutcome = "ok" | "noop" | "error";
+export type ProductToolStatus = "committed" | "resolved" | "succeeded" | "noop" | "needs_confirmation" | "ambiguous" | "invalid" | "not_found" | "forbidden" | "conflict" | "failed";
+
+export interface Destination {
+  id: "engagements" | "engagement_overview" | "engagement_tasks" | "engagement_artifacts" | "workbench";
+  path: string;
+  label?: string;
+  engagementId?: string;
+}
+
+export interface ProductToolResult {
+  status: ProductToolStatus;
+  code: string;
+  operation: string;
+  message?: string;
+  resource?: Record<string, unknown>;
+  destination?: Destination;
+}
 
 // A navigate chip, fully bound to a real route by the resolver. Clicking one is a
 // plain manual navigation — no second resolution pass, no chat round-trip.
@@ -25,7 +42,7 @@ export interface NavCandidate {
 export type MessagePart =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; outcome?: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard };
+  | { type: "tool_call"; tool: string; toolCallId: string; status: "running" | "done"; args?: string; result?: ProductToolResult };
 
 export interface TurnMeta {
   steps: number;       // tool calls in the turn

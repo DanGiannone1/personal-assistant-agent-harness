@@ -67,8 +67,12 @@ from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 import appdb
 import library
 import navsvc
-from workbench_core import EngagementService, Outcome
+from workbench_core import EngagementService, Outcome, ProductToolResult
 from workbench_core.appdb_repository import AppdbEngagementRepository
+from mvp_tool_schemas import (
+    CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
+    SetEngagementStatusCommand, ShareEngagementCommand, UpdateEngagementCommand,
+)
 
 load_dotenv()
 
@@ -92,99 +96,28 @@ def _trace(event: str, **data) -> None:
 # Built-in deep-agent tools hidden from the model so the agent behaves like the
 # Copilot one: direct single-tool actions, no planning / scratch-FS / subagents.
 # (FilesystemMiddleware itself is protected and cannot be removed, but stripping
-# its model-visible tools by name is enough — and `write_file` is intentionally
-# left out of this set so our own `write_file` keeps that name.)
+# every supplied model-visible tool by name leaves the approved product inventory.)
 _EXCLUDED_BUILTINS = frozenset(
-    {"write_todos", "task", "execute", "ls", "read_file", "edit_file", "glob", "grep"}
+    {"write_todos", "task", "execute", "ls", "read_file", "write_file", "edit_file", "glob", "grep"}
 )
 
 
 # ───────────────────────── System prompt (mirrors agent.py) ─────────────────
 
 SYSTEM_PROMPT = """\
-You are the assistant embedded in CSA Workbench — an engagement workspace where solution architects
-manage customer work, tasks, calendars, and documents. The app has these pages: Home (today's
-agenda — what's due, what's overdue, the next events), Engagements (shared customer-delivery
-workspaces with members and roles), To-Do (tasks grouped into buckets, each with a status,
-priority, group, optional due date, and subtasks), Calendar (events — meetings, reminders, focus
-blocks — by day), and Documents (notes and drafts you read and write). You help by acting directly
-on the app through tools.
+You are the CSA Workbench assistant for shared Engagements. Use only these tools:
+`navigate`, `list_engagements`, `create_engagement`, `get_engagement`,
+`update_engagement`, `set_engagement_status`, and `share_engagement`.
 
-You operate inside the user's own session. The tools you call read and mutate the
-*real* application state, and the user sees the result in the app next to this chat.
-Only claim you did something after the tool that does it has returned successfully —
-never say a record was created/updated/deleted or that you navigated unless the tool call succeeded.
+Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
+`engagement_tasks`, `engagement_artifacts`, and `workbench`. For an Engagement destination,
+first obtain its stable ID with `list_engagements`; never pass user wording as a destination.
 
-How you work:
-- Read the request, then take the single most direct action. Do not over-plan.
-- For "take me to / go to / open / show me <place>" requests, call `navigate` with the
-  user's destination words **verbatim**. Don't pre-resolve a vague phrase — pass it and
-  let `navigate` decide (it knows the user's pages, engagements, and records, and uses their
-  recent activity to pick decisively). If it returns AMBIGUOUS, list the candidates and ask
-  which one. If NOT_FOUND, say so and list the closest options. Never claim you navigated
-  unless the tool resolved a destination. Tool results may end with a `CHIPS: …` or
-  `CARD_JSON: …` trailer line — that is a wire format the app renders as clickable chips or
-  a card; never repeat those lines in your reply.
-- Engagements are shared customer-delivery workspaces with members and roles
-  (owner/editor/viewer). Use `list_engagements` to see them, `create_engagement` to add one,
-  `update_engagement` to change name/description/customer/dates, `share_engagement` to grant
-  a user access. Tasks can live in an engagement OR in the personal space: pass the task
-  tool's `engagement` argument when the user names an engagement or their current view is an
-  engagement page (see "[Current view: …]"); leave it empty for personal tasks. Events are
-  personal-calendar only. If an engagement tool returns FORBIDDEN, tell the user their role
-  doesn't allow it — do not retry.
-- Every engagement carries a status: green, yellow, or red. `set_engagement_status` sets it —
-  yellow and red REQUIRE a `note` saying why, so ask for the reason if the user didn't give
-  one; green clears the note. For engagement status questions ("how is Contoso doing",
-  "which engagements are red"), answer from `list_engagements` — never from memory.
-- Tasks: use `list_tasks` to review (it returns a computed `overdue` flag and each task's
-  subtask progress), `create_task` to add one, `update_task` to change status/priority/
-  group/due date, `add_subtask` to add a subtask, and `delete_task` to remove one.
-- Events: use `list_events` to review the calendar, `create_event` to schedule one (a date
-  is required), `update_event` to move or change it, and `delete_event` to remove one.
-- Reminders: use `create_schedule` for recurring requests the user wants to receive by email
-  ("email me a daily summary", "every Monday send me…") — capture the instruction as the
-  `prompt`, pick `daily`/`weekly`, a `time` (HH:MM), and a `timezone` if the user implies one
-  (ask only if genuinely unclear). Use `list_schedules` to review and `delete_schedule` to
-  cancel. The app runs the saved prompt on the cadence and emails whatever it produces.
-- Engagement conventions and the user's persona arrive in your context each turn — apply
-  them, with precedence: the user's current instruction beats an engagement convention,
-  which beats their persona defaults.
-- Deleting things is confirm-first: delete tools return PENDING_CONFIRM with a card the
-  user sees. Nothing is deleted until the user confirms — then call the tool again with
-  confirmed=true. Never set confirmed=true without an explicit user yes.
-- For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
-  context — never judge dates yourself.
-- Documents come in two tiers. **Session files** are this session's uploads + drafts —
-  temporary, read them *directly* with `list_documents` then `read_workspace_file`. The
-  **Library** is the user's *persistent* knowledge base — searched with `search_documents`
-  (RAG) and persisted across all sessions.
-- To write or revise a document (a brief, notes, a summary), use `write_file` — it appears
-  in Documents as a session file and opens in the artifact canvas.
-- To make a session file permanent and searchable, use `save_to_library` (e.g. "save this
-  to my library/knowledge base"); `list_library` shows what's in it. A session file is NOT
-  in the Library until saved.
-- For "what did I decide about X", "search my library", or any question that needs grounding
-  across the persistent knowledge base, use `search_documents` — answer **only** from the
-  returned passages and cite the source filename(s). If it returns NO_RESULTS, say nothing
-  matched; if SEARCH_NOT_CONFIGURED/SEARCH_FAILED, tell the user search is unavailable —
-  never make up an answer. To *compare* an uploaded session file against the Library, read
-  the session file (`read_workspace_file`) AND `search_documents`, then contrast them.
-
-The user's current view may be provided as context (e.g. "[Current view: To-Do]"). Use it
-to resolve "here" / "this". The current date is provided as "[Today: …]".
-
-Style:
-- Be concise and friendly. One or two sentences is usually enough.
-- State concretely what you did ("Added the high-priority task" / "Moved the design review
-  to Thursday" / "Drafted the engagement brief").
-- Don't mention tools, routes, file paths, or IDs unless asked. Don't invent data the tools
-  didn't return.
-- Stay in your lane: you're this app's assistant. For clearly off-topic requests (general
-  trivia, unrelated coding), don't answer at length — briefly redirect ("I'm focused on your
-  CSA Workbench — want me to look at an engagement, task, calendar, or document?").
+Engagement membership and roles are enforced by tools. Use stable Engagement IDs for get,
+update, status, and share. Yellow and red status require a reason. State a change or navigation
+only after its typed result is committed or resolved. Be concise, professional, and do not invent
+facts that tools did not return.
 """
-
 
 def _user_prompt_line(user_id: str) -> str:
     """One grounding line so the assistant knows WHO it is operating for. Fail-soft to
@@ -236,69 +169,17 @@ def _args_to_str(args) -> str | None:
         return str(args)
 
 
-def _result_text(result) -> str:
-    """Extract a tool's returned text from a str / dict / ToolMessage-like object."""
-    if isinstance(result, str):
-        return result
-    if isinstance(result, dict):
-        for key in ("content", "text", "detailed_content"):
-            val = result.get(key)
-            if isinstance(val, str) and val:
-                return val
-        return ""
-    for attr in ("content", "text", "detailed_content"):
-        val = getattr(result, attr, None)
-        if isinstance(val, str) and val:
-            return val
-    return str(result or "")
-
-
-_NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS", "PENDING_CONFIRM"}
-_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE", "INVALID_STATUS", "NOTE_REQUIRED"}
-
-
-def _tool_outcome(result, success) -> str:
-    """Classify a tool result as ok | noop | error from its leading status marker."""
-    text = _result_text(result).strip()
-    head = text.split(None, 1)[0].rstrip(":") if text else ""
-    if head in _NOOP_MARKERS:
-        return "noop"
-    if head in _ERROR_MARKERS or head.endswith("NOT_FOUND"):
-        return "error"
-    if success is False:
-        return "error"
-    if not text:
-        return "error"
-    return "ok"
-
-
-def _extract_card(result) -> dict | None:
-    """Pull a structured preview card out of a tool result (CARD_JSON trailer line)."""
-    text = _result_text(result)
-    for line in text.splitlines():
-        if line.startswith("CARD_JSON: "):
-            try:
-                card = _json.loads(line[len("CARD_JSON: "):])
-                return card if isinstance(card, dict) else None
-            except Exception:
-                return None
-    return None
-
-
-def _nav_candidates(result) -> list[dict]:
-    """Pull FULLY-BOUND candidates ({title, path}) from a navigate result's CHIPS line —
-    picker chips (ambiguous/not-found) and escape-hatch chips (decided-with-alternates)
-    both ride this channel; a chip click is a plain manual nav, no second resolution."""
-    text = _result_text(result)
-    if "\nCHIPS: " not in text:
-        return []
-    tail = text.rsplit("\nCHIPS: ", 1)[1].strip()
-    chips = []
-    for part in tail.split(";"):
-        title, _, path = part.strip().partition("|")
-        if title and path.startswith("/"):
-            chips.append({"title": title, "path": path})
-    return chips[:6]
+def _artifact_result(result) -> ProductToolResult | None:
+    """Read LangChain's native artifact only; model-visible content is never parsed."""
+    artifact = getattr(result, "artifact", None)
+    if artifact is None and isinstance(result, tuple) and len(result) == 2:
+        artifact = result[1]
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("product_result"), dict):
+        return None
+    try:
+        return ProductToolResult.from_dict(artifact["product_result"])
+    except (TypeError, ValueError):
+        return None
 
 
 def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
@@ -383,15 +264,12 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             return "NO_CHANGES: the engagement already has that state."
         return f"FAILED: engagement operation returned {outcome.status}."
 
-    def _set_route(path: str, title: str) -> None:
-        """Route side-effect: point the pane at a result + feed the visit log."""
-        def _mut(data):
-            data["currentRoute"] = path
-        appdb.update_state(user_id, _mut)
-        try:
-            appdb.record_visit(user_id, path, title)
-        except Exception:
-            _logger.warning("visit log write failed", exc_info=True)
+    def _product_result(outcome: Outcome, operation: str, message: str = "") -> ProductToolResult:
+        resource = {"kind": "engagement", "id": outcome.record["id"]} if outcome.record and outcome.record.get("id") else None
+        return ProductToolResult(outcome.status, outcome.code or f"engagement.{outcome.status}", operation, message, resource=resource)
+
+    def _tool_result(result: ProductToolResult, text: str) -> tuple[str, dict]:
+        return text, {"product_result": result.to_dict()}
 
     def _confirm_card(action: str, title: str, detail: str) -> str:
         """A PENDING_CONFIRM result: nothing was mutated; the UI renders Confirm/Cancel."""
@@ -419,36 +297,16 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             return mutator(doc)
         return appdb.update_engagement(eng["id"], _outer)
 
-    def _chips(items: list[dict]) -> str:
-        """CHIPS trailer: fully-bound {title|path} pairs the UI renders as one-click
-        manual navs (no second resolution pass)."""
-        return "\nCHIPS: " + "; ".join(f"{c['title']}|{c['path']}" for c in items[:6])
+    @tool("navigate", description="Navigate to an explicit CSA Workbench catalog destination.", args_schema=NavigateCommand, response_format="content_and_artifact")
+    def navigate(destination_id: str, engagement_id: str | None = None) -> tuple[str, dict]:
+        result = navsvc.destination_for(user_id, destination_id, engagement_id)
+        return _tool_result(result, result.message or "Navigation request processed.")
 
-    @tool("navigate", description="Navigate CSA Workbench to a page, a task, a calendar event, or an engagement.")
-    def navigate(destination: str) -> str:
-        personal = _load()
-        result = navsvc.resolve(personal, _engagements(), _visits(), destination)
-        if result["status"] == "resolved":
-            _set_route(result["path"], result["title"])
-            alternates = result.get("alternates") or []
-            if alternates:
-                opts = "; ".join(a["title"] for a in alternates)
-                return (f"NAVIGATED to {result['title']} ({result['path']}). "
-                        f"Decided by your context — alternatives if wrong: {opts}"
-                        + _chips(alternates))
-            return f"NAVIGATED to {result['title']} ({result['path']})"
-        opts = "; ".join(c["title"] for c in result["candidates"])
-        if result["status"] == "ambiguous":
-            return (f"AMBIGUOUS: '{destination}' matches multiple destinations: {opts}. "
-                    f"Ask the user which one." + _chips(result["candidates"]))
-        return (f"NOT_FOUND: no destination matched '{destination}'. Closest options: {opts}."
-                + _chips(result["candidates"]))
-
-    @tool("list_engagements", description="List the shared engagements the user belongs to: role, customer, status (with the why), open tasks, and target date. Answer engagement status questions from THIS, never from memory.")
-    def list_engagements() -> str:
+    @tool("list_engagements", description="List the shared engagements the user belongs to, including stable IDs.", args_schema=ListEngagementsCommand, response_format="content_and_artifact")
+    def list_engagements() -> tuple[str, dict]:
         engs = _engagements()
         if not engs:
-            return "No engagements yet. Create one with create_engagement."
+            return _tool_result(ProductToolResult("succeeded", "engagement.listed", "list"), "No engagements yet.")
         lines = [f"{len(engs)} engagement(s):"]
         for p in engs:
             role = appdb.member_role(p, user_id)
@@ -459,75 +317,41 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
                 f"status={p.get('status')}{why} | open tasks={open_tasks} | "
                 f"target={p.get('targetDate') or 'n/a'} | docs: {len(p.get('library') or [])}"
             )
-        return "\n".join(lines)
+        return _tool_result(ProductToolResult("succeeded", "engagement.listed", "list"), "\n".join(lines))
 
-    @tool("create_engagement", description="Create a new shared engagement (customer delivery workspace). The user becomes its owner. New engagements start green.")
-    def create_engagement(name: str, description: str = "", customer: str = "", target_date: str = "") -> str:
+    @tool("create_engagement", description="Create a new shared engagement.", args_schema=CreateEngagementCommand, response_format="content_and_artifact")
+    def create_engagement(name: str, description: str = "", customer: str = "", target_date: str = "") -> tuple[str, dict]:
         outcome = engagement_service.create(user_id, {"name": name, "description": description,
                                                        "customer": customer, "targetDate": target_date})
-        if outcome.status == "noop":
-            eng = outcome.record
-            _set_route(f"/engagements/{eng['id']}", eng["name"])
-            return f"EXISTING engagement [{eng['id']}] '{eng['name']}' was read after a retry."
-        if outcome.status != "committed":
-            return _engagement_outcome_text(outcome)
-        eng = outcome.record
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return (
-            f"CREATED engagement [{eng['id']}] '{eng['name']}' | customer={eng['customer'] or 'n/a'} | "
-            f"status={eng['status']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
-        )
+        result = _product_result(outcome, "create", _engagement_outcome_text(outcome))
+        return _tool_result(result, "Engagement creation processed." if outcome.record else result.message)
 
-    @tool("get_engagement", description="Read one visible engagement by name or stable id.")
-    def get_engagement(engagement: str) -> str:
-        resolved = engagement_service.resolve(user_id, engagement)
-        if resolved.status != "resolved":
-            return _engagement_outcome_text(resolved)
-        outcome = engagement_service.get(user_id, resolved.record["id"])
-        if outcome.status != "succeeded":
-            return _engagement_outcome_text(outcome)
-        record = outcome.record
-        return f"ENGAGEMENT [{record['id']}] '{record['name']}' | status={record['status']} | customer={record.get('customer') or 'n/a'}."
+    @tool("get_engagement", description="Read one visible engagement by stable ID.", args_schema=GetEngagementCommand, response_format="content_and_artifact")
+    def get_engagement(engagement_id: str) -> tuple[str, dict]:
+        outcome = engagement_service.get(user_id, engagement_id)
+        result = _product_result(outcome, "get", _engagement_outcome_text(outcome))
+        return _tool_result(result, "Engagement read processed." if outcome.record else result.message)
 
-    @tool("update_engagement", description="Update description, customer, or dates as an editor/owner; changing name requires owner access. Omit fields to leave them unchanged; empty optional fields clear them.")
-    def update_engagement(engagement: str, name: str | None = None, description: str | None = None, customer: str | None = None,
-                          start_date: str | None = None, target_date: str | None = None) -> str:
-        eng, err = _resolve_engagement_ref(engagement)
-        if err:
-            return err
+    @tool("update_engagement", description="Update an engagement by stable ID.", args_schema=UpdateEngagementCommand, response_format="content_and_artifact")
+    def update_engagement(engagement_id: str, name: str | None = None, description: str | None = None, customer: str | None = None,
+                          start_date: str | None = None, target_date: str | None = None) -> tuple[str, dict]:
         values = {key: value for key, value in (("name", name), ("description", description),
                   ("customer", customer), ("startDate", start_date), ("targetDate", target_date)) if value is not None}
-        outcome = engagement_service.update(user_id, eng["id"], values)
-        if outcome.status != "committed":
-            return _engagement_outcome_text(outcome)
-        record = outcome.record
-        _set_route(f"/engagements/{record['id']}", record["name"])
-        return f"UPDATED engagement [{record['id']}] '{record['name']}': {', '.join(outcome.changed_fields)}."
+        outcome = engagement_service.update(user_id, engagement_id, values)
+        result = _product_result(outcome, "update", _engagement_outcome_text(outcome))
+        return _tool_result(result, "Engagement update processed." if outcome.status == "committed" else result.message)
 
-    @tool("set_engagement_status", description="Set an engagement's status (green/yellow/red). Yellow and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
-    def set_engagement_status(engagement: str, status: str, note: str = "") -> str:
-        eng, err = _resolve_engagement_ref(engagement)
-        if err:
-            return err
-        outcome = engagement_service.update(user_id, eng["id"], {"status": status, "statusNote": note})
-        if outcome.status != "committed":
-            return _engagement_outcome_text(outcome)
-        record = outcome.record
-        _set_route(f"/engagements/{record['id']}", record["name"])
-        why = f" — {record['statusNote']}" if record.get("statusNote") else ""
-        return f"UPDATED engagement [{record['id']}] '{record['name']}' status={record['status']}{why}."
+    @tool("set_engagement_status", description="Set an engagement status by stable ID.", args_schema=SetEngagementStatusCommand, response_format="content_and_artifact")
+    def set_engagement_status(engagement_id: str, status: str, note: str = "") -> tuple[str, dict]:
+        outcome = engagement_service.update(user_id, engagement_id, {"status": status, "statusNote": note})
+        result = _product_result(outcome, "update", _engagement_outcome_text(outcome))
+        return _tool_result(result, "Engagement status processed." if outcome.status == "committed" else result.message)
 
-    @tool("share_engagement", description="Share a engagement with another user (grant viewer, editor, or owner access). Only a engagement owner can share.")
-    def share_engagement(engagement: str, user: str, role: str = "viewer") -> str:
-        eng, err = _resolve_engagement_ref(engagement)
-        if err:
-            return err
-        outcome = engagement_service.share(user_id, eng["id"], user, role)
-        if outcome.status != "committed":
-            return _engagement_outcome_text(outcome)
-        record = outcome.record
-        _set_route(f"/engagements/{record['id']}/settings", record["name"])
-        return f"SHARED engagement '{record['name']}' with {outcome.target_user_id} as {role.strip().lower() or 'viewer'}."
+    @tool("share_engagement", description="Share an engagement by stable ID.", args_schema=ShareEngagementCommand, response_format="content_and_artifact")
+    def share_engagement(engagement_id: str, user: str, role: str = "viewer") -> tuple[str, dict]:
+        outcome = engagement_service.share(user_id, engagement_id, user, role)
+        result = _product_result(outcome, "share", _engagement_outcome_text(outcome))
+        return _tool_result(result, "Engagement sharing processed." if outcome.status == "committed" else result.message)
 
     @tool("list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(engagement: str = "") -> str:
@@ -582,7 +406,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/engagements/{eng['id']}/tasks/{out['id']}", out["title"])
             return (
                 f"CREATED task [{out['id']}] '{out['title']}' in engagement {eng['name']}, "
                 f"status {out['status']}, priority {out['priority']}, due {out['dueDate'] or 'n/a'}."
@@ -636,7 +459,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             if isinstance(out, str):
                 return out
             t, changed = out
-            _set_route(f"/engagements/{eng['id']}/tasks/{t['id']}", t["title"])
             return f"UPDATED task [{t['id']}] '{t['title']}' in {eng['name']}: {', '.join(changed)}."
         def _mut(data):
             t, err = _resolve_task_strict(data, task)
@@ -689,7 +511,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/engagements/{eng['id']}/tasks", out["title"])
             return f"DELETED task [{out['id']}] '{out['title']}' from {eng['name']}."
         def _mut(data):
             t, err = _resolve_task_strict(data, task)
@@ -1023,13 +844,8 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
 
     return [
         navigate,
-        list_engagements, create_engagement, get_engagement, update_engagement, share_engagement,
-        set_engagement_status,
-        list_tasks, create_task, update_task, delete_task, add_subtask,
-        list_events, create_event, update_event, delete_event,
-        list_documents, read_workspace_file, write_file,
-        search_documents, save_to_library, list_library,
-        create_schedule, list_schedules, delete_schedule,
+        list_engagements, create_engagement, get_engagement, update_engagement, set_engagement_status,
+        share_engagement,
     ]
 
 
@@ -1074,6 +890,7 @@ class AgentSession:
         self._run_id: str = ""
         self._turn_active: bool = False
         self._status: str = "idle"
+        self._navigation_version: int = 0
 
         self._raw_sdk_log_lock = threading.Lock()
         self._raw_sdk_log_path: str | None = None
@@ -1165,11 +982,12 @@ class AgentSession:
         if self._credential:
             await self._credential.close()
 
-    async def send(self, prompt: str) -> AsyncGenerator[str, None]:
+    async def send(self, prompt: str, navigation_version: int = 0) -> AsyncGenerator[str, None]:
         """Run a deep-agent turn; yield SSE-formatted AG-UI events until completion."""
         self._run_id = str(uuid.uuid4())
         self._status = "thinking"
         self._turn_active = True
+        self._navigation_version = navigation_version
 
         _trace("agent.turn_start", session_id=self._session_id, run_id=self._run_id)
         self._write_raw_sdk_record({"kind": "turn_start", "run_id": self._run_id, "prompt": prompt})
@@ -1207,7 +1025,7 @@ class AgentSession:
                 elif kind == "on_tool_start":
                     name = ev.get("name")
                     if name not in self._tool_names:
-                        continue
+                        raise RuntimeError(f"Deep Agents exposed an unapproved tool: {name}")
                     call_id = ev.get("run_id") or str(uuid.uuid4())
                     open_tool_calls[call_id] = name
                     self._status = f"tool:{name}"
@@ -1225,25 +1043,19 @@ class AgentSession:
                     call_id = ev.get("run_id")
                     name = open_tool_calls.pop(call_id, None)
                     if name is None:
-                        continue
+                        raise RuntimeError("Deep Agents emitted an uncorrelated tool result")
                     self._status = "thinking"
                     tools_called += 1
                     result = (ev.get("data") or {}).get("output")
-                    outcome = _tool_outcome(result, None)
-                    payload = {"type": "TOOL_CALL_RESULT", "tool_call_id": call_id, "outcome": outcome}
-                    if name == "navigate":
-                        # Attach chips whenever the CHIPS line exists — including on an
-                        # "ok" outcome, where they are the decided-with-alternates
-                        # escape hatch ("Did you mean").
-                        cands = _nav_candidates(result)
-                        if cands:
-                            payload["candidates"] = cands
-                    card = _extract_card(result)
-                    if card:
-                        payload["card"] = card
+                    product_result = _artifact_result(result)
+                    if product_result is None:
+                        product_result = ProductToolResult("failed", "tool.missing_native_result", name, "The tool did not return a structured result.")
+                    payload = {"type": "TOOL_CALL_RESULT", "tool_call_id": call_id, "result": product_result.to_dict()}
                     yield f"data: {_json.dumps(payload)}\n\n"
+                    if product_result.status in {"resolved", "committed"} and product_result.destination:
+                        yield f"data: {_json.dumps({'type': 'NAVIGATION_RESOLVED', 'runId': self._run_id, 'destination': dict(product_result.destination), 'requestedAtNavigationVersion': self._navigation_version})}\n\n"
                     yield _sse_event(ToolCallEndEvent(tool_call_id=call_id))
-                    _trace("agent.tool_end", session_id=self._session_id, run_id=self._run_id, tool=name, call_id=call_id, outcome=outcome)
+                    _trace("agent.tool_end", session_id=self._session_id, run_id=self._run_id, tool=name, call_id=call_id, result=product_result.to_dict())
 
             if message_started:
                 yield _sse_event(TextMessageEndEvent(message_id=current_msg_id))
@@ -1262,7 +1074,6 @@ class AgentSession:
             self._write_raw_sdk_record({"kind": "turn_exception", "run_id": self._run_id, "error": repr(exc)})
             _trace("agent.error", session_id=self._session_id, run_id=self._run_id, message=msg)
             yield _sse_event(RunErrorEvent(message=msg))
-            yield _sse_event(RunFinishedEvent(thread_id=self._thread_id, run_id=self._run_id))
         finally:
             self._turn_active = False
             self._write_raw_sdk_record({"kind": "turn_finalized", "run_id": self._run_id, "status": self._status})

@@ -291,6 +291,7 @@ async def trace_requests(request: Request, call_next):
 # ---------------------------------------------------------------------------
 class SendMessageRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000)
+    navigation_version: int = Field(default=0, ge=0)
 
 
 class LoginRequest(BaseModel):
@@ -362,7 +363,7 @@ async def send_message(session_id: str, req: SendMessageRequest, uid: str = Depe
     await _require_owned_session(session_id, uid)
 
     return StreamingResponse(
-        session_manager.send_message(session_id, req.prompt, uid),
+        session_manager.send_message(session_id, req.prompt, uid, req.navigation_version),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle2, Activity, HelpCircle, AlertCircle, Sparkles, Circle, ChevronDown, ChevronRight } from "lucide-react";
-import { MessagePart, ToolCard, ToolOutcome } from "@/lib/types";
+import { MessagePart, ProductToolResult } from "@/lib/types";
 
 function runningLabel(name: string): string {
   const labels: Record<string, string> = {
@@ -18,30 +18,14 @@ function runningLabel(name: string): string {
   return labels[name] || "Working";
 }
 
-// outcome may be undefined if the result signal was lost — fail closed: show a
-// neutral "Done", never a green success, so the trace never overclaims.
-function doneLabel(name: string, outcome: ToolOutcome | undefined): string {
+// Missing structured results stay neutral so the trace never overclaims.
+function doneLabel(name: string, result: ProductToolResult | undefined): string {
   if (name === "skill") return "Skill loaded";  // skill loads carry no outcome by design
-  if (outcome === "noop") {
-    return ({ navigate: "Needs clarification", update_task: "No changes", update_event: "No changes",
-      delete_task: "Awaiting confirmation", delete_event: "Awaiting confirmation",
-      delete_schedule: "Awaiting confirmation", propose_memory: "Awaiting confirmation" } as Record<string, string>)[name] || "No change";
-  }
-  if (outcome === "error") {
-    return ({ navigate: "Destination not found", update_task: "Task not found", delete_task: "Task not found", add_subtask: "Task not found", create_task: "Couldn't create task", update_event: "Event not found", delete_event: "Event not found", create_event: "Couldn't create event", search_documents: "Search not configured" } as Record<string, string>)[name] || "Couldn't complete";
-  }
-  if (outcome === undefined) return "Done";
-  const labels: Record<string, string> = {
-    navigate: "Navigated", create_task: "Task created", update_task: "Task updated",
-    list_engagements: "Engagements reviewed", create_engagement: "Engagement created", share_engagement: "Engagement shared",
-    save_memory: "Memory saved", delete_schedule: "Reminder deleted",
-    delete_task: "Task deleted", add_subtask: "Subtask added", list_tasks: "Tasks reviewed",
-    create_event: "Event created", update_event: "Event updated", delete_event: "Event deleted",
-    list_events: "Events reviewed", search_documents: "Documents searched",
-    list_documents: "Documents listed",
-    read_workspace_file: "Document read", write_file: "Document saved", skill: "Skill loaded",
-  };
-  return labels[name] || "Done";
+  if (!result) return "Outcome unavailable";
+  if (["failed", "invalid", "not_found", "forbidden", "conflict"].includes(result.status)) return "Couldn't complete";
+  if (["noop", "needs_confirmation", "ambiguous"].includes(result.status)) return "No change";
+  if (["committed", "resolved", "succeeded"].includes(result.status)) return ({ navigate: "Navigated", create_engagement: "Engagement created", update_engagement: "Engagement updated", set_engagement_status: "Status updated", share_engagement: "Engagement shared", list_engagements: "Engagements reviewed" } as Record<string, string>)[name] || "Completed";
+  return "Outcome unavailable";
 }
 
 function toolContext(name: string, args: string | undefined): string | null {
@@ -49,7 +33,7 @@ function toolContext(name: string, args: string | undefined): string | null {
   try {
     const p = JSON.parse(args);
     switch (name) {
-      case "navigate": return p.destination || null;
+      case "navigate": return p.destination_id || null;
       case "create_task": return p.title ? `${p.title}${p.priority ? ` · ${p.priority}` : ""}` : null;
       case "update_task": case "delete_task": case "add_subtask": return p.task || null;
       case "create_event": return p.title ? `${p.title}${p.date ? ` · ${p.date}` : ""}` : null;
@@ -63,95 +47,38 @@ function toolContext(name: string, args: string | undefined): string | null {
   } catch { return null; }
 }
 
-function StepIcon({ running, outcome, skill }: { running: boolean; outcome: ToolOutcome | undefined; skill: boolean }) {
+function StepIcon({ running, result, skill }: { running: boolean; result: ProductToolResult | undefined; skill: boolean }) {
   if (running) return <span className="step-ic step-ic-running"><Activity size={12} className="animate-pulse" /></span>;
   if (skill) return <span className="step-ic step-ic-skill"><Sparkles size={11} /></span>;
-  if (outcome === "noop") return <span className="step-ic step-ic-noop"><HelpCircle size={12} /></span>;
-  if (outcome === "error") return <span className="step-ic step-ic-error"><AlertCircle size={12} /></span>;
-  if (outcome === undefined) return <span className="step-ic step-ic-neutral"><Circle size={11} /></span>;
+  if (["noop", "needs_confirmation", "ambiguous"].includes(result?.status ?? "")) return <span className="step-ic step-ic-noop"><HelpCircle size={12} /></span>;
+  if (["failed", "invalid", "not_found", "forbidden", "conflict"].includes(result?.status ?? "")) return <span className="step-ic step-ic-error"><AlertCircle size={12} /></span>;
+  if (!result) return <span className="step-ic step-ic-neutral"><Circle size={11} /></span>;
   return <span className="step-ic step-ic-ok"><CheckCircle2 size={12} /></span>;
 }
 
-function CardView({ card, onPick }: { card: ToolCard; onPick?: (text: string) => void }) {
-  if (card.kind === "confirm") {
-    return (
-      <div className="step-card step-card-confirm" data-testid="confirm-card">
-        <div className="step-card-title">{card.title}</div>
-        {card.detail && <div className="step-card-detail">{card.detail}</div>}
-        <div className="step-card-actions">
-          <button type="button" className="step-card-btn step-card-btn-primary" disabled={!onPick}
-            data-testid="confirm-card-yes"
-            onClick={() => onPick?.("Yes — confirmed, go ahead.")}>
-            Confirm
-          </button>
-          <button type="button" className="step-card-btn" disabled={!onPick}
-            data-testid="confirm-card-no"
-            onClick={() => onPick?.("No — cancel that.")}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
-  const fields = card.fields ?? {};
-  return (
-    <div className="step-card" data-testid="record-card">
-      <div className="step-card-title">{fields.title ?? card.recordKind}</div>
-      <div className="step-card-fields">
-        {Object.entries(fields).filter(([k]) => k !== "title").map(([k, v]) => (
-          <span key={k} className="step-card-field"><b>{k}</b> {v}</span>
-        ))}
-        {card.scope && <span className="step-card-field"><b>scope</b> {card.scope}</span>}
-      </div>
-    </div>
-  );
-}
-
-function Step({ part, onPick, onNavigate }: { part: MessagePart & { type: "tool_call" }; onPick?: (text: string) => void; onNavigate?: (route: string) => void }) {
+function Step({ part }: { part: MessagePart & { type: "tool_call" } }) {
   const running = part.status === "running";
   const isSkill = part.tool === "skill";
-  const label = running ? runningLabel(part.tool) : doneLabel(part.tool, part.outcome);
+  const label = running ? runningLabel(part.tool) : doneLabel(part.tool, part.result);
   const ctx = toolContext(part.tool, part.args);
-  const candidates = !running ? part.candidates ?? [] : [];
   return (
     <div className="step-block">
       <div className={`step-row ${isSkill ? "step-row-skill" : ""}`}>
-        <StepIcon running={running} outcome={part.outcome} skill={isSkill} />
+        <StepIcon running={running} result={part.result} skill={isSkill} />
         <span className="step-label">{label}</span>
         {ctx && <span className="step-ctx" title={ctx}>{ctx}</span>}
       </div>
-      {!running && part.card && <CardView card={part.card} onPick={onPick} />}
-      {candidates.length > 0 && (
-        <div className="step-candidates">
-          {/* On an ok outcome the nav already happened — these are alternates ("Did you mean:").
-              On ambiguous/not-found the chips ARE the picker, so no lead-in label. */}
-          {part.outcome === "ok" && (
-            <span className="step-candidates-label" data-testid="did-you-mean">
-              Did you mean:
-            </span>
-          )}
-          {/* Candidates are fully bound (path) — click navigates directly, no chat round-trip.
-              onPick is a fallback for any caller that doesn't wire onNavigate. */}
-          {candidates.map((c) => (
-            <button key={c.path} type="button" className="step-candidate" disabled={!onNavigate && !onPick}
-              onClick={() => (onNavigate ? onNavigate(c.path) : onPick?.(`Take me to ${c.title}`))}
-              data-testid={`nav-candidate-${c.title.replace(/\s+/g, "-")}`}>
-              {c.title}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
-export default function ToolTrace({ parts, isStreaming, onPick, onNavigate }: { parts: (MessagePart & { type: "tool_call" })[]; isStreaming?: boolean; onPick?: (text: string) => void; onNavigate?: (route: string) => void }) {
+export default function ToolTrace({ parts, isStreaming }: { parts: (MessagePart & { type: "tool_call" })[]; isStreaming?: boolean }) {
   const [collapsed, setCollapsed] = useState(false);
   if (parts.length === 0) return null;
 
   const steps = (
     <div className="step-trace" data-testid="tool-trace">
-      {parts.map((p) => <Step key={p.toolCallId} part={p} onPick={onPick} onNavigate={onNavigate} />)}
+      {parts.map((p) => <Step key={p.toolCallId} part={p} />)}
     </div>
   );
 

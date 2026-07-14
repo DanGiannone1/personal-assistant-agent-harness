@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:contract": "tsc -p tsconfig.contract.json && node .contract-dist/navigation.contract.js && rm -rf .contract-dist"
   },
   "dependencies": {
     "@ag-ui/core": "^0.0.47",

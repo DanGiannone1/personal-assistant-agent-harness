@@ -1,27 +1,11 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, NavCandidate, ToolCard, ToolOutcome } from "@/lib/types";
+import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, ProductToolResult } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
+import { shouldApplyAgentNavigation } from "@/lib/navigation";
 import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getContextBundle, getQuickLinks, recordVisit } from "@/lib/api";
 import type { QuickLink } from "@/lib/types";
 import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
-
-// Tools that set the server-side currentRoute when they succeed. When one of
-// these completes with an "ok" outcome, the pane should follow the route.
-const ROUTE_SETTING_TOOLS = new Set([
-  "navigate",
-  "create_task",   // lands the user on the new task's detail page
-  "update_task",   // lands the user on the updated task
-  "delete_task",   // returns the user to the to-do list
-  "add_subtask",   // lands the user on the task it added a step to
-  "create_event",  // lands the user on the calendar
-  "update_event",  // lands the user on the calendar
-  "delete_event",  // returns the user to the calendar
-  "create_engagement",       // lands the user on the new engagement
-  "update_engagement",       // lands the user on the engagement it changed
-  "share_engagement",        // lands the user on the engagement's settings
-  "set_engagement_status",   // lands the user on the engagement whose status changed
-]);
 
 type Action =
   | { type: "USER_SEND"; content: string }
@@ -33,7 +17,7 @@ type Action =
   | { type: "REASONING_DELTA"; delta: string }
   | { type: "TOOL_START"; toolCallId: string; toolCallName: string }
   | { type: "TOOL_ARGS"; toolCallId: string; delta: string }
-  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard }
+  | { type: "TOOL_RESULT"; toolCallId: string; result: ProductToolResult }
   | { type: "TOOL_END"; toolCallId: string }
   | { type: "SET_TURN_META"; steps: number; durationMs: number }
   | { type: "DONE" }
@@ -212,7 +196,7 @@ function reducer(state: State, action: Action): State {
         messages: updateLastMessage(state.messages, (m) => ({
           ...m,
           parts: m.parts.map((p) =>
-            p.type === "tool_call" && p.toolCallId === action.toolCallId ? { ...p, outcome: action.outcome, candidates: action.candidates, card: action.card } : p,
+            p.type === "tool_call" && p.toolCallId === action.toolCallId ? { ...p, result: action.result } : p,
           ),
         })),
       };
@@ -323,14 +307,8 @@ export function useAgentSession() {
   const runStartRef = useRef<number>(0);
   const stepCountRef = useRef<number>(0);
   const inFlightRef = useRef(false);
-  // Tracks whether a navigation-intent tool succeeded during the current turn,
-  // so the pane follows the server route even when re-navigating to where the
-  // server already pointed. Keyed lookups need the tool name from TOOL_CALL_START.
-  const routeFollowRef = useRef(false);
-  const toolNamesRef = useRef<Map<string, string>>(new Map());
-  // Set when the user manually navigates (sidebar/card) after an agent nav this turn —
-  // suppresses a trailing refetch from yanking the pane back over a deliberate click.
-  const userNavSinceToolRef = useRef(false);
+  const navigationVersionRef = useRef(0);
+  const activeRunIdRef = useRef<string | null>(null);
   // Monotonic sequence so out-of-order app-state refetches can't apply a stale snapshot:
   // only the most-recently-issued refresh's result is allowed to dispatch (last-issued-wins).
   const appStateSeqRef = useRef(0);
@@ -341,6 +319,7 @@ export function useAgentSession() {
   useEffect(() => { streamingRef.current = state.isStreaming; }, [state.isStreaming]);
   useEffect(() => { viewRouteRef.current = state.viewRoute; }, [state.viewRoute]);
   useEffect(() => { appStateRef.current = state.appState; }, [state.appState]);
+  useEffect(() => { activeRunIdRef.current = state.currentRunId; }, [state.currentRunId]);
 
   const clearAndDeleteSession = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
@@ -413,8 +392,7 @@ export function useAgentSession() {
   }, [state.isStreaming, state.messages]);
 
   const navigateView = useCallback((route: string) => {
-    // A deliberate manual nav: a trailing same-turn refetch must not yank the pane back.
-    userNavSinceToolRef.current = true;
+    navigationVersionRef.current += 1;
     dispatch({ type: "SET_VIEW_ROUTE", route });
     // Every route change — manual click included — feeds the visit log (fire-and-forget).
     void recordVisit(route, "");
@@ -425,7 +403,7 @@ export function useAgentSession() {
     // don't re-finalize it or re-refresh state the user chose to stop watching.
     if (cancelledRef.current && event.type !== "RUN_STARTED") return;
     switch (event.type) {
-      case "RUN_STARTED": runStartRef.current = performance.now(); stepCountRef.current = 0; routeFollowRef.current = false; userNavSinceToolRef.current = false; cancelledRef.current = false; toolNamesRef.current.clear(); dispatch({ type: "RUN_STARTED", runId: event.run_id }); break;
+      case "RUN_STARTED": runStartRef.current = performance.now(); stepCountRef.current = 0; cancelledRef.current = false; activeRunIdRef.current = event.run_id; dispatch({ type: "RUN_STARTED", runId: event.run_id }); break;
       case "TEXT_MESSAGE_START": dispatch({ type: "ASSISTANT_START", messageId: event.message_id }); break;
       case "TEXT_MESSAGE_CONTENT": dispatch({ type: "DELTA", delta: event.delta }); break;
       case "TEXT_MESSAGE_END": dispatch({ type: "MESSAGE_END" }); break;
@@ -434,40 +412,33 @@ export function useAgentSession() {
       case "REASONING_END": break;
       case "TOOL_CALL_START":
         if (event.tool_call_name !== "skill") stepCountRef.current += 1;
-        toolNamesRef.current.set(event.tool_call_id, event.tool_call_name);
         dispatch({ type: "TOOL_START", toolCallId: event.tool_call_id, toolCallName: event.tool_call_name });
         break;
       case "TOOL_CALL_ARGS": dispatch({ type: "TOOL_ARGS", toolCallId: event.tool_call_id, delta: event.delta }); break;
-      case "TOOL_CALL_RESULT": {
-        // Follow the route only when a navigation-intent tool actually succeeded
-        // (an ambiguous/not-found navigate stays put). Emitted just before TOOL_CALL_END.
-        const toolName = toolNamesRef.current.get(event.tool_call_id);
-        if (event.outcome === "ok" && toolName && ROUTE_SETTING_TOOLS.has(toolName)) {
-          routeFollowRef.current = true;
-          // A fresh agent nav supersedes any earlier manual nav this turn.
-          userNavSinceToolRef.current = false;
+      case "TOOL_CALL_RESULT": dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, result: event.result }); break;
+      case "NAVIGATION_RESOLVED":
+        if (shouldApplyAgentNavigation({ activeRunId: activeRunIdRef.current, navigationVersion: navigationVersionRef.current, cancelled: cancelledRef.current, event, appState: appStateRef.current })) {
+          dispatch({ type: "SET_VIEW_ROUTE", route: event.destination.path });
         }
-        dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, outcome: event.outcome, candidates: event.candidates, card: event.card });
         break;
-      }
       case "TOOL_CALL_END":
         dispatch({ type: "TOOL_END", toolCallId: event.tool_call_id });
-        // A tool may have mutated workspace state (navigation, CRUD) — refetch so the pane reflects it live.
-        if (sessionIdRef.current) void refreshAppState(sessionIdRef.current, routeFollowRef.current && !userNavSinceToolRef.current);
+        if (sessionIdRef.current) void refreshAppState(sessionIdRef.current);
         break;
       case "RUN_FINISHED":
         if (runStartRef.current) dispatch({ type: "SET_TURN_META", steps: stepCountRef.current, durationMs: Math.round(performance.now() - runStartRef.current) });
         dispatch({ type: "DONE" });
-        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current, routeFollowRef.current && !userNavSinceToolRef.current); void refreshFiles(sessionIdRef.current); }
+        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current); void refreshFiles(sessionIdRef.current); }
         break;
       case "RUN_ERROR":
         dispatch({ type: "ERROR", message: event.message || "Error during generation." });
-        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current, routeFollowRef.current && !userNavSinceToolRef.current); void refreshFiles(sessionIdRef.current); }
+        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current); void refreshFiles(sessionIdRef.current); }
         break;
     }
   }, [refreshAppState, refreshFiles]);
 
   const handleSend = useCallback(async (content: string) => {
+    const requestedNavigationVersion = navigationVersionRef.current;
     // inFlightRef is synchronous — guards against two sends in the same tick,
     // before isStreaming/streamingRef flip on the next render.
     if (!state.sessionId || state.isStreaming || streamingRef.current || inFlightRef.current) return;
@@ -504,8 +475,7 @@ export function useAgentSession() {
         dispatch({ type: "BUNDLE_USED", bundle: null });
       }
       const prompt = `${preamble}\n\n${content}`;
-      for await (const event of streamSSE(prompt, controller.signal, state.sessionId)) { handleAGUIEvent(event); }
-      if (streamingRef.current) dispatch({ type: "DONE" });
+      for await (const event of streamSSE(prompt, controller.signal, state.sessionId, requestedNavigationVersion)) { handleAGUIEvent(event); }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") return;
       dispatch({ type: "ERROR", message: friendlyError(err, "Message failed.") });

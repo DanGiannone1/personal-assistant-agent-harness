@@ -37,8 +37,10 @@ import appdb
 _AGENT_BACKEND = os.getenv("AGENT_BACKEND", "deepagents").lower()
 if _AGENT_BACKEND == "deepagents":
     from agent_deepagents import AgentSession, _sse_event
-else:
+elif _AGENT_BACKEND == "copilot":
     from agent import AgentSession, _sse_event
+else:
+    raise RuntimeError("AGENT_BACKEND must be 'deepagents' or 'copilot'")
 from trace_logging import setup_trace_logging, trace_event
 from tracing import setup_tracing
 from upload_policy import ALLOWED_UPLOAD_EXTENSIONS
@@ -179,6 +181,7 @@ async def _reset_session_state(session_id: str) -> None:
 # ── Request models ────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000)
+    navigation_version: int = Field(default=0, ge=0)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
@@ -272,7 +275,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     prompt_preview=req.prompt[:500],
                 )
                 async with asyncio.timeout(chat_timeout):
-                    async for event in session.send(req.prompt):
+                    async for event in session.send(req.prompt, req.navigation_version):
                         yield event
             except asyncio.TimeoutError:
                 logger.warning("Chat stream timed out after %ds", chat_timeout)
