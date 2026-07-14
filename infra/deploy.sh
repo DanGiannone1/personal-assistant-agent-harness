@@ -73,6 +73,13 @@ SESSION_READY_SESSIONS="${SESSION_READY_SESSIONS:-1}"
 # MVP v1 (docs/mvp-requirements.md R17/R18): Search off by default (shared admin
 # key + no Private Link on free SKU); demo login on for the deployed test path
 # (flip via env, no redeploy); artifacts on Blob via managed identity.
+# Session runtime: a plain scale-to-zero container app by default. ACA Dynamic
+# Sessions pools now enforce >=1 always-warm instance (~$79/mo idle), which
+# violates R17; server.py is natively multi-session with per-session workspace
+# dirs, so the pool's per-session hypervisor isolation is defense-in-depth we
+# trade away consciously here. USE_SESSION_POOL=true restores the pool.
+USE_SESSION_POOL="${USE_SESSION_POOL:-false}"
+SESSION_APP_NAME="${SESSION_APP_NAME:-flow-session-app}"
 ENABLE_SEARCH="${ENABLE_SEARCH:-false}"
 DEMO_LOGIN_ENABLED="${DEMO_LOGIN_ENABLED:-true}"
 NEXT_PUBLIC_DEMO_LOGIN="${NEXT_PUBLIC_DEMO_LOGIN:-$DEMO_LOGIN_ENABLED}"
@@ -427,7 +434,44 @@ az acr build \
     session-container/ \
     -o none
 
-# ── 7. Create Session Pool (Custom Container) ───────────────────────────
+# ── 7. Session runtime: scale-to-zero app (default) or Dynamic Sessions pool ─
+if ! is_truthy "$USE_SESSION_POOL"; then
+    echo ">>> Deploying session runtime as a scale-to-zero container app..."
+    # max-replicas 1: AgentSession state is in-process; single replica keeps
+    # session routing trivial. Internal ingress: only the orchestrator calls it.
+    if ! az containerapp create \
+        --name "$SESSION_APP_NAME" \
+        --resource-group "$RG" \
+        --environment "$ENV_NAME" \
+        --image "$SESSION_IMAGE" \
+        --registry-server "$ACR_LOGIN_SERVER" \
+        --registry-identity "$IDENTITY_ID" \
+        --user-assigned "$IDENTITY_ID" \
+        --target-port 8080 \
+        --ingress internal \
+        --min-replicas 0 \
+        --max-replicas 1 \
+        --cpu 1.0 --memory 2Gi \
+        --env-vars "${SESSION_ENV_VARS[@]}" \
+        -o none 2>/dev/null; then
+        echo "    Session app exists, updating..."
+        az containerapp update \
+            --name "$SESSION_APP_NAME" \
+            --resource-group "$RG" \
+            --image "$SESSION_IMAGE" \
+            --min-replicas 0 \
+            --max-replicas 1 \
+            --set-env-vars "${SESSION_ENV_VARS[@]}" \
+            -o none
+    fi
+    SESSION_APP_FQDN=$(az containerapp show \
+        --name "$SESSION_APP_NAME" \
+        --resource-group "$RG" \
+        --query "properties.configuration.ingress.fqdn" -o tsv)
+    POOL_ENDPOINT="https://$SESSION_APP_FQDN"
+    echo "    Session app endpoint (internal): $POOL_ENDPOINT"
+else
+
 echo ">>> Creating session pool..."
 
 # Get the environment ID
@@ -539,6 +583,8 @@ az role assignment create \
     --scope "$POOL_ID" \
     -o none
 
+fi  # USE_SESSION_POOL
+
 # ── 9. Build & Push Orchestrator Image ───────────────────────────────────
 echo ">>> Building orchestrator image..."
 az acr build \
@@ -576,6 +622,10 @@ if is_truthy "$ENABLE_SEARCH"; then
         "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY"
         "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME"
     )
+fi
+if ! is_truthy "$USE_SESSION_POOL"; then
+    # Plain session app: no Dynamic Sessions bearer needed (or wanted).
+    ORCHESTRATOR_ENV_VARS+=("POOL_AUTH=off")
 fi
 
 if [ -n "$ENTRA_TENANT_ID" ]; then

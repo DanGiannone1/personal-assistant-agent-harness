@@ -61,6 +61,10 @@ class _SessionPoolAuth(httpx.Auth):
         self._expires_on: float = 0
 
     def _needs_token(self) -> bool:
+        # POOL_AUTH=off: the session runtime is a plain container app (internal
+        # ingress), not a Dynamic Sessions pool — no bearer to attach.
+        if os.getenv("POOL_AUTH", "").lower() == "off":
+            return False
         return POOL_MANAGEMENT_ENDPOINT.startswith("https://")
 
     async def _refresh(self) -> None:
