@@ -217,6 +217,8 @@ export const updateEngagement = (pid: string, body: Partial<{ name: string; desc
   jsonReq<Engagement>("PATCH", `/engagements/${pid}`, body);
 export const addEngagementMember = (pid: string, userId: string, role: string) =>
   jsonReq("POST", `/engagements/${pid}/members`, { userId, role });
+export const listUsers = () =>
+  jsonReq<{ id: string; username: string; displayName: string }[]>("GET", "/users");
 export const removeEngagementMember = (pid: string, userId: string) =>
   jsonReq("DELETE", `/engagements/${pid}/members/${userId}`);
 export const addConvention = (pid: string, text: string) =>

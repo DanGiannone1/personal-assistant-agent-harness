@@ -159,6 +159,18 @@ def get_user(user_id: str) -> dict | None:
     return next((u for u in list_users() if u["id"] == user_id), None)
 
 
+def find_user(ref: str) -> dict | None:
+    """Resolve a user by id OR username, case-insensitive (Entra users are addressable
+    by their sign-in name, not just the opaque u-<oid>). Sanitized record or None."""
+    needle = (ref or "").strip().lower()
+    if not needle:
+        return None
+    for u in list_users():
+        if u["id"].lower() == needle or (u.get("username") or "").lower() == needle:
+            return u
+    return None
+
+
 def verify_login(username: str, password: str) -> dict | None:
     """Check credentials → sanitized user record, or None. Fail closed on any mismatch."""
     container = _container()

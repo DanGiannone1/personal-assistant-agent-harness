@@ -7,7 +7,7 @@
 // v1 delivery record is deliberately slim: a G/Y/R status that always carries a why
 // (stage, milestones, risks, and actions are parked — docs/mvp-requirements.md R7).
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft, CheckSquare, Download, Files, FolderKanban,
   Plus, Settings as SettingsIcon, Trash2, Upload, Users,
@@ -18,7 +18,7 @@ import type {
 import {
   addConvention, addEngagementMember, createEngagement,
   createEngagementTask, deleteEngagementArtifact, deleteEngagementTask,
-  openEngagementArtifact, removeConvention, removeEngagementMember,
+  listUsers, openEngagementArtifact, removeConvention, removeEngagementMember,
   updateEngagement, updateEngagementTask, uploadEngagementArtifact,
 } from "@/lib/api";
 import { friendlyError } from "@/lib/utils";
@@ -32,8 +32,6 @@ function StatusBadge({ status, testid }: { status: EngagementStatus; testid?: st
 }
 
 const openTasks = (p: Engagement) => (p.tasks ?? []).filter((t) => t.status !== "Done").length;
-
-const KNOWN_USERS = ["dan", "ava", "sam"];
 
 function roleOf(p: Engagement, userId: string | undefined): EngagementRole | null {
   const m = p.members.find((m) => m.userId === userId);
@@ -467,10 +465,19 @@ function EngagementSettings({ engagement, myRole, onRefresh }: {
 }) {
   const isOwner = myRole === "owner";
   const [userId, setUserId] = useState("");
+  const [userText, setUserText] = useState("");
   const [role, setRole] = useState<EngagementRole>("viewer");
   const [convText, setConvText] = useState("");
+  const [directory, setDirectory] = useState<{ id: string; username: string; displayName: string }[]>([]);
   const { busy, error, run } = useBusy(onRefresh);
-  const candidates = KNOWN_USERS.filter((u) => !engagement.members.some((m) => m.userId === u));
+  useEffect(() => {
+    if (!isOwner) return;
+    listUsers().then(setDirectory).catch(() => setDirectory([]));
+  }, [isOwner]);
+  const candidates = directory.filter((u) => !engagement.members.some((m) => m.userId === u.id));
+  // Free-text (username or u-<oid>) wins over the dropdown so Entra users are
+  // reachable even before they appear in the directory the owner has loaded.
+  const memberRef = userText.trim() || userId;
 
   return (
     <>
@@ -493,13 +500,19 @@ function EngagementSettings({ engagement, myRole, onRefresh }: {
           <div className="tw-addform" style={{ marginTop: 10 }} data-testid="add-member-form">
             <select className="tw-input" value={userId} onChange={(e) => setUserId(e.target.value)} data-testid="member-user-select">
               <option value="">Add member…</option>
-              {candidates.map((u) => <option key={u} value={u}>{u}</option>)}
+              {candidates.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.displayName ? `${u.displayName} (${u.username || u.id})` : (u.username || u.id)}
+                </option>
+              ))}
             </select>
+            <input className="tw-input" value={userText} placeholder="or username / user id"
+              onChange={(e) => setUserText(e.target.value)} data-testid="member-user-input" />
             <select className="tw-input" value={role} onChange={(e) => setRole(e.target.value as EngagementRole)} data-testid="member-role-select">
               {(["viewer", "editor", "owner"] as const).map((r) => <option key={r}>{r}</option>)}
             </select>
-            <button type="button" className="tw-btn" data-testid="member-add-btn" disabled={busy || !userId}
-              onClick={() => run(async () => { await addEngagementMember(engagement.id, userId, role); setUserId(""); })}>
+            <button type="button" className="tw-btn" data-testid="member-add-btn" disabled={busy || !memberRef}
+              onClick={() => run(async () => { await addEngagementMember(engagement.id, memberRef, role); setUserId(""); setUserText(""); })}>
               Add
             </button>
           </div>

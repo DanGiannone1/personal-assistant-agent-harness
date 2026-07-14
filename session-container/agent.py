@@ -1027,9 +1027,9 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         role = params.role.strip().lower() or "viewer"
         if role not in appdb.ENGAGEMENT_ROLES:
             return f"BAD_ROLE: use one of {appdb.ENGAGEMENT_ROLES}."
-        target = appdb.get_user(params.user.strip().lower())
+        target = appdb.find_user(params.user)  # id or username — Entra users go by sign-in name
         if target is None:
-            return f"USER_REQUIRED: no user named '{params.user}'. Known users: " + ", ".join(u["id"] for u in appdb.list_users())
+            return f"USER_REQUIRED: no user named '{params.user}'. Known users: " + ", ".join(u.get("username") or u["id"] for u in appdb.list_users())
         eng, err = _resolve_engagement_ref(params.engagement)
         if err:
             return err

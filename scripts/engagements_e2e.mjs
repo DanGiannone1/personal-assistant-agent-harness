@@ -5,6 +5,7 @@ import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
 const APP = "http://localhost:3000";
+const API = "http://localhost:8000";
 const OUT = "screenshots/engagements-e2e";
 mkdirSync(OUT, { recursive: true });
 
@@ -115,6 +116,14 @@ async function agentTurn(p, msg, maxMs = 150000) {
   await p2.waitForTimeout(500);
   ok("M2 viewer has no add-task button", await p2.locator('[data-testid="engagement-add-task-btn"]').count() === 0);
   ok("M2 viewer sees view-only note", await p2.locator('[data-testid="viewer-note"]').count() === 1);
+  // Hidden buttons are UI courtesy; the server is the enforcement. A viewer's raw
+  // REST write must be rejected outright.
+  const samTok = await p2.evaluate(() => localStorage.getItem("pa_auth_token"));
+  const rawWrite = await p2.request.post(`${API}/engagements/eng-website-launch/tasks`, {
+    headers: { "X-Auth-Token": samTok ?? "", "Content-Type": "application/json" },
+    data: { title: "viewer probe task" },
+  });
+  ok("M2 viewer direct REST write rejected (403)", rawWrite.status() === 403, String(rawWrite.status()));
   await p2.screenshot({ path: `${OUT}/m2-sam-viewer.png` });
   await c2.close();
 }
@@ -311,7 +320,6 @@ async function agentTurn(p, msg, maxMs = 150000) {
 
 // ── M7: artifacts — durable files, member visibility, editor-only delete ─────
 {
-  const API = "http://localhost:8000";
   const { ctx, p } = await fresh();
   await signIn(p, "dan");
   await p.locator('[data-testid="nav--engagements"]').click();

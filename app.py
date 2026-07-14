@@ -317,6 +317,15 @@ async def auth_me(uid: str = Depends(current_user)) -> dict:
     return {**user, "identity": user.get("identity", "demo")}
 
 
+@app.get("/users")
+async def user_directory(uid: str = Depends(current_user)) -> list[dict]:
+    """Member-pick directory for any signed-in user: id, username, displayName only —
+    never password hashes or persona (list_users strips hashes; we strip the rest)."""
+    users = await asyncio.to_thread(appdb.list_users)
+    return [{"id": u["id"], "username": u.get("username", ""),
+             "displayName": u.get("displayName", "")} for u in users]
+
+
 # ---------------------------------------------------------------------------
 # Session endpoints — all require a signed-in user; sessions are owned
 # ---------------------------------------------------------------------------
@@ -954,7 +963,8 @@ async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(curr
     role = req.role.strip().lower()
     if role not in appdb.ENGAGEMENT_ROLES:
         raise HTTPException(status_code=422, detail=f"role must be one of {appdb.ENGAGEMENT_ROLES}")
-    target = await asyncio.to_thread(appdb.get_user, req.userId.strip().lower())
+    # Accept a user id OR username — Entra users are known by sign-in name.
+    target = await asyncio.to_thread(appdb.find_user, req.userId)
     if target is None:
         raise HTTPException(status_code=422, detail="No such user")
 
@@ -971,6 +981,10 @@ async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(curr
 
 @app.delete("/engagements/{engagement_id}/members/{member_id}", status_code=204)
 async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(current_user)):
+    # Pre-check like every other mutating route: unknown id / non-member → 404,
+    # non-owner member → 403 — never a 500 (and no member/non-member shape leak).
+    await _load_engagement_authed(engagement_id, uid, "owner")
+
     def _mut(doc):
         remaining_owners = [m for m in doc["members"]
                             if m["role"] == "owner" and m["userId"] != member_id]
@@ -987,7 +1001,10 @@ async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(c
         if not appdb.role_at_least(doc, uid, "owner"):
             raise appdb.AbortWrite("forbidden")
         return _mut(doc)
-    result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
+    try:
+        result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="Not found")
     if result == "forbidden":
         raise HTTPException(status_code=403, detail="Requires owner access")
     if result == "last-owner":
@@ -1101,8 +1118,10 @@ async def list_artifacts(engagement_id: str, uid: str = Depends(current_user)) -
 @app.post("/engagements/{engagement_id}/artifacts", status_code=201)
 async def upload_artifact(engagement_id: str, file: UploadFile,
                           uid: str = Depends(current_user)) -> dict:
-    await _load_engagement_authed(engagement_id, uid)  # any member may add (R10)
-    data = await file.read()
+    eng = await _load_engagement_authed(engagement_id, uid)  # any member may add (R10)
+    # Read at most cap+1 bytes so an oversized body 413s without buffering it all
+    # (same idiom as session_manager upload).
+    data = await file.read(_ARTIFACT_MAX_BYTES + 1)
     if len(data) > _ARTIFACT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Artifact exceeds the 20MB limit")
     if not data:
@@ -1116,18 +1135,19 @@ async def upload_artifact(engagement_id: str, file: UploadFile,
         "uploadedAt": appdb._now_iso(),
     }
     # Bytes first, metadata second: a metadata failure leaves an orphan blob
-    # (harmless, cleaned below), never a listed artifact with no bytes.
+    # (harmless, cleaned below), never a listed artifact with no bytes. Storage is
+    # keyed by the CANONICAL doc id (the URL segment may omit the eng- prefix).
     await asyncio.to_thread(
-        artifact_store.put, engagement_id, entry["id"], data, entry["contentType"])
+        artifact_store.put, eng["id"], entry["id"], data, entry["contentType"])
 
     def _mut(doc):
         doc.setdefault("library", []).insert(0, dict(entry))
         appdb.log_activity(doc, uid, "artifact.added", entry["name"])
 
     try:
-        await _mutate_engagement(engagement_id, uid, "viewer", _mut)
+        await _mutate_engagement(eng["id"], uid, "viewer", _mut)
     except Exception:
-        await asyncio.to_thread(artifact_store.delete, engagement_id, entry["id"])
+        await asyncio.to_thread(artifact_store.delete, eng["id"], entry["id"])
         raise
     return entry
 
@@ -1139,7 +1159,7 @@ async def download_artifact(engagement_id: str, artifact_id: str,
     entry = _find_artifact(engagement, artifact_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    data = await asyncio.to_thread(artifact_store.get, engagement_id, artifact_id)
+    data = await asyncio.to_thread(artifact_store.get, engagement["id"], artifact_id)
     if data is None:
         raise HTTPException(status_code=404, detail="Artifact content missing")
     filename = entry["name"].replace('"', "")
@@ -1153,6 +1173,8 @@ async def download_artifact(engagement_id: str, artifact_id: str,
 @app.delete("/engagements/{engagement_id}/artifacts/{artifact_id}", status_code=204)
 async def delete_artifact(engagement_id: str, artifact_id: str,
                           uid: str = Depends(current_user)):
+    eng = await _load_engagement_authed(engagement_id, uid, "editor")
+
     def _mut(doc):
         entry = _find_artifact(doc, artifact_id)
         if entry is None:
@@ -1160,8 +1182,8 @@ async def delete_artifact(engagement_id: str, artifact_id: str,
         doc["library"] = [a for a in doc["library"] if a.get("id") != artifact_id]
         appdb.log_activity(doc, uid, "artifact.removed", entry["name"])
 
-    await _mutate_engagement(engagement_id, uid, "editor", _mut)
-    await asyncio.to_thread(artifact_store.delete, engagement_id, artifact_id)
+    await _mutate_engagement(eng["id"], uid, "editor", _mut)
+    await asyncio.to_thread(artifact_store.delete, eng["id"], artifact_id)
 
 
 # ── Navigation context — visit log + quick links (no AI in this path) ─────────

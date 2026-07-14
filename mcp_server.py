@@ -16,6 +16,7 @@ Health probe at /health is unauthenticated. Client setup:
 
 from __future__ import annotations
 
+import hmac
 import os
 import sys
 from pathlib import Path
@@ -190,7 +191,9 @@ async def app(scope, receive, send):
     headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
     auth = headers.get("authorization", "")
     bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    if not expected or (headers.get("x-api-key", "") != expected and bearer != expected):
+    x_key = headers.get("x-api-key", "")
+    if not expected or not (hmac.compare_digest(x_key, expected)
+                            or hmac.compare_digest(bearer, expected)):
         await send({"type": "http.response.start", "status": 401,
                     "headers": [(b"content-type", b"text/plain")]})
         return await send({"type": "http.response.body", "body": b"unauthorized"})
