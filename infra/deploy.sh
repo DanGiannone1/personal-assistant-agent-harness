@@ -70,6 +70,14 @@ OTEL_DEPLOYMENT_ENVIRONMENT="${OTEL_DEPLOYMENT_ENVIRONMENT:-azure}"
 # enforced at create AND via ARM since ~mid-2026): the platform floor is 1, so one
 # warm session is always running. Old pools with 0 are grandfathered.
 SESSION_READY_SESSIONS="${SESSION_READY_SESSIONS:-1}"
+# MVP v1 (docs/mvp-requirements.md R17/R18): Search off by default (shared admin
+# key + no Private Link on free SKU); demo login on for the deployed test path
+# (flip via env, no redeploy); artifacts on Blob via managed identity.
+ENABLE_SEARCH="${ENABLE_SEARCH:-false}"
+DEMO_LOGIN_ENABLED="${DEMO_LOGIN_ENABLED:-true}"
+NEXT_PUBLIC_DEMO_LOGIN="${NEXT_PUBLIC_DEMO_LOGIN:-$DEMO_LOGIN_ENABLED}"
+ARTIFACTS_ACCOUNT="${ARTIFACTS_ACCOUNT:-$ADLS_ACCOUNT_NAME}"
+ARTIFACTS_CONTAINER="${ARTIFACTS_CONTAINER:-artifacts}"
 ORCHESTRATOR_MIN_REPLICAS="${ORCHESTRATOR_MIN_REPLICAS:-0}"
 FRONTEND_MIN_REPLICAS="${FRONTEND_MIN_REPLICAS:-0}"
 SESSION_POOL_API_VERSION="${SESSION_POOL_API_VERSION:-2024-10-02-preview}"
@@ -327,43 +335,52 @@ az role assignment create \
     --scope "$ADLS_ID" \
     -o none
 
-# ── 4c. Azure AI Search (Library / KB retrieval) ────────────────────────
-# free tier ($0) for dev; capacity varies by region — flow-dev-srch landed in
-# eastus because eastus2 had none. Override SEARCH_SKU=basic for real load.
+# ── 4c. Azure AI Search (Library / KB retrieval) — OFF for MVP v1 ────────
+# Disabled by default per docs/mvp-requirements.md R18: library.py authenticates
+# with the shared admin key (a plaintext-env shared secret) and the free SKU
+# cannot use Private Link. The library search tool degrades gracefully when
+# AZURE_SEARCH_ENDPOINT is unset. Re-enable with ENABLE_SEARCH=true once
+# library.py moves to the managed-identity RBAC path.
 SEARCH_NAME="${SEARCH_NAME:-${PREFIX}-srch}"
 SEARCH_SKU="${SEARCH_SKU:-free}"
-if ! az search service show --name "$SEARCH_NAME" --resource-group "$RG" -o none 2>/dev/null; then
-    echo ">>> Creating Azure AI Search service ($SEARCH_SKU)..."
-    az search service create \
-        --name "$SEARCH_NAME" \
-        --resource-group "$RG" \
-        --location "$LOCATION" \
-        --sku "$SEARCH_SKU" \
-        --partition-count 1 \
-        --replica-count 1 \
+SEARCH_ENDPOINT=""
+SEARCH_ADMIN_KEY=""
+if is_truthy "$ENABLE_SEARCH"; then
+    if ! az search service show --name "$SEARCH_NAME" --resource-group "$RG" -o none 2>/dev/null; then
+        echo ">>> Creating Azure AI Search service ($SEARCH_SKU)..."
+        az search service create \
+            --name "$SEARCH_NAME" \
+            --resource-group "$RG" \
+            --location "$LOCATION" \
+            --sku "$SEARCH_SKU" \
+            --partition-count 1 \
+            --replica-count 1 \
+            -o none
+    fi
+
+    SEARCH_ENDPOINT="https://${SEARCH_NAME}.search.windows.net"
+    # library.py authenticates with the admin key — thread it into the containers.
+    SEARCH_ADMIN_KEY=$(az search admin-key show --service-name "$SEARCH_NAME" --resource-group "$RG" --query primaryKey -o tsv)
+    echo "    Search endpoint: $SEARCH_ENDPOINT"
+
+    # Grant Search roles to the managed identity
+    echo ">>> Granting Search roles to managed identity..."
+    SEARCH_ID=$(az search service show --name "$SEARCH_NAME" --resource-group "$RG" --query id -o tsv)
+    az role assignment create \
+        --assignee-object-id "$IDENTITY_PRINCIPAL_ID" \
+        --assignee-principal-type ServicePrincipal \
+        --role "Search Index Data Reader" \
+        --scope "$SEARCH_ID" \
         -o none
+    az role assignment create \
+        --assignee-object-id "$IDENTITY_PRINCIPAL_ID" \
+        --assignee-principal-type ServicePrincipal \
+        --role "Search Service Contributor" \
+        --scope "$SEARCH_ID" \
+        -o none
+else
+    echo ">>> Skipping Azure AI Search (ENABLE_SEARCH=false — MVP v1 default)."
 fi
-
-SEARCH_ENDPOINT="https://${SEARCH_NAME}.search.windows.net"
-# library.py authenticates with the admin key — thread it into the containers.
-SEARCH_ADMIN_KEY=$(az search admin-key show --service-name "$SEARCH_NAME" --resource-group "$RG" --query primaryKey -o tsv)
-echo "    Search endpoint: $SEARCH_ENDPOINT"
-
-# Grant Search roles to the managed identity
-echo ">>> Granting Search roles to managed identity..."
-SEARCH_ID=$(az search service show --name "$SEARCH_NAME" --resource-group "$RG" --query id -o tsv)
-az role assignment create \
-    --assignee-object-id "$IDENTITY_PRINCIPAL_ID" \
-    --assignee-principal-type ServicePrincipal \
-    --role "Search Index Data Reader" \
-    --scope "$SEARCH_ID" \
-    -o none
-az role assignment create \
-    --assignee-object-id "$IDENTITY_PRINCIPAL_ID" \
-    --assignee-principal-type ServicePrincipal \
-    --role "Search Service Contributor" \
-    --scope "$SEARCH_ID" \
-    -o none
 
 # ── 5. Container Apps Environment (VNet-integrated) ──────────────────────
 ACA_SUBNET_ID=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET_NAME" -n aca-infra --query id -o tsv)
@@ -409,6 +426,31 @@ echo ">>> Creating session pool..."
 # Get the environment ID
 ENV_ID=$(az containerapp env show --name "$ENV_NAME" --resource-group "$RG" --query id -o tsv)
 
+# One env list for create AND update — the update path previously dropped the
+# COSMOS_* vars, silently breaking agent tools on redeploys.
+SESSION_ENV_VARS=(
+    "AZURE_ENDPOINT=$AZURE_ENDPOINT"
+    "AZURE_DEPLOYMENT=$AZURE_DEPLOYMENT"
+    "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME"
+    "ADLS_FILESYSTEM=$ADLS_FILESYSTEM"
+    "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID"
+    "COSMOS_ENDPOINT=$COSMOS_ENDPOINT"
+    "COSMOS_DATABASE=$COSMOS_DATABASE"
+    "COSMOS_CONTAINER=$COSMOS_CONTAINER"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING=$APPLICATIONINSIGHTS_CONNECTION_STRING"
+    "OTEL_SERVICE_NAME=$OTEL_SERVICE_NAME"
+    "OTEL_SERVICE_NAMESPACE=$OTEL_SERVICE_NAMESPACE"
+    "OTEL_SERVICE_VERSION=$OTEL_SERVICE_VERSION"
+    "OTEL_DEPLOYMENT_ENVIRONMENT=$OTEL_DEPLOYMENT_ENVIRONMENT"
+)
+if is_truthy "$ENABLE_SEARCH"; then
+    SESSION_ENV_VARS+=(
+        "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT"
+        "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY"
+        "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME"
+    )
+fi
+
 if ! az containerapp sessionpool create \
     --name "$SESSION_POOL_NAME" \
     --resource-group "$RG" \
@@ -424,23 +466,7 @@ if ! az containerapp sessionpool create \
     --max-sessions 20 \
     --ready-sessions "$SESSION_READY_SESSIONS" \
     --cpu 1.0 --memory 2Gi \
-    --env-vars \
-        "AZURE_ENDPOINT=$AZURE_ENDPOINT" \
-        "AZURE_DEPLOYMENT=$AZURE_DEPLOYMENT" \
-        "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT" \
-        "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY" \
-        "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME" \
-        "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME" \
-        "ADLS_FILESYSTEM=$ADLS_FILESYSTEM" \
-        "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID" \
-        "COSMOS_ENDPOINT=$COSMOS_ENDPOINT" \
-        "COSMOS_DATABASE=$COSMOS_DATABASE" \
-        "COSMOS_CONTAINER=$COSMOS_CONTAINER" \
-        "APPLICATIONINSIGHTS_CONNECTION_STRING=$APPLICATIONINSIGHTS_CONNECTION_STRING" \
-        "OTEL_SERVICE_NAME=$OTEL_SERVICE_NAME" \
-        "OTEL_SERVICE_NAMESPACE=$OTEL_SERVICE_NAMESPACE" \
-        "OTEL_SERVICE_VERSION=$OTEL_SERVICE_VERSION" \
-        "OTEL_DEPLOYMENT_ENVIRONMENT=$OTEL_DEPLOYMENT_ENVIRONMENT" \
+    --env-vars "${SESSION_ENV_VARS[@]}" \
     -o none 2>/dev/null; then
     echo "    Session pool exists, updating..."
     az containerapp sessionpool update \
@@ -450,20 +476,7 @@ if ! az containerapp sessionpool create \
         --cooldown-period 300 \
         --max-sessions 20 \
         --ready-sessions "$SESSION_READY_SESSIONS" \
-        --env-vars \
-            "AZURE_ENDPOINT=$AZURE_ENDPOINT" \
-            "AZURE_DEPLOYMENT=$AZURE_DEPLOYMENT" \
-            "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT" \
-            "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY" \
-            "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME" \
-            "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME" \
-            "ADLS_FILESYSTEM=$ADLS_FILESYSTEM" \
-            "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID" \
-            "APPLICATIONINSIGHTS_CONNECTION_STRING=$APPLICATIONINSIGHTS_CONNECTION_STRING" \
-            "OTEL_SERVICE_NAME=$OTEL_SERVICE_NAME" \
-            "OTEL_SERVICE_NAMESPACE=$OTEL_SERVICE_NAMESPACE" \
-            "OTEL_SERVICE_VERSION=$OTEL_SERVICE_VERSION" \
-            "OTEL_DEPLOYMENT_ENVIRONMENT=$OTEL_DEPLOYMENT_ENVIRONMENT" \
+        --env-vars "${SESSION_ENV_VARS[@]}" \
         -o none
 fi
 
@@ -486,8 +499,10 @@ ACTUAL_READY_SESSIONS=$(az containerapp sessionpool show \
     --query "properties.scaleConfiguration.readySessionInstances" -o tsv)
 
 if [ "$ACTUAL_READY_SESSIONS" != "$SESSION_READY_SESSIONS" ]; then
-    echo "ERROR: Session pool ready sessions is $ACTUAL_READY_SESSIONS, expected $SESSION_READY_SESSIONS."
-    exit 1
+    # The platform floors this at 1 (see SESSION_READY_SESSIONS above); report
+    # the real value rather than failing the deploy — idle cost is tracked
+    # against the ACTUAL number under R17/S7.
+    echo "WARNING: Session pool ready sessions is $ACTUAL_READY_SESSIONS, requested $SESSION_READY_SESSIONS (platform floor)."
 fi
 
 # Managed identity INSIDE session containers (appdb → Cosmos, ADLS, OpenAI):
@@ -536,18 +551,25 @@ ORCHESTRATOR_ENV_VARS=(
     "COSMOS_ENDPOINT=$COSMOS_ENDPOINT"
     "COSMOS_DATABASE=$COSMOS_DATABASE"
     "COSMOS_CONTAINER=$COSMOS_CONTAINER"
-    "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT"
-    "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY"
-    "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME"
     "ACS_EMAIL_ENDPOINT=$ACS_EMAIL_ENDPOINT"
     "ACS_SENDER_ADDRESS=$ACS_SENDER_ADDRESS"
     "REMINDER_EMAIL=$REMINDER_EMAIL"
     "AZURE_ENDPOINT=$AZURE_ENDPOINT"
     "ADLS_ACCOUNT_NAME=$ADLS_ACCOUNT_NAME"
     "ADLS_FILESYSTEM=$ADLS_FILESYSTEM"
+    "ARTIFACTS_ACCOUNT=$ARTIFACTS_ACCOUNT"
+    "ARTIFACTS_CONTAINER=$ARTIFACTS_CONTAINER"
     "AZURE_CLIENT_ID=$IDENTITY_CLIENT_ID"
     "API_AUTH_REQUIRED=$API_AUTH_REQUIRED"
+    "DEMO_LOGIN_ENABLED=$DEMO_LOGIN_ENABLED"
 )
+if is_truthy "$ENABLE_SEARCH"; then
+    ORCHESTRATOR_ENV_VARS+=(
+        "AZURE_SEARCH_ENDPOINT=$SEARCH_ENDPOINT"
+        "AZURE_SEARCH_KEY=$SEARCH_ADMIN_KEY"
+        "AZURE_SEARCH_KB_NAME=$AZURE_SEARCH_KB_NAME"
+    )
+fi
 
 if [ -n "$ENTRA_TENANT_ID" ]; then
     ORCHESTRATOR_ENV_VARS+=("ENTRA_TENANT_ID=$ENTRA_TENANT_ID")
@@ -655,6 +677,7 @@ az acr build \
     --build-arg "NEXT_PUBLIC_ENTRA_API_CLIENT_ID=${ENTRA_API_CLIENT_ID}" \
     --build-arg "NEXT_PUBLIC_ENTRA_API_SCOPES=${ENTRA_API_SCOPES}" \
     --build-arg "NEXT_PUBLIC_ENTRA_REDIRECT_URI=${RESOLVED_REDIRECT_URI}" \
+    --build-arg "NEXT_PUBLIC_DEMO_LOGIN=${NEXT_PUBLIC_DEMO_LOGIN}" \
     frontend/ \
     -o none
 
