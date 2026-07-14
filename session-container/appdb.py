@@ -1,4 +1,4 @@
-"""Personal Assistant application data store — multi-user.
+"""CSA Workbench application data store — multi-user.
 
 App state lives in **Azure Cosmos DB** as a set of documents in one container:
 

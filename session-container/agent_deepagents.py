@@ -1,4 +1,4 @@
-"""Standalone LangGraph **Deep Agents** backend for the Personal Assistant session container.
+"""Standalone LangGraph **Deep Agents** backend for the CSA Workbench session container.
 
 This is a drop-in alternative to `agent.AgentSession` (which wraps the GitHub
 Copilot SDK). It exposes the *identical* interface that `server.py` depends on —
@@ -11,7 +11,7 @@ Azure OpenAI instead of the Copilot SDK.
 Design notes (see review/ findings doc for the full comparison):
 - **Standalone by choice.** This module shares only `appdb`/`navsvc`/`library`
   (the system of record and its services) and the `ag_ui` event protocol with the
-  Copilot path. The Personal Assistant tools and system prompt are ported here as
+  Copilot path. The CSA Workbench tools and system prompt are ported here as
   native LangChain tools so the two backends never couple. The cost is duplicated
   tool logic; the benefit is a clean, independent implementation that could run
   with the Copilot SDK uninstalled.
@@ -21,7 +21,7 @@ Design notes (see review/ findings doc for the full comparison):
   role gating, and ETag-safe writes.
 - **"Don't over-plan" parity.** The deep-agent harness ships planning (`write_todos`),
   a scratch filesystem (`ls`/`read_file`/`write_file`/…), subagents (`task`) and
-  shell (`execute`). Personal Assistant is deliberately a one-direct-tool-call app, so every
+  shell (`execute`). CSA Workbench is deliberately a one-direct-tool-call app, so every
   built-in tool is hidden from the model via `_ToolExclusionMiddleware`.
 - **Tool-name fidelity.** The frontend keys off exact tool *and* arg names
   (`write_file`/`p.path`, `navigate`/`p.destination`, …). A user tool named
@@ -95,12 +95,13 @@ _EXCLUDED_BUILTINS = frozenset(
 # ───────────────────────── System prompt (mirrors agent.py) ─────────────────
 
 SYSTEM_PROMPT = """\
-You are the assistant embedded in Personal Assistant — a simple personal-productivity app for managing
-**tasks**, a **calendar**, and **documents**. The app has these pages: Home (today's
-agenda — what's due, what's overdue, the next events), To-Do (tasks grouped into buckets,
-each with a status, priority, group, optional due date, and subtasks), Calendar (events —
-meetings, reminders, focus blocks — by day), and Documents (notes and drafts you read and
-write). You help by acting directly on the app through tools.
+You are the assistant embedded in CSA Workbench — an engagement workspace where solution architects
+manage customer work, tasks, calendars, and documents. The app has these pages: Home (today's
+agenda — what's due, what's overdue, the next events), Engagements (shared customer-delivery
+workspaces with members and roles), To-Do (tasks grouped into buckets, each with a status,
+priority, group, optional due date, and subtasks), Calendar (events — meetings, reminders, focus
+blocks — by day), and Documents (notes and drafts you read and write). You help by acting directly
+on the app through tools.
 
 You operate inside the user's own session. The tools you call read and mutate the
 *real* application state, and the user sees the result in the app next to this chat.
@@ -174,7 +175,7 @@ Style:
   didn't return.
 - Stay in your lane: you're this app's assistant. For clearly off-topic requests (general
   trivia, unrelated coding), don't answer at length — briefly redirect ("I'm focused on your
-  Personal Assistant workspace — want me to look at your tasks, calendar, or a document?").
+  CSA Workbench — want me to look at an engagement, task, calendar, or document?").
 """
 
 
@@ -308,7 +309,7 @@ def _normalize_workspace_text(text: str) -> str:
     return text.strip() + ("\n" if text.strip() else "")
 
 
-# ───────────────────────── Personal Assistant tools as LangChain tools ────────────────────
+# ───────────────────────── CSA Workbench tools as LangChain tools ─────────────────────────
 
 def _build_langchain_tools(working_dir: str, user_id: str) -> list:
     """Port of agent._build_flow_tools as native LangChain tools (same names, args,
@@ -410,7 +411,7 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         manual navs (no second resolution pass)."""
         return "\nCHIPS: " + "; ".join(f"{c['title']}|{c['path']}" for c in items[:6])
 
-    @tool("navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a engagement.")
+    @tool("navigate", description="Navigate CSA Workbench to a page, a task, a calendar event, or an engagement.")
     def navigate(destination: str) -> str:
         personal = _load()
         result = navsvc.resolve(personal, _engagements(), _visits(), destination)

@@ -1,7 +1,7 @@
 [project]
 name = "flow-session"
 version = "0.1.0"
-description = "Session container for the Flow agent — one instance per user"
+description = "Session container for the CSA Workbench agent — one instance per user"
 requires-python = ">=3.12"
 dependencies = [
     "ag-ui-protocol>=0.1.13",

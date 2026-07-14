@@ -119,7 +119,7 @@ export default function WorkbenchApp({
         <div className="tw-appbar-brand">
           <div className="tw-logo"><HomeIcon size={16} strokeWidth={2.5} /></div>
           <div className="flex flex-col leading-tight">
-            <span className="tw-appbar-title">Personal Assistant</span>
+            <span className="tw-appbar-title">CSA Workbench</span>
             <span className="tw-appbar-sub">{agentWorking ? "Assistant working…" : "Ready"}</span>
           </div>
         </div>

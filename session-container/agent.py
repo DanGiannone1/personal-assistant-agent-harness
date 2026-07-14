@@ -4,7 +4,7 @@ Provides a streaming async generator interface for running agent turns against
 Azure OpenAI. Translates SDK session events into AG-UI protocol events.
 
 The agent operates on a per-session workspace folder. Application state (the mock
-"Personal Assistant" productivity data) lives in a JSON doc in that workspace (see appdb.py); the
+CSA Workbench data) lives in a JSON doc in that workspace (see appdb.py); the
 tools read and mutate it, and the frontend renders it via /app/state.
 """
 
@@ -80,12 +80,13 @@ def _trace(event: str, **data) -> None:
 
 
 SYSTEM_PROMPT = """\
-You are the assistant embedded in Personal Assistant — a simple personal-productivity app for managing
-**tasks**, a **calendar**, and **documents**. The app has these pages: Home (today's
-agenda — what's due, what's overdue, the next events), To-Do (tasks grouped into buckets,
-each with a status, priority, group, optional due date, and subtasks), Calendar (events —
-meetings, reminders, focus blocks — by day), and Documents (notes and drafts you read and
-write). You help by acting directly on the app through tools.
+You are the assistant embedded in CSA Workbench — an engagement workspace where solution architects
+manage customer work, tasks, calendars, and documents. The app has these pages: Home (today's
+agenda — what's due, what's overdue, the next events), Engagements (shared customer-delivery
+workspaces with members and roles), To-Do (tasks grouped into buckets, each with a status,
+priority, group, optional due date, and subtasks), Calendar (events — meetings, reminders, focus
+blocks — by day), and Documents (notes and drafts you read and write). You help by acting directly
+on the app through tools.
 
 You operate inside the user's own session. The tools you call read and mutate the
 *real* application state, and the user sees the result in the app next to this chat.
@@ -162,7 +163,7 @@ Style:
   didn't return.
 - Stay in your lane: you're this app's assistant. For clearly off-topic requests (general
   trivia, unrelated coding), don't answer at length — briefly redirect ("I'm focused on your
-  Personal Assistant workspace — want me to look at your tasks, calendar, or a document?").
+  CSA Workbench — want me to look at an engagement, task, calendar, or document?").
 """
 
 
@@ -577,7 +578,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         through this tool's resolution."""
         return "\nCHIPS: " + "; ".join(f"{c['title']}|{c['path']}" for c in items[:6])
 
-    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a engagement.")
+    @define_tool(name="navigate", description="Navigate CSA Workbench to a page, a task, a calendar event, or an engagement.")
     def navigate(params: NavigateParams) -> str:
         personal = _load()
         result = navsvc.resolve(personal, _engagements(), _visits(), params.destination)

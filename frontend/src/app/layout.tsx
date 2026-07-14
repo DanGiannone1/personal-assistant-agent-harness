@@ -22,8 +22,8 @@ const serif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Personal Assistant",
-  description: "Personal Assistant — AI assistant for personal productivity",
+  title: "CSA Workbench",
+  description: "CSA Workbench — the agent-powered engagement workspace for solution architects",
   icons: {
     icon: [
       { url: "/icon.svg", type: "image/svg+xml" },

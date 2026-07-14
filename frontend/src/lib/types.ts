@@ -57,7 +57,7 @@ export interface AppFile {
   has_markdown: boolean;
 }
 
-// ── Personal Assistant application state (rendered by the right-pane app) ───────────────────
+// ── CSA Workbench application state (rendered by the right-pane app) ───────────────────────
 // Two record types: Tasks (a to-do board) and calendar Events.
 export type TaskStatus = "To do" | "In progress" | "Blocked" | "Done";
 export type TaskPriority = "Low" | "Medium" | "High";

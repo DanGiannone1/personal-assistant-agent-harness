@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 :root {
-  /* Personal Assistant — Monday.com-style light palette */
+  /* CSA Workbench — Monday.com-style light palette */
   --app-bg: #f6f7fb;
   --surface-1: #ffffff;
   --surface-2: #f0f1f5;
@@ -399,7 +399,7 @@ html, body {
   box-shadow: 0 12px 30px rgba(0, 115, 234, 0.12); background: var(--surface-2);
 }
 
-/* ───────────────────────── Personal Assistant app pane ───────────────────────── */
+/* ───────────────────────── CSA Workbench app pane ───────────────────────── */
 .tw-app {
   display: flex; flex-direction: column; height: 100%; width: 100%; min-height: 0;
   background: var(--surface-1); border: 1px solid var(--border-subtle);

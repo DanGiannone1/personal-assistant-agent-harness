@@ -5,8 +5,8 @@ import { Home, CheckSquare, Calendar, Files, Sparkles, Bell, LogOut, FolderKanba
 import { AppState } from "@/lib/types";
 import { useAppAuth } from "@/components/AppAuthProvider";
 
-// The Personal Assistant left-nav rail, shared by the host app and the Assistant workspace so
-// the workspace reads as a page *of* Personal Assistant (not a separate chatbot). Host items
+// The CSA Workbench left-nav rail, shared by the host app and the Assistant workspace so
+// the workspace reads as a page *of* CSA Workbench (not a separate chatbot). Host items
 // navigate the app (onNavigate → viewRoute); the ✦ AI Workbench item routes to /assistant.
 export default function WorkbenchNav({
   viewRoute, onNavigate, assistantActive = false,

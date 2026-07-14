@@ -1,4 +1,4 @@
-"""Flow app-state MCP server — the remote doorway to the owner's Cosmos doc.
+"""CSA Workbench app-state MCP server — the remote doorway to the owner's Cosmos doc.
 
 Cosmos is private-endpoint-only (see docs/deployment.md), so nothing outside the
 VNet can reach it directly. This server runs as the `flow-mcp` Container App inside
@@ -44,7 +44,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def get_app_state() -> dict:
-    """Full Flow app state: currentRoute, tasks, events, schedules, library, routes."""
+    """Full CSA Workbench app state: currentRoute, tasks, events, schedules, library, routes."""
     return appdb.load()
 
 

@@ -7,7 +7,7 @@ import CoPilotDock from "./CoPilotDock";
 import BespokeIcon from "./ui/BespokeIcon";
 import { useSession } from "./SessionProvider";
 
-// The host route ("/"): the Personal Assistant app is primary and full-width; the assistant
+// The host route ("/"): the CSA Workbench app is primary and full-width; the assistant
 // rides along as a collapsible docked co-pilot. Collapsed, the app gets the whole canvas
 // and the assistant becomes an unobtrusive launcher pill.
 export default function HostApp() {
