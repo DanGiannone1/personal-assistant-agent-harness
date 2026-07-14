@@ -1,7 +1,37 @@
 # Session Compute & User State — Design Decision
 
-Status: DRAFT for decision, 2026-07-13. Companion to [mvp-requirements.md](mvp-requirements.md)
-(R17 scale-to-zero conflict discovered at deploy time) and issue #10.
+Status: DECIDED 2026-07-14 (discussion on issue #10 / PR #14). Companion to
+[mvp-requirements.md](mvp-requirements.md).
+
+## The decision
+
+**Durable state is compute-independent; compute state is only ever a cache plus scratch.**
+If losing it would hurt, it is app data and lives in Cosmos (structured) or Blob (bytes) —
+never only inside a session container or sandbox.
+
+| Thing | System of record | Session/sandbox role |
+|---|---|---|
+| Chat history / transcripts | Cosmos — a harness-neutral message log on the chat/session record (LangGraph checkpointer deferred; the log survives harness swaps, which matters while both harnesses are kept) | Warm in-process copy; replayed on resume |
+| Files uploaded to a chat | Blob bytes (`chat-uploads/<user>/<session>/…`) + metadata on the chat record | Materialized into the workspace on demand |
+| Agent-generated deliverables worth keeping | Engagement artifacts (built) — promotion is an explicit user/agent act, never automatic | Born in the workspace, promoted out |
+| Engagements, tasks, users, context | Cosmos (built) | — |
+| Scratch (intermediate files, caches) | none — legitimately ephemeral | What sandbox suspend/resume preserves as a convenience |
+
+Consequences:
+- **Critical path (next build): chat persistence + uploads-to-Blob.** Chat history today
+  lives in-process in the session container and dies with it — a real product gap with no
+  preview dependencies, fixable now. Includes: message log per session doc, a conversations
+  list/resume UX, upload bytes to Blob with metadata on the chat record, workspace
+  materialization.
+- **Sandbox spike: worth doing, explicitly NOT critical path** (preview status). Once chats
+  and uploads rehydrate from Cosmos/Blob, a lost sandbox loses only scratch — suspend/resume
+  becomes a UX accelerator, not a system of record, and the preview's instability warnings
+  stop being architectural risks.
+- Engagement-scoped chats do NOT auto-route uploads into engagement artifacts — team
+  visibility changes must be an explicit promotion act.
+
+The compute-option analysis below stands as the input to that decision and the spike's
+framing.
 
 ## The three kinds of state (don't conflate them)
 
