@@ -12,6 +12,7 @@ export interface AppUser {
   id: string;
   username: string;
   displayName: string;
+  identity?: "demo" | "entra";
   persona?: { role?: string; tone?: string; outputPrefs?: string; language?: string };
 }
 
@@ -56,6 +57,23 @@ export async function withAppAuth(headersInit?: HeadersInit): Promise<Headers> {
 export function notifyAuthExpired(): void {
   clear();
   window.dispatchEvent(new Event("app-auth-expired"));
+}
+
+/** Resolve the signed-in app user from whatever credentials the request carries
+ *  (Entra bearer and/or demo token). Used to hydrate the Entra path, where no
+ *  app token exists — the bearer alone identifies the user. Stores the user for
+ *  per-user storage namespacing (session keys), same as the demo path. */
+export async function fetchMe(): Promise<AppUser | null> {
+  try {
+    const headers = await withAppAuth();
+    const res = await fetch(`${API_BASE}/auth/me`, { headers, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const user = (await res.json()) as AppUser;
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    return user;
+  } catch {
+    return null;
+  }
 }
 
 export async function login(username: string, password: string): Promise<AppUser> {

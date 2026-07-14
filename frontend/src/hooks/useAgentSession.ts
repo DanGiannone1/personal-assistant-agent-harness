@@ -17,12 +17,10 @@ const ROUTE_SETTING_TOOLS = new Set([
   "create_event",  // lands the user on the calendar
   "update_event",  // lands the user on the calendar
   "delete_event",  // returns the user to the calendar
-  "create_engagement",      // lands the user on the new engagement
-  "update_engagement",      // lands the user on the engagement it changed
-  "share_engagement",       // lands the user on the engagement's settings
-  "set_engagement_health",  // lands the user on the engagement whose health changed
-  "add_engagement_item",    // lands the user on the engagement it added to
-  "update_engagement_item", // lands the user on the engagement it changed
+  "create_engagement",       // lands the user on the new engagement
+  "update_engagement",       // lands the user on the engagement it changed
+  "share_engagement",        // lands the user on the engagement's settings
+  "set_engagement_status",   // lands the user on the engagement whose status changed
 ]);
 
 type Action =
@@ -483,7 +481,7 @@ export function useAgentSession() {
       abortRef.current?.abort();
       controller = new AbortController();
       abortRef.current = controller;
-      // Compose the per-turn context bundle (persona, memories, conventions) and inject
+      // Compose the per-turn context bundle (persona, conventions) and inject
       // it as a LEGIBLE preamble — the inspector renders the same bundle, so what the
       // user can audit is exactly what the model received. Precedence is stated inline.
       const label = viewLabel(appStateRef.current, viewRouteRef.current);
@@ -496,9 +494,8 @@ export function useAgentSession() {
         const p = bundle.persona || {};
         const personaBits = [p.role, p.tone, p.outputPrefs, p.language && p.language !== "English" ? `writes in ${p.language}` : ""].filter(Boolean);
         if (personaBits.length) preamble += `\n[Persona: ${personaBits.join("; ")}]`;
-        if (bundle.memories.length) preamble += `\n[Workspace memory: ${bundle.memories.map((m) => m.text).join(" | ")}]`;
         if (bundle.conventions.length) preamble += `\n[Engagement conventions — ${bundle.engagementName}: ${bundle.conventions.map((c) => c.text).join(" | ")}]`;
-        if (bundle.memories.length || bundle.conventions.length || personaBits.length) {
+        if (bundle.conventions.length || personaBits.length) {
           preamble += `\n[Precedence: the user's instruction in this message overrides engagement conventions, which override persona defaults.]`;
         }
       } catch {

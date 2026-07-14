@@ -159,6 +159,18 @@ def get_user(user_id: str) -> dict | None:
     return next((u for u in list_users() if u["id"] == user_id), None)
 
 
+def find_user(ref: str) -> dict | None:
+    """Resolve a user by id OR username, case-insensitive (Entra users are addressable
+    by their sign-in name, not just the opaque u-<oid>). Sanitized record or None."""
+    needle = (ref or "").strip().lower()
+    if not needle:
+        return None
+    for u in list_users():
+        if u["id"].lower() == needle or (u.get("username") or "").lower() == needle:
+            return u
+    return None
+
+
 def verify_login(username: str, password: str) -> dict | None:
     """Check credentials → sanitized user record, or None. Fail closed on any mismatch."""
     container = _container()
@@ -182,6 +194,37 @@ def update_user(user_id: str, mutator) -> dict | None:
             raise AbortWrite(None)
         return mutator(u)
     return _update_raw(_USERS_DOC_ID, _mut)
+
+
+def ensure_entra_user(oid: str, username: str, display_name: str) -> dict:
+    """Idempotently provision the app user for a validated Entra principal.
+
+    Keyed `u-<oid>` so the same person always maps to the same record; no password
+    hash — this account can only ever be reached through a validated Entra token.
+    Starts with no engagement memberships (they create or get invited like anyone).
+    """
+    uid = _valid_user(f"u-{oid}")
+    existing = get_user(uid)
+    if existing is not None:
+        return existing
+
+    record = {
+        "id": uid,
+        "username": (username or uid).strip().lower(),
+        "displayName": (display_name or username or uid).strip(),
+        "identity": "entra",
+        "persona": {"role": "", "tone": "", "outputPrefs": "", "language": "English"},
+    }
+
+    def _mut(doc):
+        if any(u["id"] == uid for u in doc["users"]):
+            raise AbortWrite(None)  # lost a provisioning race — the winner's record stands
+        doc["users"].append(record)
+        return record
+
+    _update_raw(_USERS_DOC_ID, _mut)
+    _ensure_space_seeded(uid)
+    return get_user(uid)
 
 
 # ── Personal spaces ──────────────────────────────────────────────────────────
@@ -354,10 +397,12 @@ def update_state(user_id: str, mutator):
 
 ENGAGEMENT_ROLES = ["owner", "editor", "viewer"]
 
-# Delivery-record vocabulary. Health is never just a color: amber/red must carry a
-# non-empty healthNote (the "why") — enforced at the tool, REST, and UI layers.
+# Delivery-record vocabulary. Status is never just a color: yellow/red must carry a
+# non-empty statusNote (the "why") — enforced at the tool, REST, and UI layers.
+# Stage and the milestone/risk/action collections are parked out of the v1 surface
+# (docs/mvp-requirements.md R7) but stay in the data layer, dormant.
 ENGAGEMENT_STAGES = ["Discovery", "Design", "Build", "Deploy", "Live", "Closed"]
-HEALTH_LEVELS = ["green", "amber", "red"]
+ENGAGEMENT_STATUSES = ["green", "yellow", "red"]
 MILESTONE_STATUSES = ["Planned", "In progress", "Done", "Slipped"]
 RISK_SEVERITIES = ["Low", "Medium", "High"]
 RISK_STATUSES = ["Open", "Mitigating", "Closed"]
@@ -372,13 +417,19 @@ ENGAGEMENT_ITEM_KINDS = {
 
 # Domain fields added to every engagement doc (older docs get these on read).
 _ENGAGEMENT_DOMAIN_DEFAULTS = {
-    "customer": "", "stage": ENGAGEMENT_STAGES[0], "health": "green", "healthNote": "",
+    "customer": "", "stage": ENGAGEMENT_STAGES[0], "status": "green", "statusNote": "",
     "startDate": "", "targetDate": "", "milestones": [], "risks": [], "actions": [],
 }
 
 
 def _with_domain_defaults(eng: dict) -> dict:
     """Fill missing delivery-record fields so pre-domain docs read uniformly."""
+    # Legacy mapping: docs written before the G/Y/R rename carried health/healthNote
+    # with "amber" for the middle level.
+    if eng.get("status") is None and eng.get("health") is not None:
+        legacy = eng.get("health")
+        eng["status"] = "yellow" if legacy == "amber" else legacy
+        eng["statusNote"] = eng.get("healthNote") or ""
     for k, v in _ENGAGEMENT_DOMAIN_DEFAULTS.items():
         if eng.get(k) is None:
             eng[k] = list(v) if isinstance(v, list) else v
@@ -392,11 +443,11 @@ def _valid_stage(stage: str) -> str:
     return stage
 
 
-def _valid_health(health: str) -> str:
-    health = (health or "").strip().lower() or "green"
-    if health not in HEALTH_LEVELS:
-        raise ValueError(f"health must be one of {HEALTH_LEVELS}")
-    return health
+def _valid_status(status: str) -> str:
+    status = (status or "").strip().lower() or "green"
+    if status not in ENGAGEMENT_STATUSES:
+        raise ValueError(f"status must be one of {ENGAGEMENT_STATUSES}")
+    return status
 
 
 def _engagement_doc_id(engagement_id: str) -> str:
@@ -405,13 +456,13 @@ def _engagement_doc_id(engagement_id: str) -> str:
 
 
 def new_engagement(creator_id: str, name: str, description: str = "",
-                   customer: str = "", stage: str = "", health: str = "",
-                   health_note: str = "", start_date: str = "",
+                   customer: str = "", status: str = "",
+                   status_note: str = "", start_date: str = "",
                    target_date: str = "") -> dict:
     """Create an engagement; the creator is its first owner. Returns the engagement doc.
 
-    Raises ValueError on bad stage/health. Callers enforce the health-note rule
-    (amber/red need a why) before getting here.
+    Raises ValueError on a bad status. Callers enforce the status-note rule
+    (yellow/red need a why) before getting here.
     """
     uid = _valid_user(creator_id)
     name = (name or "").strip()
@@ -423,8 +474,8 @@ def new_engagement(creator_id: str, name: str, description: str = "",
         "id": pid, "sessionId": pid,
         "name": name, "description": (description or "").strip(),
         "customer": (customer or "").strip(),
-        "stage": _valid_stage(stage), "health": _valid_health(health),
-        "healthNote": (health_note or "").strip(),
+        "stage": ENGAGEMENT_STAGES[0], "status": _valid_status(status),
+        "statusNote": (status_note or "").strip(),
         "startDate": (start_date or "").strip(), "targetDate": (target_date or "").strip(),
         "milestones": [], "risks": [], "actions": [],
         "members": [{"userId": uid, "role": "owner"}],
@@ -522,8 +573,8 @@ def _seed_engagements() -> None:
             "id": "eng-website-launch", "name": "Website Launch",
             "description": "Marketing site refresh and launch",
             "customer": "Contoso Retail", "stage": "Build",
-            "health": "amber",
-            "healthNote": "CMS migration slipped a week; launch date at risk until content freeze lands.",
+            "status": "yellow",
+            "statusNote": "CMS migration slipped a week; launch date at risk until content freeze lands.",
             "targetDate": "2026-07-24",
             "milestones": [
                 {"id": "m-1", "title": "Design sign-off", "dueDate": "2026-07-01",

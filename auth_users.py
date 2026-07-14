@@ -13,6 +13,7 @@ Header: X-Auth-Token (Authorization stays reserved for the deploy-time Entra flo
 
 from __future__ import annotations
 
+import os
 import secrets
 import sys
 import threading
@@ -28,6 +29,7 @@ import appdb  # noqa: E402
 
 _LOCK = threading.Lock()
 _TOKENS: dict[str, dict] = {}  # token -> {"userId": str, "issuedAt": float}
+_ENTRA_SEEN: set[str] = set()  # uids provisioned this process — skips a Cosmos read per request
 
 AUTH_HEADER = "X-Auth-Token"
 # Idle demo sessions die after 12h — long enough for any demo, short enough to not
@@ -35,8 +37,18 @@ AUTH_HEADER = "X-Auth-Token"
 _TOKEN_TTL_SECONDS = 12 * 3600
 
 
+def demo_login_enabled() -> bool:
+    """Seeded demo accounts (R2): on by default so local stacks and the deployed
+    Playwright path work; flip DEMO_LOGIN_ENABLED=false to turn the path off
+    without a code change. Read per-call so probes and env updates take effect
+    immediately."""
+    return (os.getenv("DEMO_LOGIN_ENABLED") or "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def login(username: str, password: str) -> dict:
     """Verify credentials → {token, user}. Raises 401 on failure (no reason leakage)."""
+    if not demo_login_enabled():
+        raise HTTPException(status_code=403, detail="Demo sign-in is disabled on this deployment")
     user = appdb.verify_login(username, password)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -66,9 +78,36 @@ def _resolve(token: str | None) -> str | None:
         return entry["userId"]
 
 
-def current_user(request: Request) -> str:
-    """FastAPI dependency: the signed-in user id, or 401. Every /sessions* route uses it."""
-    uid = _resolve(request.headers.get(AUTH_HEADER))
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Sign in required")
+def _entra_user(claims: dict) -> str:
+    """Map a VALIDATED Entra token (api_auth already checked signature, audience,
+    tenant, issuer) to an app user, provisioning it on first sight."""
+    oid = (claims.get("oid") or "").strip().lower()
+    if not oid:
+        raise HTTPException(status_code=401, detail="Token carries no object id")
+    uid = f"u-{oid}"
+    if uid not in _ENTRA_SEEN:
+        username = claims.get("preferred_username") or claims.get("upn") or claims.get("email") or uid
+        display = claims.get("name") or username
+        appdb.ensure_entra_user(oid, username, display)
+        with _LOCK:
+            _ENTRA_SEEN.add(uid)
     return uid
+
+
+def current_user(request: Request) -> str:
+    """FastAPI dependency: the signed-in user id, or 401. Every /sessions* route uses it.
+
+    Two identities can arrive on one request (Entra bearer + demo X-Auth-Token,
+    because the frontend always merges both headers). The demo token wins while
+    demo login is enabled — that keeps Playwright runs deterministic on deployments
+    where Easy Auth or MSAL also injects a bearer. With demo login disabled, demo
+    tokens stop resolving entirely and only the Entra path remains.
+    """
+    if demo_login_enabled():
+        uid = _resolve(request.headers.get(AUTH_HEADER))
+        if uid is not None:
+            return uid
+    claims = getattr(request.state, "auth_claims", None)
+    if isinstance(claims, dict):
+        return _entra_user(claims)
+    raise HTTPException(status_code=401, detail="Sign in required")

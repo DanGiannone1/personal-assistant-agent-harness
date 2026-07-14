@@ -15,10 +15,10 @@ Design notes (see review/ findings doc for the full comparison):
   native LangChain tools so the two backends never couple. The cost is duplicated
   tool logic; the benefit is a clean, independent implementation that could run
   with the Copilot SDK uninstalled.
-- **Full tool parity.** The model sees the same 28 tools as the Copilot backend —
-  engagements (incl. the delivery record: health, milestones, risks, actions),
-  scoped tasks/events, documents/library, schedules, and confirm-gated memory —
-  with the same names, args, marker strings, role gating, and ETag-safe writes.
+- **Full tool parity.** The model sees the same 24 tools as the Copilot backend —
+  engagements (status-with-a-why, sharing), engagement-scoped tasks,
+  documents/library, and schedules — with the same names, args, marker strings,
+  role gating, and ETag-safe writes.
 - **"Don't over-plan" parity.** The deep-agent harness ships planning (`write_todos`),
   a scratch filesystem (`ls`/`read_file`/`write_file`/…), subagents (`task`) and
   shell (`execute`). Personal Assistant is deliberately a one-direct-tool-call app, so every
@@ -119,18 +119,16 @@ How you work:
   a card; never repeat those lines in your reply.
 - Engagements are shared customer-delivery workspaces with members and roles
   (owner/editor/viewer). Use `list_engagements` to see them, `create_engagement` to add one,
-  `update_engagement` to change name/customer/stage/dates, `share_engagement` to grant a
-  user access. Tasks and events can live in a engagement OR in the personal space: pass the
-  tool's `engagement` argument when the user names a engagement or their current view is a
-  engagement page (see "[Current view: …]"); leave it empty for personal items. If a engagement
-  tool returns FORBIDDEN, tell the user their role doesn't allow it — do not retry.
-- Each engagement is also the delivery record: stage (Discovery→Closed), health, milestones,
-  risks, and actions. `set_engagement_health` sets green/amber/red — amber and red REQUIRE a
-  `note` saying why, so ask for the reason if the user didn't give one. `add_engagement_item` /
-  `update_engagement_item` manage milestones, risks, and actions (`kind` = 'milestone' |
-  'risk' | 'action'; risks carry a severity and a mitigation, actions an owner and due date).
-  For engagement status questions ("how is Contoso doing", "which engagements are red"),
-  answer from `list_engagements` — never from memory.
+  `update_engagement` to change name/description/customer/dates, `share_engagement` to grant
+  a user access. Tasks can live in an engagement OR in the personal space: pass the task
+  tool's `engagement` argument when the user names an engagement or their current view is an
+  engagement page (see "[Current view: …]"); leave it empty for personal tasks. Events are
+  personal-calendar only. If an engagement tool returns FORBIDDEN, tell the user their role
+  doesn't allow it — do not retry.
+- Every engagement carries a status: green, yellow, or red. `set_engagement_status` sets it —
+  yellow and red REQUIRE a `note` saying why, so ask for the reason if the user didn't give
+  one; green clears the note. For engagement status questions ("how is Contoso doing",
+  "which engagements are red"), answer from `list_engagements` — never from memory.
 - Tasks: use `list_tasks` to review (it returns a computed `overdue` flag and each task's
   subtask progress), `create_task` to add one, `update_task` to change status/priority/
   group/due date, `add_subtask` to add a subtask, and `delete_task` to remove one.
@@ -141,16 +139,12 @@ How you work:
   `prompt`, pick `daily`/`weekly`, a `time` (HH:MM), and a `timezone` if the user implies one
   (ask only if genuinely unclear). Use `list_schedules` to review and `delete_schedule` to
   cancel. The app runs the saved prompt on the cadence and emails whatever it produces.
-- When the user states a durable preference or working agreement ("we do reviews on
-  Fridays", "always round to thousands"), offer to remember it with `propose_memory`.
-  It stores NOTHING until the user confirms; after an explicit yes, call `save_memory`
-  with the same text. Saved memories and engagement conventions arrive in your context each
-  turn — apply them, with precedence: the user's current instruction beats a engagement
-  convention, which beats their persona defaults.
+- Engagement conventions and the user's persona arrive in your context each turn — apply
+  them, with precedence: the user's current instruction beats an engagement convention,
+  which beats their persona defaults.
 - Deleting things is confirm-first: delete tools return PENDING_CONFIRM with a card the
   user sees. Nothing is deleted until the user confirms — then call the tool again with
-  confirmed=true. If the user has granted a standing approval for that action, the tool
-  commits immediately instead. Never set confirmed=true without an explicit user yes.
+  confirmed=true. Never set confirmed=true without an explicit user yes.
 - For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
   context — never judge dates yourself.
 - Documents come in two tiers. **Session files** are this session's uploads + drafts —
@@ -252,7 +246,7 @@ def _result_text(result) -> str:
 
 
 _NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS", "PENDING_CONFIRM"}
-_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE", "INVALID_STAGE", "INVALID_HEALTH", "INVALID_KIND", "INVALID_SEVERITY", "INVALID_STATUS", "NOTE_REQUIRED"}
+_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE", "INVALID_STATUS", "NOTE_REQUIRED"}
 
 
 def _tool_outcome(result, success) -> str:
@@ -375,14 +369,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             return None, f"AMBIGUOUS engagement '{ref}': {opts}. Ask which one."
         return matches[0], None
 
-    def _normalize_kind(kind: str):
-        k = (kind or "").strip().lower()
-        if k.endswith("s") and k[:-1] in appdb.ENGAGEMENT_ITEM_KINDS:
-            k = k[:-1]
-        if k not in appdb.ENGAGEMENT_ITEM_KINDS:
-            return None, "INVALID_KIND: kind must be 'milestone', 'risk', or 'action'."
-        return k, None
-
     def _set_route(path: str, title: str) -> None:
         """Route side-effect: point the pane at a result + feed the visit log."""
         def _mut(data):
@@ -392,12 +378,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             appdb.record_visit(user_id, path, title)
         except Exception:
             _logger.warning("visit log write failed", exc_info=True)
-
-    def _has_standing_approval(action: str) -> bool:
-        try:
-            return action in appdb.load_context(user_id)["standingApprovals"]
-        except Exception:
-            return False
 
     def _confirm_card(action: str, title: str, detail: str) -> str:
         """A PENDING_CONFIRM result: nothing was mutated; the UI renders Confirm/Cancel."""
@@ -450,7 +430,7 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         return (f"NOT_FOUND: no destination matched '{destination}'. Closest options: {opts}."
                 + _chips(result["candidates"]))
 
-    @tool("list_engagements", description="List the shared engagements the user belongs to: role, customer, stage, health (with the why), milestone progress, open risks and actions. Answer engagement status questions from THIS, never from memory.")
+    @tool("list_engagements", description="List the shared engagements the user belongs to: role, customer, status (with the why), open tasks, and target date. Answer engagement status questions from THIS, never from memory.")
     def list_engagements() -> str:
         engs = _engagements()
         if not engs:
@@ -458,58 +438,48 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         lines = [f"{len(engs)} engagement(s):"]
         for p in engs:
             role = appdb.member_role(p, user_id)
-            ms = p.get("milestones") or []
-            done = sum(1 for m in ms if m.get("status") == "Done")
-            open_risks = sum(1 for r in p.get("risks") or [] if r.get("status") != "Closed")
-            open_actions = sum(1 for a in p.get("actions") or [] if a.get("status") != "Done")
-            why = f" ({p['healthNote']})" if p.get("healthNote") else ""
+            open_tasks = sum(1 for t in p.get("tasks") or [] if t.get("status") != "Done")
+            why = f" ({p['statusNote']})" if p.get("statusNote") else ""
             lines.append(
                 f"- [{p['id']}] {p['name']} | your role: {role} | customer={p.get('customer') or 'n/a'} | "
-                f"stage={p.get('stage')} | health={p.get('health')}{why} | "
-                f"milestones={done}/{len(ms)} | open risks={open_risks} | open actions={open_actions} | "
-                f"target={p.get('targetDate') or 'n/a'} | tasks: {len(p['tasks'])} | events: {len(p['events'])}"
+                f"status={p.get('status')}{why} | open tasks={open_tasks} | "
+                f"target={p.get('targetDate') or 'n/a'} | docs: {len(p.get('library') or [])}"
             )
         return "\n".join(lines)
 
     @tool("create_engagement", description="Create a new shared engagement (customer delivery workspace). The user becomes its owner. New engagements start green.")
-    def create_engagement(name: str, description: str = "", customer: str = "", stage: str = "", target_date: str = "") -> str:
+    def create_engagement(name: str, description: str = "", customer: str = "", target_date: str = "") -> str:
         name = name.strip()
         if not name:
             return "NAME_REQUIRED: the engagement needs a name."
-        stage = stage.strip()
-        if stage and stage not in appdb.ENGAGEMENT_STAGES:
-            return f"INVALID_STAGE: stage must be one of {', '.join(appdb.ENGAGEMENT_STAGES)}."
         existing = [p for p in _engagements() if p["name"].lower() == name.lower()]
         if existing:
             return f"AMBIGUOUS: you already have an engagement named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
         eng = appdb.new_engagement(user_id, name, description,
-                                   customer=customer, stage=stage,
+                                   customer=customer,
                                    target_date=target_date)
         _set_route(f"/engagements/{eng['id']}", eng["name"])
         return (
             f"CREATED engagement [{eng['id']}] '{eng['name']}' | customer={eng['customer'] or 'n/a'} | "
-            f"stage={eng['stage']} | health={eng['health']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
+            f"status={eng['status']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
         )
 
-    @tool("update_engagement", description="Update an engagement's name, description, customer, stage, or dates. Requires editor access.")
+    @tool("update_engagement", description="Update an engagement's name, description, customer, or dates. Requires editor access.")
     def update_engagement(engagement: str, name: str = "", description: str = "", customer: str = "",
-                          stage: str = "", start_date: str = "", target_date: str = "") -> str:
-        stage = stage.strip()
-        if stage and stage not in appdb.ENGAGEMENT_STAGES:
-            return f"INVALID_STAGE: stage must be one of {', '.join(appdb.ENGAGEMENT_STAGES)}."
+                          start_date: str = "", target_date: str = "") -> str:
         eng, err = _resolve_engagement_ref(engagement)
         if err:
             return err
         def _pmut(doc):
             changed = []
             for field, value in (("name", name), ("description", description),
-                                 ("customer", customer), ("stage", stage),
+                                 ("customer", customer),
                                  ("startDate", start_date), ("targetDate", target_date)):
                 if value.strip():
                     doc[field] = value.strip()
                     changed.append(f"{field}={doc[field]}")
             if not changed:
-                raise appdb.AbortWrite("NO_CHANGES: specify a name, description, customer, stage, start_date, or target_date to update.")
+                raise appdb.AbortWrite("NO_CHANGES: specify a name, description, customer, start_date, or target_date to update.")
             appdb.log_activity(doc, user_id, "engagement.updated", ", ".join(changed))
             return f"UPDATED engagement [{doc['id']}] '{doc['name']}': {', '.join(changed)}."
         out = _mutate_engagement_scoped(eng, "editor", _pmut)
@@ -518,101 +488,25 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         _set_route(f"/engagements/{eng['id']}", eng["name"])
         return out
 
-    @tool("set_engagement_health", description="Set an engagement's health (green/amber/red). Amber and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
-    def set_engagement_health(engagement: str, health: str, note: str = "") -> str:
-        health = health.strip().lower()
-        if health not in appdb.HEALTH_LEVELS:
-            return f"INVALID_HEALTH: health must be one of {', '.join(appdb.HEALTH_LEVELS)}."
+    @tool("set_engagement_status", description="Set an engagement's status (green/yellow/red). Yellow and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
+    def set_engagement_status(engagement: str, status: str, note: str = "") -> str:
+        status = status.strip().lower()
+        if status not in appdb.ENGAGEMENT_STATUSES:
+            return f"INVALID_STATUS: status must be one of {', '.join(appdb.ENGAGEMENT_STATUSES)}."
         note = note.strip()
-        if health in ("amber", "red") and not note:
-            return "NOTE_REQUIRED: amber/red health needs a why — pass `note` (a red with no reason is noise)."
+        if status in ("yellow", "red") and not note:
+            return "NOTE_REQUIRED: yellow/red status needs a why — pass `note` (a red with no reason is noise)."
         eng, err = _resolve_engagement_ref(engagement)
         if err:
             return err
         def _pmut(doc):
-            if doc["health"] == health and (not note or doc["healthNote"] == note):
-                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{doc['id']}] health is already {health}.")
-            doc["health"] = health
-            doc["healthNote"] = note  # green with no note clears the stale why
+            if doc["status"] == status and (not note or doc["statusNote"] == note):
+                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{doc['id']}] status is already {status}.")
+            doc["status"] = status
+            doc["statusNote"] = note  # green with no note clears the stale why
             why = f" — {note}" if note else ""
-            appdb.log_activity(doc, user_id, "health.set", f"{health}{why}")
-            return f"UPDATED engagement [{doc['id']}] '{doc['name']}' health={health}{why}."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("UPDATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
-
-    @tool("add_engagement_item", description="Add a milestone, risk, or action to an engagement (kind = 'milestone' | 'risk' | 'action'). Risks carry a severity and a mitigation; actions an owner and due date. Requires editor access.")
-    def add_engagement_item(engagement: str, kind: str, title: str, due_date: str = "",
-                            severity: str = "", owner: str = "", notes: str = "") -> str:
-        kind, kerr = _normalize_kind(kind)
-        if kerr:
-            return kerr
-        if not title.strip():
-            return f"TITLE_REQUIRED: a {kind} needs a title."
-        severity = severity.strip() or "Medium"
-        if kind == "risk" and severity not in appdb.RISK_SEVERITIES:
-            return f"INVALID_SEVERITY: severity must be one of {', '.join(appdb.RISK_SEVERITIES)}."
-        eng, err = _resolve_engagement_ref(engagement)
-        if err:
-            return err
-        field, prefix = appdb.ENGAGEMENT_ITEM_KINDS[kind]
-        def _pmut(doc):
-            items = doc[field]
-            item = {"id": appdb.new_id(prefix, items), "title": title.strip()}
-            if kind == "milestone":
-                item.update({"dueDate": due_date.strip(), "status": "Planned",
-                             "notes": notes.strip()})
-            elif kind == "risk":
-                item.update({"severity": severity, "status": "Open",
-                             "mitigation": notes.strip(), "owner": owner.strip()})
-            else:  # action
-                item.update({"owner": owner.strip(), "dueDate": due_date.strip(),
-                             "status": "Open", "notes": notes.strip()})
-            items.append(item)
-            appdb.log_activity(doc, user_id, f"{kind}.added", item["title"])
-            return f"CREATED {kind} [{item['id']}] '{item['title']}' on engagement [{doc['id']}] '{doc['name']}'."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("CREATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
-
-    @tool("update_engagement_item", description="Update a milestone, risk, or action on an engagement — status, title, severity, owner, due date, or notes. Requires editor access.")
-    def update_engagement_item(engagement: str, kind: str, item: str, title: str = "", status: str = "",
-                               severity: str = "", due_date: str = "", owner: str = "", notes: str = "") -> str:
-        kind, kerr = _normalize_kind(kind)
-        if kerr:
-            return kerr
-        status = status.strip()
-        valid_statuses = {"milestone": appdb.MILESTONE_STATUSES, "risk": appdb.RISK_STATUSES,
-                          "action": appdb.ACTION_STATUSES}[kind]
-        if status and status not in valid_statuses:
-            return f"INVALID_STATUS: a {kind} status must be one of {', '.join(valid_statuses)}."
-        severity = severity.strip()
-        if severity and (kind != "risk" or severity not in appdb.RISK_SEVERITIES):
-            return f"INVALID_SEVERITY: severity applies to risks and must be one of {', '.join(appdb.RISK_SEVERITIES)}."
-        eng, err = _resolve_engagement_ref(engagement)
-        if err:
-            return err
-        notes_field = "mitigation" if kind == "risk" else "notes"
-        item_ref = item
-        def _pmut(doc):
-            found = appdb.find_engagement_item(doc, kind, item_ref)
-            if found is None:
-                raise appdb.AbortWrite(f"ITEM_NOT_FOUND: no {kind} matches '{item_ref}' on engagement [{doc['id']}].")
-            changed = []
-            for field, value in (("title", title), ("status", status),
-                                 ("severity", severity), ("owner", owner),
-                                 ("dueDate", due_date), (notes_field, notes)):
-                if value.strip():
-                    found[field] = value.strip()
-                    changed.append(f"{field}={found[field]}")
-            if not changed:
-                raise appdb.AbortWrite("NO_CHANGES: specify a title, status, severity, owner, due_date, or notes to update.")
-            appdb.log_activity(doc, user_id, f"{kind}.updated", f"{found['title']}: {', '.join(changed)}")
-            return f"UPDATED {kind} [{found['id']}] '{found['title']}' on [{doc['id']}]: {', '.join(changed)}."
+            appdb.log_activity(doc, user_id, "status.set", f"{status}{why}")
+            return f"UPDATED engagement [{doc['id']}] '{doc['name']}' status={status}{why}."
         out = _mutate_engagement_scoped(eng, "editor", _pmut)
         if isinstance(out, str) and not out.startswith("UPDATED"):
             return out
@@ -624,9 +518,9 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         role = role.strip().lower() or "viewer"
         if role not in appdb.ENGAGEMENT_ROLES:
             return f"BAD_ROLE: use one of {appdb.ENGAGEMENT_ROLES}."
-        target = appdb.get_user(user.strip().lower())
+        target = appdb.find_user(user)  # id or username — Entra users go by sign-in name
         if target is None:
-            return f"USER_REQUIRED: no user named '{user}'. Known users: " + ", ".join(u["id"] for u in appdb.list_users())
+            return f"USER_REQUIRED: no user named '{user}'. Known users: " + ", ".join(u.get("username") or u["id"] for u in appdb.list_users())
         eng, err = _resolve_engagement_ref(engagement)
         if err:
             return err
@@ -778,9 +672,9 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             return f"UPDATED task [{t['id']}] '{t['title']}': {', '.join(changed)}."
         return _update(_mut)
 
-    @tool("delete_task", description="Delete a task from the to-do list. Confirm-first: without confirmed=true (or a standing approval) it returns a confirmation card and changes nothing.")
+    @tool("delete_task", description="Delete a task from the to-do list. Confirm-first: without confirmed=true it returns a confirmation card and changes nothing.")
     def delete_task(task: str, engagement: str = "", confirmed: bool = False) -> str:
-        if not confirmed and not _has_standing_approval("delete_task"):
+        if not confirmed:
             scope_data = _load() if not engagement.strip() else None
             if engagement.strip():
                 eng_probe, perr0 = _resolve_engagement_ref(engagement)
@@ -832,19 +726,11 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         return _update(_mut)
 
     @tool("list_events", description="List the calendar events with their date, time, and type.")
-    def list_events(engagement: str = "") -> str:
-        scope_label = "personal"
-        if engagement.strip():
-            eng, err = _resolve_engagement_ref(engagement)
-            if err:
-                return err
-            events = eng["events"]
-            scope_label = eng["name"]
-        else:
-            data = _load()
-            events = data["events"]
+    def list_events() -> str:
+        data = _load()
+        events = data["events"]
         if not events:
-            return f"No events yet in {scope_label}."
+            return "No events yet."
         from datetime import datetime, timezone
         today = datetime.now(timezone.utc).date().isoformat()
         ordered = sorted(events, key=lambda e: (e.get("date") or "", e.get("start") or ""))
@@ -859,32 +745,11 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         return "\n".join(lines)
 
     @tool("create_event", description="Create a calendar event (a meeting, reminder, or focus block). A date is required.")
-    def create_event(title: str, date: str, start: str = "", end: str = "", type: str = "",
-                     engagement: str = "") -> str:
+    def create_event(title: str, date: str, start: str = "", end: str = "", type: str = "") -> str:
         if not title.strip():
             return "TITLE_REQUIRED: an event needs a title."
         if not date.strip():
             return "DATE_REQUIRED: an event needs a date (YYYY-MM-DD)."
-        if engagement.strip():
-            eng, err = _resolve_engagement_ref(engagement)
-            if err:
-                return err
-            def _pmut(doc):
-                event = {
-                    "id": appdb.new_id("e", doc["events"]),
-                    "title": title.strip(), "date": date.strip(),
-                    "start": start.strip(), "end": end.strip(),
-                    "type": type.strip() or "Meeting", "notes": "",
-                }
-                doc["events"].append(event)
-                appdb.log_activity(doc, user_id, "event.created", event["title"])
-                return event
-            out = _mutate_engagement_scoped(eng, "editor", _pmut)
-            if isinstance(out, str):
-                return out
-            _set_route(f"/engagements/{eng['id']}/calendar", out["title"])
-            when = out["start"] or "all-day"
-            return f"CREATED event [{out['id']}] '{out['title']}' on {out['date']} at {when} in engagement {eng['name']}."
         def _mut(data):
             event = {
                 "id": appdb.new_id("e", data["events"]),
@@ -933,9 +798,9 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             return f"UPDATED event [{e['id']}] '{e['title']}': {', '.join(changed)}."
         return _update(_mut)
 
-    @tool("delete_event", description="Delete a calendar event. Confirm-first: without confirmed=true (or a standing approval) it returns a confirmation card and changes nothing.")
+    @tool("delete_event", description="Delete a calendar event. Confirm-first: without confirmed=true it returns a confirmation card and changes nothing.")
     def delete_event(event: str, confirmed: bool = False) -> str:
-        if not confirmed and not _has_standing_approval("delete_event"):
+        if not confirmed:
             e, eerr = _resolve_event_strict(_load(), event)
             if eerr:
                 return eerr
@@ -1013,27 +878,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")
         return f"WROTE {resolved.name} ({resolved.stat().st_size} bytes)."
-
-    @tool("propose_memory", description="Propose saving a durable fact to the user's workspace memory. NOTHING is stored until the user confirms — the app shows a confirmation card. Use when the user states a lasting preference or working agreement worth remembering.")
-    def propose_memory(text: str) -> str:
-        text = text.strip()
-        if not text:
-            return "TEXT_REQUIRED: what should be remembered?"
-        return _confirm_card("save_memory", text[:80],
-                             "Save to workspace memory (visible and editable in Settings)")
-
-    @tool("save_memory", description="Save a memory the user has JUST explicitly confirmed (after propose_memory). Never call without that confirmation.")
-    def save_memory(text: str) -> str:
-        text = text.strip()
-        if not text:
-            return "TEXT_REQUIRED: what should be remembered?"
-        def _mut(doc):
-            mem = {"id": appdb.new_id("m", doc["memories"]), "text": text,
-                   "scope": "global", "createdAt": appdb._now_iso()}
-            doc["memories"].append(mem)
-            return mem
-        mem = appdb.update_context(user_id, _mut)
-        return f"SAVED memory [{mem['id']}]: {text}. The user can view or remove it in Settings."
 
     @tool("search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")
     def search_documents(query: str) -> str:
@@ -1172,9 +1016,9 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             )
         return "\n".join(lines)
 
-    @tool("delete_schedule", description="Delete a scheduled reminder. Confirm-first: without confirmed=true (or a standing approval) it returns a confirmation card and changes nothing.")
+    @tool("delete_schedule", description="Delete a scheduled reminder. Confirm-first: without confirmed=true it returns a confirmation card and changes nothing.")
     def delete_schedule(schedule: str, confirmed: bool = False) -> str:
-        if not confirmed and not _has_standing_approval("delete_schedule"):
+        if not confirmed:
             sch = appdb.resolve_schedule(_load(), schedule)
             if sch is None:
                 return f"NOT_FOUND: no reminder matches '{schedule}'."
@@ -1191,11 +1035,10 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
     return [
         navigate,
         list_engagements, create_engagement, update_engagement, share_engagement,
-        set_engagement_health, add_engagement_item, update_engagement_item,
+        set_engagement_status,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,
         list_documents, read_workspace_file, write_file,
-        propose_memory, save_memory,
         search_documents, save_to_library, list_library,
         create_schedule, list_schedules, delete_schedule,
     ]

@@ -37,8 +37,7 @@ _STATIC = [
 _ENGAGEMENT_PAGES = [
     ("", "{name}", ["engagement", "overview"]),
     ("/tasks", "{name} · Tasks", ["tasks", "todo", "to-do", "checklist"]),
-    ("/calendar", "{name} · Calendar", ["calendar", "events", "meetings", "schedule"]),
-    ("/documents", "{name} · Documents", ["documents", "docs", "files"]),
+    ("/documents", "{name} · Documents", ["documents", "docs", "files", "artifacts"]),
     ("/settings", "{name} · Settings", ["settings", "members", "sharing", "conventions"]),
 ]
 
@@ -66,10 +65,6 @@ def destinations(personal: dict, engagements: list[dict]) -> list[dict]:
             dests.append({"path": f"{base}/tasks/{t['id']}", "title": f"{t['title']} ({pname})",
                           "kind": "task", "keywords": [pname.lower()], "engagementId": p["id"],
                           "record": t, "bareTitle": t["title"]})
-        for e in p.get("events", []):
-            dests.append({"path": f"{base}/calendar", "title": f"{e['title']} ({pname})",
-                          "kind": "event", "keywords": [pname.lower()], "engagementId": p["id"],
-                          "record": e, "bareTitle": e["title"]})
     return dests
 
 

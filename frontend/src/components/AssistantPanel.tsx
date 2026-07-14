@@ -134,9 +134,6 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
                   {(state.lastBundle.persona.role || state.lastBundle.persona.tone) && (
                     <span className="ctx-line"><b>Persona</b> {[state.lastBundle.persona.role, state.lastBundle.persona.tone, state.lastBundle.persona.outputPrefs].filter(Boolean).join(" · ")}</span>
                   )}
-                  {state.lastBundle.memories.length > 0 && (
-                    <span className="ctx-line"><b>Memory</b> {state.lastBundle.memories.map((m) => m.text).join(" | ")}</span>
-                  )}
                   {state.lastBundle.conventions.length > 0 && (
                     <span className="ctx-line"><b>Conventions ({state.lastBundle.engagementName})</b> {state.lastBundle.conventions.map((c) => c.text).join(" | ")}</span>
                   )}

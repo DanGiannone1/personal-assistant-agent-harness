@@ -6,6 +6,8 @@ Proxies all AI interactions to isolated session containers via SessionManager.
 import asyncio
 import logging
 import os
+import re
+import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -19,10 +21,13 @@ if str(_SC) not in sys.path:
 import appdb  # noqa: E402
 import library  # noqa: E402
 
+import artifact_store
+
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +117,40 @@ def _trace_paths_for_session(session_id: str) -> dict[str, str | None]:
     }
 
 
+_SEED_ARTIFACT_ID = "art-seed0001"
+
+
+def _seed_engagement_artifacts() -> int:
+    """Give every seeded engagement one openable kickoff-notes.md (idempotent)."""
+    seeded = 0
+    for engagement_id in ("eng-website-launch", "eng-product-launch", "eng-q3-budget"):
+        engagement = appdb.load_engagement(engagement_id)
+        if engagement is None:
+            continue
+        if any(a.get("id") == _SEED_ARTIFACT_ID for a in engagement.get("library", [])):
+            continue
+        content = (
+            f"# Kickoff notes — {engagement['name']}\n\n"
+            f"Customer: {engagement.get('customer') or '—'}\n\n"
+            "Seeded demo artifact: agenda, attendees, and next steps live here.\n"
+        ).encode()
+        artifact_store.put(engagement_id, _SEED_ARTIFACT_ID, content, "text/markdown")
+        entry = {
+            "id": _SEED_ARTIFACT_ID, "name": "kickoff-notes.md", "size": len(content),
+            "contentType": "text/markdown", "uploadedBy": engagement["createdBy"],
+            "uploadedAt": appdb._now_iso(),
+        }
+
+        def _mut(doc):
+            if any(a.get("id") == _SEED_ARTIFACT_ID for a in doc.get("library", [])):
+                raise appdb.AbortWrite(None)
+            doc.setdefault("library", []).insert(0, dict(entry))
+
+        appdb.update_engagement(engagement_id, _mut)
+        seeded += 1
+    return seeded
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global session_manager, content_processor, api_authenticator
@@ -141,6 +180,17 @@ async def lifespan(app: FastAPI):
         logger.info("User accounts + personal spaces seeded")
     except Exception:
         logger.error("Could not seed users/spaces — sign-in will fail until Cosmos is reachable", exc_info=True)
+
+    # Seed one real artifact per demo engagement (idempotent, best-effort) so the
+    # Documents tab always has openable content. Bytes go through artifact_store,
+    # so this works identically on the local dir and Azure Blob backends.
+    try:
+        seeded_artifacts = await asyncio.to_thread(_seed_engagement_artifacts)
+        if seeded_artifacts:
+            logger.info("Seeded %d engagement artifact(s) via %s",
+                        seeded_artifacts, artifact_store.describe())
+    except Exception:
+        logger.warning("Could not seed engagement artifacts", exc_info=True)
 
     # Ensure the seeded Library reference docs are actually in the Search index, so the
     # library[] list can't point at content search can't find (idempotent, best-effort).
@@ -264,7 +314,16 @@ async def auth_me(uid: str = Depends(current_user)) -> dict:
     user = await asyncio.to_thread(appdb.get_user, uid)
     if user is None:
         raise HTTPException(status_code=401, detail="Unknown user")
-    return user
+    return {**user, "identity": user.get("identity", "demo")}
+
+
+@app.get("/users")
+async def user_directory(uid: str = Depends(current_user)) -> list[dict]:
+    """Member-pick directory for any signed-in user: id, username, displayName only —
+    never password hashes or persona (list_users strips hashes; we strip the rest)."""
+    users = await asyncio.to_thread(appdb.list_users)
+    return [{"id": u["id"], "username": u.get("username", ""),
+             "displayName": u.get("displayName", "")} for u in users]
 
 
 # ---------------------------------------------------------------------------
@@ -785,9 +844,8 @@ class EngagementCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     description: str = Field("", max_length=500)
     customer: str = Field("", max_length=120)
-    stage: str = Field("", max_length=20)
-    health: str = Field("", max_length=10)
-    healthNote: str = Field("", max_length=300)
+    status: str = Field("", max_length=10)
+    statusNote: str = Field("", max_length=300)
     startDate: str = Field("", max_length=10)
     targetDate: str = Field("", max_length=10)
 
@@ -796,54 +854,15 @@ class EngagementPatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=120)
     description: str | None = Field(None, max_length=500)
     customer: str | None = Field(None, max_length=120)
-    stage: str | None = Field(None, max_length=20)
-    health: str | None = Field(None, max_length=10)
-    healthNote: str | None = Field(None, max_length=300)
+    status: str | None = Field(None, max_length=10)
+    statusNote: str | None = Field(None, max_length=300)
     startDate: str | None = Field(None, max_length=10)
     targetDate: str | None = Field(None, max_length=10)
 
 
-class EngagementItemCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    dueDate: str = Field("", max_length=10)
-    severity: str = Field("", max_length=10)
-    owner: str = Field("", max_length=64)
-    status: str = Field("", max_length=20)
-    notes: str = Field("", max_length=500)
-
-
-class EngagementItemUpdate(BaseModel):
-    title: str | None = Field(None, min_length=1, max_length=200)
-    dueDate: str | None = Field(None, max_length=10)
-    severity: str | None = Field(None, max_length=10)
-    owner: str | None = Field(None, max_length=64)
-    status: str | None = Field(None, max_length=20)
-    notes: str | None = Field(None, max_length=500)
-
-
-# URL path segment → item kind ("milestones" → "milestone", …). Unknown segment → 404.
-def _resolve_item_kind(kind_path: str) -> str:
-    for kind, (field, _prefix) in appdb.ENGAGEMENT_ITEM_KINDS.items():
-        if kind_path == field:
-            return kind
-    raise HTTPException(status_code=404, detail="Unknown item collection")
-
-
-def _check_item_enums(kind: str, status: str | None, severity: str | None) -> None:
-    valid_statuses = {"milestone": appdb.MILESTONE_STATUSES, "risk": appdb.RISK_STATUSES,
-                      "action": appdb.ACTION_STATUSES}[kind]
-    if status and status not in valid_statuses:
-        raise HTTPException(status_code=422, detail=f"status must be one of {valid_statuses}")
-    if severity and (kind != "risk" or severity not in appdb.RISK_SEVERITIES):
-        raise HTTPException(status_code=422,
-                            detail=f"severity applies to risks only and must be one of {appdb.RISK_SEVERITIES}")
-
-
-def _check_health_fields(stage: str | None, health: str | None) -> None:
-    if stage and stage not in appdb.ENGAGEMENT_STAGES:
-        raise HTTPException(status_code=422, detail=f"stage must be one of {appdb.ENGAGEMENT_STAGES}")
-    if health and health not in appdb.HEALTH_LEVELS:
-        raise HTTPException(status_code=422, detail=f"health must be one of {appdb.HEALTH_LEVELS}")
+def _check_status_field(status: str | None) -> None:
+    if status and status not in appdb.ENGAGEMENT_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {appdb.ENGAGEMENT_STATUSES}")
 
 
 class MemberAdd(BaseModel):
@@ -894,13 +913,13 @@ async def list_engagements(uid: str = Depends(current_user)) -> list[dict]:
 
 @app.post("/engagements", status_code=201)
 async def create_engagement(req: EngagementCreate, uid: str = Depends(current_user)) -> dict:
-    _check_health_fields(req.stage, req.health)
-    if req.health in ("amber", "red") and not req.healthNote.strip():
-        raise HTTPException(status_code=422, detail="amber/red health requires healthNote (the why)")
+    _check_status_field(req.status)
+    if req.status in ("yellow", "red") and not req.statusNote.strip():
+        raise HTTPException(status_code=422, detail="yellow/red status requires statusNote (the why)")
     engagement = await asyncio.to_thread(
         lambda: appdb.new_engagement(uid, req.name, req.description,
-                                     customer=req.customer, stage=req.stage,
-                                     health=req.health, health_note=req.healthNote,
+                                     customer=req.customer,
+                                     status=req.status, status_note=req.statusNote,
                                      start_date=req.startDate, target_date=req.targetDate))
     trace_event("orchestrator", "engagement.created", user=uid, engagement=engagement["id"])
     return engagement
@@ -913,26 +932,26 @@ async def get_engagement(engagement_id: str, uid: str = Depends(current_user)) -
 
 @app.patch("/engagements/{engagement_id}")
 async def patch_engagement(engagement_id: str, req: EngagementPatch, uid: str = Depends(current_user)) -> dict:
-    _check_health_fields(req.stage, req.health)
+    _check_status_field(req.status)
 
     def _mut(doc):
         if req.name is not None:
             doc["name"] = req.name.strip()
         if req.description is not None:
             doc["description"] = req.description.strip()
-        for field, value in (("customer", req.customer), ("stage", req.stage),
-                             ("health", req.health), ("healthNote", req.healthNote),
+        for field, value in (("customer", req.customer),
+                             ("status", req.status), ("statusNote", req.statusNote),
                              ("startDate", req.startDate), ("targetDate", req.targetDate)):
             if value is not None:
                 doc[field] = value.strip()
-        # Guard the RESULTING state, not the request shape: health "amber"/"red" with an
+        # Guard the RESULTING state, not the request shape: status "yellow"/"red" with an
         # empty (or emptied) note must never land, whichever field this patch carried.
-        if doc.get("health") in ("amber", "red") and not (doc.get("healthNote") or "").strip():
+        if doc.get("status") in ("yellow", "red") and not (doc.get("statusNote") or "").strip():
             raise HTTPException(status_code=422,
-                                detail="amber/red health requires healthNote (the why)")
+                                detail="yellow/red status requires statusNote (the why)")
         appdb.log_activity(doc, uid, "engagement.updated", doc["name"])
 
-    # Renames stay owner-only; delivery-record fields (customer/stage/health/dates) are
+    # Renames stay owner-only; delivery-record fields (customer/status/dates) are
     # editor-level, matching the tool layer.
     minimum = "owner" if (req.name is not None or req.description is not None) else "editor"
     await _mutate_engagement(engagement_id, uid, minimum, _mut)
@@ -944,7 +963,8 @@ async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(curr
     role = req.role.strip().lower()
     if role not in appdb.ENGAGEMENT_ROLES:
         raise HTTPException(status_code=422, detail=f"role must be one of {appdb.ENGAGEMENT_ROLES}")
-    target = await asyncio.to_thread(appdb.get_user, req.userId.strip().lower())
+    # Accept a user id OR username — Entra users are known by sign-in name.
+    target = await asyncio.to_thread(appdb.find_user, req.userId)
     if target is None:
         raise HTTPException(status_code=422, detail="No such user")
 
@@ -961,6 +981,10 @@ async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(curr
 
 @app.delete("/engagements/{engagement_id}/members/{member_id}", status_code=204)
 async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(current_user)):
+    # Pre-check like every other mutating route: unknown id / non-member → 404,
+    # non-owner member → 403 — never a 500 (and no member/non-member shape leak).
+    await _load_engagement_authed(engagement_id, uid, "owner")
+
     def _mut(doc):
         remaining_owners = [m for m in doc["members"]
                             if m["role"] == "owner" and m["userId"] != member_id]
@@ -977,7 +1001,10 @@ async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(c
         if not appdb.role_at_least(doc, uid, "owner"):
             raise appdb.AbortWrite("forbidden")
         return _mut(doc)
-    result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
+    try:
+        result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="Not found")
     if result == "forbidden":
         raise HTTPException(status_code=403, detail="Requires owner access")
     if result == "last-owner":
@@ -1040,34 +1067,6 @@ async def delete_engagement_task(engagement_id: str, task_id: str, uid: str = De
     await _mutate_engagement(engagement_id, uid, "editor", _mut)
 
 
-@app.post("/engagements/{engagement_id}/events", status_code=201)
-async def create_engagement_event(engagement_id: str, req: EventCreate, uid: str = Depends(current_user)) -> dict:
-    created: dict = {}
-
-    def _mut(doc):
-        event = {
-            "id": appdb.new_id("e", doc["events"]),
-            "title": req.title.strip(), "date": req.date.strip(), "start": req.start.strip(),
-            "end": req.end.strip(), "type": (req.type or "Meeting").strip() or "Meeting", "notes": "",
-        }
-        doc["events"].append(event)
-        appdb.log_activity(doc, uid, "event.created", event["title"])
-        created.update(event)
-    await _mutate_engagement(engagement_id, uid, "editor", _mut)
-    return created
-
-
-@app.delete("/engagements/{engagement_id}/events/{event_id}", status_code=204)
-async def delete_engagement_event(engagement_id: str, event_id: str, uid: str = Depends(current_user)):
-    def _mut(doc):
-        e = appdb.find_event(doc, event_id)
-        if e is None:
-            raise _NotFound()
-        doc["events"] = [x for x in doc["events"] if x["id"] != event_id]
-        appdb.log_activity(doc, uid, "event.deleted", e["title"])
-    await _mutate_engagement(engagement_id, uid, "editor", _mut)
-
-
 @app.post("/engagements/{engagement_id}/conventions", status_code=201)
 async def add_convention(engagement_id: str, req: ConventionCreate, uid: str = Depends(current_user)) -> dict:
     created: dict = {}
@@ -1092,76 +1091,99 @@ async def delete_convention(engagement_id: str, conv_id: str, uid: str = Depends
     await _mutate_engagement(engagement_id, uid, "editor", _mut)
 
 
-# Delivery-record items: milestones / risks / actions. Declared AFTER the concrete
-# /tasks, /events, /members, /conventions routes so those keep winning the match;
-# _resolve_item_kind 404s any other segment.
-@app.post("/engagements/{engagement_id}/{kind_path}", status_code=201)
-async def add_engagement_item(engagement_id: str, kind_path: str, req: EngagementItemCreate,
-                              uid: str = Depends(current_user)) -> dict:
-    kind = _resolve_item_kind(kind_path)
-    severity = req.severity.strip() or ("Medium" if kind == "risk" else "")
-    _check_item_enums(kind, req.status.strip() or None, severity or None)
-    field, prefix = appdb.ENGAGEMENT_ITEM_KINDS[kind]
-    created: dict = {}
+# ── Engagement artifacts — durable files, metadata on the doc (R9/R10) ────────
+# Bytes live in artifact_store (local dir or Azure Blob); any member can add,
+# list, and open; removing needs editor+. Non-members always see 404.
+
+_ARTIFACT_MAX_BYTES = 20 * 1024 * 1024
+_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()-]+")
+
+
+def _safe_artifact_name(raw: str | None) -> str:
+    name = Path(raw or "").name.strip()  # drop any client-supplied path
+    name = _ARTIFACT_NAME_RE.sub("_", name)[:120].strip(" .")
+    return name or "artifact"
+
+
+def _find_artifact(engagement: dict, artifact_id: str) -> dict | None:
+    return next((a for a in engagement.get("library", []) if a.get("id") == artifact_id), None)
+
+
+@app.get("/engagements/{engagement_id}/artifacts")
+async def list_artifacts(engagement_id: str, uid: str = Depends(current_user)) -> dict:
+    engagement = await _load_engagement_authed(engagement_id, uid)
+    return {"artifacts": engagement.get("library", [])}
+
+
+@app.post("/engagements/{engagement_id}/artifacts", status_code=201)
+async def upload_artifact(engagement_id: str, file: UploadFile,
+                          uid: str = Depends(current_user)) -> dict:
+    eng = await _load_engagement_authed(engagement_id, uid)  # any member may add (R10)
+    # Read at most cap+1 bytes so an oversized body 413s without buffering it all
+    # (same idiom as session_manager upload).
+    data = await file.read(_ARTIFACT_MAX_BYTES + 1)
+    if len(data) > _ARTIFACT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Artifact exceeds the 20MB limit")
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+    entry = {
+        "id": f"art-{secrets.token_hex(4)}",
+        "name": _safe_artifact_name(file.filename),
+        "size": len(data),
+        "contentType": file.content_type or "application/octet-stream",
+        "uploadedBy": uid,
+        "uploadedAt": appdb._now_iso(),
+    }
+    # Bytes first, metadata second: a metadata failure leaves an orphan blob
+    # (harmless, cleaned below), never a listed artifact with no bytes. Storage is
+    # keyed by the CANONICAL doc id (the URL segment may omit the eng- prefix).
+    await asyncio.to_thread(
+        artifact_store.put, eng["id"], entry["id"], data, entry["contentType"])
 
     def _mut(doc):
-        items = doc[field]
-        item = {"id": appdb.new_id(prefix, items), "title": req.title.strip()}
-        if kind == "milestone":
-            item.update({"dueDate": req.dueDate.strip(),
-                         "status": req.status.strip() or "Planned", "notes": req.notes.strip()})
-        elif kind == "risk":
-            item.update({"severity": severity, "status": req.status.strip() or "Open",
-                         "mitigation": req.notes.strip(), "owner": req.owner.strip()})
-        else:  # action
-            item.update({"owner": req.owner.strip(), "dueDate": req.dueDate.strip(),
-                         "status": req.status.strip() or "Open", "notes": req.notes.strip()})
-        items.append(item)
-        appdb.log_activity(doc, uid, f"{kind}.added", item["title"])
-        created.update(item)
+        doc.setdefault("library", []).insert(0, dict(entry))
+        appdb.log_activity(doc, uid, "artifact.added", entry["name"])
 
-    await _mutate_engagement(engagement_id, uid, "editor", _mut)
-    return created
+    try:
+        await _mutate_engagement(eng["id"], uid, "viewer", _mut)
+    except Exception:
+        await asyncio.to_thread(artifact_store.delete, eng["id"], entry["id"])
+        raise
+    return entry
 
 
-@app.patch("/engagements/{engagement_id}/{kind_path}/{item_id}")
-async def update_engagement_item(engagement_id: str, kind_path: str, item_id: str,
-                                 req: EngagementItemUpdate, uid: str = Depends(current_user)) -> dict:
-    kind = _resolve_item_kind(kind_path)
-    _check_item_enums(kind, req.status, req.severity)
-    field, _prefix = appdb.ENGAGEMENT_ITEM_KINDS[kind]
-    notes_field = "mitigation" if kind == "risk" else "notes"
-    updated: dict = {}
+@app.get("/engagements/{engagement_id}/artifacts/{artifact_id}")
+async def download_artifact(engagement_id: str, artifact_id: str,
+                            uid: str = Depends(current_user)) -> Response:
+    engagement = await _load_engagement_authed(engagement_id, uid)
+    entry = _find_artifact(engagement, artifact_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    data = await asyncio.to_thread(artifact_store.get, engagement["id"], artifact_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Artifact content missing")
+    filename = entry["name"].replace('"', "")
+    return Response(
+        content=data,
+        media_type=entry.get("contentType") or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/engagements/{engagement_id}/artifacts/{artifact_id}", status_code=204)
+async def delete_artifact(engagement_id: str, artifact_id: str,
+                          uid: str = Depends(current_user)):
+    eng = await _load_engagement_authed(engagement_id, uid, "editor")
 
     def _mut(doc):
-        item = next((i for i in doc[field] if i["id"] == item_id), None)
-        if item is None:
+        entry = _find_artifact(doc, artifact_id)
+        if entry is None:
             raise _NotFound()
-        for key, value in (("title", req.title), ("status", req.status),
-                           ("severity", req.severity), ("owner", req.owner),
-                           ("dueDate", req.dueDate), (notes_field, req.notes)):
-            if value is not None:
-                item[key] = value.strip()
-        appdb.log_activity(doc, uid, f"{kind}.updated", item["title"])
-        updated.update(item)
+        doc["library"] = [a for a in doc["library"] if a.get("id") != artifact_id]
+        appdb.log_activity(doc, uid, "artifact.removed", entry["name"])
 
-    await _mutate_engagement(engagement_id, uid, "editor", _mut)
-    return updated
-
-
-@app.delete("/engagements/{engagement_id}/{kind_path}/{item_id}", status_code=204)
-async def delete_engagement_item(engagement_id: str, kind_path: str, item_id: str,
-                                 uid: str = Depends(current_user)):
-    kind = _resolve_item_kind(kind_path)
-    field, _prefix = appdb.ENGAGEMENT_ITEM_KINDS[kind]
-
-    def _mut(doc):
-        if not any(i["id"] == item_id for i in doc[field]):
-            raise _NotFound()
-        doc[field] = [i for i in doc[field] if i["id"] != item_id]
-        appdb.log_activity(doc, uid, f"{kind}.removed", item_id)
-
-    await _mutate_engagement(engagement_id, uid, "editor", _mut)
+    await _mutate_engagement(eng["id"], uid, "editor", _mut)
+    await asyncio.to_thread(artifact_store.delete, eng["id"], artifact_id)
 
 
 # ── Navigation context — visit log + quick links (no AI in this path) ─────────
@@ -1191,32 +1213,7 @@ async def quick_links(uid: str = Depends(current_user)) -> list[dict]:
 
 
 
-# ── Personal settings — standing approvals, persona, memories (M4/M5) ────────
-class ApprovalsPut(BaseModel):
-    approvals: list[str] = Field(default_factory=list, max_length=20)
-
-
-_APPROVABLE = {"delete_task", "delete_event", "delete_schedule"}
-
-
-@app.get("/settings/approvals")
-async def get_approvals(uid: str = Depends(current_user)) -> dict:
-    ctx = await asyncio.to_thread(appdb.load_context, uid)
-    return {"approvals": ctx["standingApprovals"], "available": sorted(_APPROVABLE)}
-
-
-@app.put("/settings/approvals")
-async def put_approvals(req: ApprovalsPut, uid: str = Depends(current_user)) -> dict:
-    bad = [a for a in req.approvals if a not in _APPROVABLE]
-    if bad:
-        raise HTTPException(status_code=422, detail=f"Unknown action(s): {bad}")
-
-    def _mut(doc):
-        doc["standingApprovals"] = sorted(set(req.approvals))
-    await asyncio.to_thread(appdb.update_context, uid, _mut)
-    return {"approvals": sorted(set(req.approvals))}
-
-
+# ── Personal settings — persona (memories & standing approvals are parked, R7) ──
 class PersonaPut(BaseModel):
     role: str = Field("", max_length=120)
     tone: str = Field("", max_length=200)
@@ -1236,35 +1233,6 @@ async def put_persona(req: PersonaPut, uid: str = Depends(current_user)) -> dict
     if persona is None:
         raise HTTPException(status_code=404, detail="Unknown user")
     return persona
-
-
-class MemoryCreate(BaseModel):
-    text: str = Field(..., min_length=1, max_length=400)
-
-
-@app.post("/settings/memories", status_code=201)
-async def add_memory(req: MemoryCreate, uid: str = Depends(current_user)) -> dict:
-    created: dict = {}
-
-    def _mut(doc):
-        mem = {"id": appdb.new_id("m", doc["memories"]), "text": req.text.strip(),
-               "scope": "global", "createdAt": appdb._now_iso()}
-        doc["memories"].append(mem)
-        created.update(mem)
-    await asyncio.to_thread(appdb.update_context, uid, _mut)
-    return created
-
-
-@app.delete("/settings/memories/{memory_id}", status_code=204)
-async def delete_memory(memory_id: str, uid: str = Depends(current_user)):
-    def _mut(doc):
-        if not any(m["id"] == memory_id for m in doc["memories"]):
-            raise _NotFound()
-        doc["memories"] = [m for m in doc["memories"] if m["id"] != memory_id]
-    try:
-        await asyncio.to_thread(appdb.update_context, uid, _mut)
-    except _NotFound:
-        raise HTTPException(status_code=404, detail="Not found")
 
 
 @app.get("/context-bundle")
@@ -1290,7 +1258,6 @@ async def context_bundle(view: str = "", uid: str = Depends(current_user)) -> di
     return {
         "user": {"id": uid, "displayName": (user or {}).get("displayName", uid)},
         "persona": (user or {}).get("persona", {}),
-        "memories": ctx["memories"],
         "conventions": conventions,
         "engagementName": engagement_name,
         "workingContext": ctx["workingContext"],

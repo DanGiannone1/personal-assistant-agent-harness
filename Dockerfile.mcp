@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Install dependencies first (layer caching)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# mcp_server.py imports appdb from session-container/ (added to sys.path at startup);
+# seed_docs/ backs appdb's library seeding and the reseed_library tool.
+COPY mcp_server.py ./
+COPY session-container/appdb.py ./session-container/
+COPY session-container/seed_docs/ ./session-container/seed_docs/
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+RUN adduser --disabled-password --gecos "" --uid 1000 appuser
+USER appuser
+
+EXPOSE 8080
+
+CMD ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8080"]
