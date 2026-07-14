@@ -32,7 +32,7 @@ jobs:
             --image tax-session:${{ github.sha }} \
             --image tax-session:latest \
             --file session-container/Dockerfile \
-            session-container/
+            .
 
       - name: Build orchestrator
         run: |

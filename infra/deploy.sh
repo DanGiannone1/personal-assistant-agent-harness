@@ -431,7 +431,7 @@ az acr build \
     --image "${IMG_PREFIX}-session:$SHA" \
     --image "${IMG_PREFIX}-session:latest" \
     --file session-container/Dockerfile \
-    session-container/ \
+    . \
     -o none
 
 # ── 7. Session runtime: scale-to-zero app (default) or Dynamic Sessions pool ─

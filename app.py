@@ -20,6 +20,8 @@ if str(_SC) not in sys.path:
     sys.path.insert(0, str(_SC))
 import appdb  # noqa: E402
 import library  # noqa: E402
+from workbench_core import EngagementService, Outcome  # noqa: E402
+from workbench_core.appdb_repository import AppdbEngagementRepository  # noqa: E402
 
 import artifact_store
 
@@ -38,6 +40,8 @@ from session_manager import SessionManager
 from trace_logging import setup_trace_logging, trace_event
 
 logger = logging.getLogger(__name__)
+
+_engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
 
 
 # ---------------------------------------------------------------------------
@@ -906,109 +910,70 @@ async def _mutate_engagement(engagement_id: str, uid: str, minimum: str, mutator
         raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
 
 
+def _raise_for_engagement_outcome(outcome: Outcome) -> None:
+    if outcome.status == "not_found":
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    if outcome.status == "forbidden":
+        raise HTTPException(status_code=403, detail=next(iter(outcome.errors.values()), "Forbidden"))
+    if outcome.status == "invalid":
+        raise HTTPException(status_code=422, detail=next(iter(outcome.errors.values()), "Invalid request"))
+    if outcome.status == "conflict":
+        raise HTTPException(status_code=409, detail="Engagement conflict")
+
+
 @app.get("/engagements")
 async def list_engagements(uid: str = Depends(current_user)) -> list[dict]:
-    return await asyncio.to_thread(appdb.list_engagements_for, uid)
+    outcome = await asyncio.to_thread(_engagement_service.list, uid)
+    return outcome.record["engagements"]
 
 
 @app.post("/engagements", status_code=201)
-async def create_engagement(req: EngagementCreate, uid: str = Depends(current_user)) -> dict:
-    _check_status_field(req.status)
-    if req.status in ("yellow", "red") and not req.statusNote.strip():
-        raise HTTPException(status_code=422, detail="yellow/red status requires statusNote (the why)")
-    engagement = await asyncio.to_thread(
-        lambda: appdb.new_engagement(uid, req.name, req.description,
-                                     customer=req.customer,
-                                     status=req.status, status_note=req.statusNote,
-                                     start_date=req.startDate, target_date=req.targetDate))
-    trace_event("orchestrator", "engagement.created", user=uid, engagement=engagement["id"])
+async def create_engagement(req: EngagementCreate, response: Response, uid: str = Depends(current_user)) -> dict:
+    outcome = await asyncio.to_thread(
+        _engagement_service.create, uid,
+        {"name": req.name, "description": req.description, "customer": req.customer,
+         "status": req.status, "statusNote": req.statusNote,
+         "startDate": req.startDate, "targetDate": req.targetDate},
+    )
+    _raise_for_engagement_outcome(outcome)
+    engagement = outcome.record
+    if outcome.status == "noop":
+        response.status_code = 200
+    else:
+        trace_event("orchestrator", "engagement.created", user=uid, engagement=engagement["id"])
     return engagement
 
 
 @app.get("/engagements/{engagement_id}")
 async def get_engagement(engagement_id: str, uid: str = Depends(current_user)) -> dict:
-    return await _load_engagement_authed(engagement_id, uid)
+    outcome = await asyncio.to_thread(_engagement_service.get, uid, engagement_id)
+    _raise_for_engagement_outcome(outcome)
+    return outcome.record
 
 
 @app.patch("/engagements/{engagement_id}")
 async def patch_engagement(engagement_id: str, req: EngagementPatch, uid: str = Depends(current_user)) -> dict:
-    _check_status_field(req.status)
-
-    def _mut(doc):
-        if req.name is not None:
-            doc["name"] = req.name.strip()
-        if req.description is not None:
-            doc["description"] = req.description.strip()
-        for field, value in (("customer", req.customer),
-                             ("status", req.status), ("statusNote", req.statusNote),
-                             ("startDate", req.startDate), ("targetDate", req.targetDate)):
-            if value is not None:
-                doc[field] = value.strip()
-        # Guard the RESULTING state, not the request shape: status "yellow"/"red" with an
-        # empty (or emptied) note must never land, whichever field this patch carried.
-        if doc.get("status") in ("yellow", "red") and not (doc.get("statusNote") or "").strip():
-            raise HTTPException(status_code=422,
-                                detail="yellow/red status requires statusNote (the why)")
-        appdb.log_activity(doc, uid, "engagement.updated", doc["name"])
-
-    # Renames stay owner-only; delivery-record fields (customer/status/dates) are
-    # editor-level, matching the tool layer.
-    minimum = "owner" if (req.name is not None or req.description is not None) else "editor"
-    await _mutate_engagement(engagement_id, uid, minimum, _mut)
-    return await _load_engagement_authed(engagement_id, uid)
+    values = req.model_dump(exclude_none=True)
+    outcome = await asyncio.to_thread(_engagement_service.update, uid, engagement_id, values)
+    _raise_for_engagement_outcome(outcome)
+    return outcome.record
 
 
 @app.post("/engagements/{engagement_id}/members", status_code=201)
-async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(current_user)) -> dict:
-    role = req.role.strip().lower()
-    if role not in appdb.ENGAGEMENT_ROLES:
-        raise HTTPException(status_code=422, detail=f"role must be one of {appdb.ENGAGEMENT_ROLES}")
-    # Accept a user id OR username — Entra users are known by sign-in name.
-    target = await asyncio.to_thread(appdb.find_user, req.userId)
-    if target is None:
-        raise HTTPException(status_code=422, detail="No such user")
-
-    def _mut(doc):
-        existing = next((m for m in doc["members"] if m["userId"] == target["id"]), None)
-        if existing:
-            existing["role"] = role
-        else:
-            doc["members"].append({"userId": target["id"], "role": role})
-        appdb.log_activity(doc, uid, "member.added", f"{target['id']} as {role}")
-    await _mutate_engagement(engagement_id, uid, "owner", _mut)
-    return {"userId": target["id"], "role": role}
+async def add_member(engagement_id: str, req: MemberAdd, response: Response, uid: str = Depends(current_user)) -> dict:
+    outcome = await asyncio.to_thread(_engagement_service.share, uid, engagement_id, req.userId, req.role)
+    _raise_for_engagement_outcome(outcome)
+    if outcome.status == "noop":
+        response.status_code = 200
+    member = next(member for member in outcome.record["members"] if member["userId"] == outcome.target_user_id)
+    return member
 
 
 @app.delete("/engagements/{engagement_id}/members/{member_id}", status_code=204)
 async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(current_user)):
-    # Pre-check like every other mutating route: unknown id / non-member → 404,
-    # non-owner member → 403 — never a 500 (and no member/non-member shape leak).
-    await _load_engagement_authed(engagement_id, uid, "owner")
-
-    def _mut(doc):
-        remaining_owners = [m for m in doc["members"]
-                            if m["role"] == "owner" and m["userId"] != member_id]
-        target = next((m for m in doc["members"] if m["userId"] == member_id), None)
-        if target is None:
-            raise _NotFound()
-        if target["role"] == "owner" and not remaining_owners:
-            raise appdb.AbortWrite("last-owner")
-        doc["members"] = [m for m in doc["members"] if m["userId"] != member_id]
-        appdb.log_activity(doc, uid, "member.removed", member_id)
-    def _outer(doc):
-        if appdb.member_role(doc, uid) is None:
-            raise _NotFound()
-        if not appdb.role_at_least(doc, uid, "owner"):
-            raise appdb.AbortWrite("forbidden")
-        return _mut(doc)
-    try:
-        result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
-    except _NotFound:
-        raise HTTPException(status_code=404, detail="Not found")
-    if result == "forbidden":
-        raise HTTPException(status_code=403, detail="Requires owner access")
-    if result == "last-owner":
-        raise HTTPException(status_code=422, detail="A engagement must keep at least one owner")
+    outcome = await asyncio.to_thread(_engagement_service.remove_member, uid, engagement_id, member_id)
+    _raise_for_engagement_outcome(outcome)
+    return Response(status_code=204)
 
 
 # Engagement-scoped record CRUD — same shapes as personal, gated editor+.

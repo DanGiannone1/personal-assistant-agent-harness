@@ -10,13 +10,14 @@ WORKDIR /app
 # Install dependencies first (layer caching). The tracing extra is required in
 # the production image so Azure Monitor/App Insights export can be enabled via
 # environment variables without rebuilding the container.
-COPY pyproject.toml uv.lock ./
+COPY session-container/pyproject.toml session-container/uv.lock ./
 RUN uv sync --frozen --no-dev --extra tracing --no-install-project
 
 # Copy application code
-COPY agent.py agent_deepagents.py appdb.py library.py server.py tracing.py trace_logging.py upload_policy.py ./
-COPY skills/ ./skills/
-COPY seed_docs/ ./seed_docs/
+COPY session-container/agent.py session-container/agent_deepagents.py session-container/appdb.py session-container/library.py session-container/navsvc.py session-container/server.py session-container/tracing.py session-container/trace_logging.py session-container/upload_policy.py ./
+COPY session-container/skills/ ./skills/
+COPY session-container/seed_docs/ ./seed_docs/
+COPY workbench_core/ ./workbench_core/
 
 # Create workspace directory
 RUN mkdir -p /workspace

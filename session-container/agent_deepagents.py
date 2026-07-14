@@ -33,10 +33,15 @@ import json as _json
 import logging as _logging
 import os
 import re as _re
+import sys
 import threading
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from ag_ui.core.events import (
     BaseEvent,
@@ -62,6 +67,8 @@ from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 import appdb
 import library
 import navsvc
+from workbench_core import EngagementService, Outcome
+from workbench_core.appdb_repository import AppdbEngagementRepository
 
 load_dotenv()
 
@@ -312,6 +319,7 @@ def _normalize_workspace_text(text: str) -> str:
 # ───────────────────────── CSA Workbench tools as LangChain tools ─────────────────────────
 
 def _build_langchain_tools(working_dir: str, user_id: str) -> list:
+    engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
     """Port of agent._build_flow_tools as native LangChain tools (same names, args,
     marker-string returns, role gating, and ETag-safe writes). Closures over the
     session workspace + user."""
@@ -349,26 +357,31 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         return matches[0], None
 
     def _engagements() -> list[dict]:
-        return appdb.list_engagements_for(user_id)
+        return engagement_service.list(user_id).record["engagements"]
 
     def _visits() -> list[dict]:
         return appdb.load_context(user_id)["visits"]
 
     def _resolve_engagement_ref(ref: str):
-        """Resolve a engagement by id, exact name, then unique substring — members only."""
-        r = (ref or "").strip().lower()
-        engs = _engagements()
-        if not r:
+        outcome = engagement_service.resolve(user_id, ref)
+        if outcome.status in ("resolved", "succeeded"):
+            return outcome.record, None
+        if outcome.status == "ambiguous":
+            return None, f"AMBIGUOUS engagement '{ref}'. Ask which one."
+        if outcome.status == "invalid":
             return None, "NAME_REQUIRED: which engagement?"
-        by_id = [p for p in engs if p["id"].lower() == r or p["id"].lower() == f"eng-{r}"]
-        exact = by_id or [p for p in engs if p["name"].lower() == r]
-        matches = exact if exact else [p for p in engs if r in p["name"].lower()]
-        if not matches:
-            return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
-        if len(matches) > 1:
-            opts = "; ".join(f"[{p['id']}] {p['name']}" for p in matches)
-            return None, f"AMBIGUOUS engagement '{ref}': {opts}. Ask which one."
-        return matches[0], None
+        return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
+
+    def _engagement_outcome_text(outcome: Outcome) -> str:
+        if outcome.status == "not_found":
+            return "ENGAGEMENT_NOT_FOUND: no visible engagement matches that reference."
+        if outcome.status == "forbidden":
+            return "FORBIDDEN: your engagement role does not allow that action."
+        if outcome.status == "invalid":
+            return "INVALID: " + "; ".join(outcome.errors.values())
+        if outcome.status == "noop":
+            return "NO_CHANGES: the engagement already has that state."
+        return f"FAILED: engagement operation returned {outcome.status}."
 
     def _set_route(path: str, title: str) -> None:
         """Route side-effect: point the pane at a result + feed the visit log."""
@@ -450,96 +463,71 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
 
     @tool("create_engagement", description="Create a new shared engagement (customer delivery workspace). The user becomes its owner. New engagements start green.")
     def create_engagement(name: str, description: str = "", customer: str = "", target_date: str = "") -> str:
-        name = name.strip()
-        if not name:
-            return "NAME_REQUIRED: the engagement needs a name."
-        existing = [p for p in _engagements() if p["name"].lower() == name.lower()]
-        if existing:
-            return f"AMBIGUOUS: you already have an engagement named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
-        eng = appdb.new_engagement(user_id, name, description,
-                                   customer=customer,
-                                   target_date=target_date)
+        outcome = engagement_service.create(user_id, {"name": name, "description": description,
+                                                       "customer": customer, "targetDate": target_date})
+        if outcome.status == "noop":
+            eng = outcome.record
+            _set_route(f"/engagements/{eng['id']}", eng["name"])
+            return f"EXISTING engagement [{eng['id']}] '{eng['name']}' was read after a retry."
+        if outcome.status != "committed":
+            return _engagement_outcome_text(outcome)
+        eng = outcome.record
         _set_route(f"/engagements/{eng['id']}", eng["name"])
         return (
             f"CREATED engagement [{eng['id']}] '{eng['name']}' | customer={eng['customer'] or 'n/a'} | "
             f"status={eng['status']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
         )
 
-    @tool("update_engagement", description="Update an engagement's name, description, customer, or dates. Requires editor access.")
-    def update_engagement(engagement: str, name: str = "", description: str = "", customer: str = "",
-                          start_date: str = "", target_date: str = "") -> str:
+    @tool("get_engagement", description="Read one visible engagement by name or stable id.")
+    def get_engagement(engagement: str) -> str:
+        resolved = engagement_service.resolve(user_id, engagement)
+        if resolved.status != "resolved":
+            return _engagement_outcome_text(resolved)
+        outcome = engagement_service.get(user_id, resolved.record["id"])
+        if outcome.status != "succeeded":
+            return _engagement_outcome_text(outcome)
+        record = outcome.record
+        return f"ENGAGEMENT [{record['id']}] '{record['name']}' | status={record['status']} | customer={record.get('customer') or 'n/a'}."
+
+    @tool("update_engagement", description="Update description, customer, or dates as an editor/owner; changing name requires owner access. Omit fields to leave them unchanged; empty optional fields clear them.")
+    def update_engagement(engagement: str, name: str | None = None, description: str | None = None, customer: str | None = None,
+                          start_date: str | None = None, target_date: str | None = None) -> str:
         eng, err = _resolve_engagement_ref(engagement)
         if err:
             return err
-        def _pmut(doc):
-            changed = []
-            for field, value in (("name", name), ("description", description),
-                                 ("customer", customer),
-                                 ("startDate", start_date), ("targetDate", target_date)):
-                if value.strip():
-                    doc[field] = value.strip()
-                    changed.append(f"{field}={doc[field]}")
-            if not changed:
-                raise appdb.AbortWrite("NO_CHANGES: specify a name, description, customer, start_date, or target_date to update.")
-            appdb.log_activity(doc, user_id, "engagement.updated", ", ".join(changed))
-            return f"UPDATED engagement [{doc['id']}] '{doc['name']}': {', '.join(changed)}."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("UPDATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
+        values = {key: value for key, value in (("name", name), ("description", description),
+                  ("customer", customer), ("startDate", start_date), ("targetDate", target_date)) if value is not None}
+        outcome = engagement_service.update(user_id, eng["id"], values)
+        if outcome.status != "committed":
+            return _engagement_outcome_text(outcome)
+        record = outcome.record
+        _set_route(f"/engagements/{record['id']}", record["name"])
+        return f"UPDATED engagement [{record['id']}] '{record['name']}': {', '.join(outcome.changed_fields)}."
 
     @tool("set_engagement_status", description="Set an engagement's status (green/yellow/red). Yellow and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
     def set_engagement_status(engagement: str, status: str, note: str = "") -> str:
-        status = status.strip().lower()
-        if status not in appdb.ENGAGEMENT_STATUSES:
-            return f"INVALID_STATUS: status must be one of {', '.join(appdb.ENGAGEMENT_STATUSES)}."
-        note = note.strip()
-        if status in ("yellow", "red") and not note:
-            return "NOTE_REQUIRED: yellow/red status needs a why — pass `note` (a red with no reason is noise)."
         eng, err = _resolve_engagement_ref(engagement)
         if err:
             return err
-        def _pmut(doc):
-            if doc["status"] == status and (not note or doc["statusNote"] == note):
-                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{doc['id']}] status is already {status}.")
-            doc["status"] = status
-            doc["statusNote"] = note  # green with no note clears the stale why
-            why = f" — {note}" if note else ""
-            appdb.log_activity(doc, user_id, "status.set", f"{status}{why}")
-            return f"UPDATED engagement [{doc['id']}] '{doc['name']}' status={status}{why}."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("UPDATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
+        outcome = engagement_service.update(user_id, eng["id"], {"status": status, "statusNote": note})
+        if outcome.status != "committed":
+            return _engagement_outcome_text(outcome)
+        record = outcome.record
+        _set_route(f"/engagements/{record['id']}", record["name"])
+        why = f" — {record['statusNote']}" if record.get("statusNote") else ""
+        return f"UPDATED engagement [{record['id']}] '{record['name']}' status={record['status']}{why}."
 
     @tool("share_engagement", description="Share a engagement with another user (grant viewer, editor, or owner access). Only a engagement owner can share.")
     def share_engagement(engagement: str, user: str, role: str = "viewer") -> str:
-        role = role.strip().lower() or "viewer"
-        if role not in appdb.ENGAGEMENT_ROLES:
-            return f"BAD_ROLE: use one of {appdb.ENGAGEMENT_ROLES}."
-        target = appdb.find_user(user)  # id or username — Entra users go by sign-in name
-        if target is None:
-            return f"USER_REQUIRED: no user named '{user}'. Known users: " + ", ".join(u.get("username") or u["id"] for u in appdb.list_users())
         eng, err = _resolve_engagement_ref(engagement)
         if err:
             return err
-        def _pmut(doc):
-            existing = next((m for m in doc["members"] if m["userId"] == target["id"]), None)
-            if existing and existing["role"] == role:
-                raise appdb.AbortWrite(f"NO_CHANGES: {target['id']} already has {role} access on '{doc['name']}'.")
-            if existing:
-                existing["role"] = role
-            else:
-                doc["members"].append({"userId": target["id"], "role": role})
-            appdb.log_activity(doc, user_id, "member.added", f"{target['id']} as {role}")
-            return role
-        out = _mutate_engagement_scoped(eng, "owner", _pmut)
-        if isinstance(out, str) and out not in appdb.ENGAGEMENT_ROLES:
-            return out
-        _set_route(f"/engagements/{eng['id']}/settings", eng["name"])
-        return f"SHARED engagement '{eng['name']}' with {target['id']} as {role}."
+        outcome = engagement_service.share(user_id, eng["id"], user, role)
+        if outcome.status != "committed":
+            return _engagement_outcome_text(outcome)
+        record = outcome.record
+        _set_route(f"/engagements/{record['id']}/settings", record["name"])
+        return f"SHARED engagement '{record['name']}' with {outcome.target_user_id} as {role.strip().lower() or 'viewer'}."
 
     @tool("list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(engagement: str = "") -> str:
@@ -1035,7 +1023,7 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
 
     return [
         navigate,
-        list_engagements, create_engagement, update_engagement, share_engagement,
+        list_engagements, create_engagement, get_engagement, update_engagement, share_engagement,
         set_engagement_status,
         list_tasks, create_task, update_task, delete_task, add_subtask,
         list_events, create_event, update_event, delete_event,

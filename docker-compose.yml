@@ -3,7 +3,9 @@
 # See infra/deploy.sh for the production deployment.
 services:
   session-container:
-    build: ./session-container
+    build:
+      context: .
+      dockerfile: session-container/Dockerfile
     ports:
       - "8080:8080"
     environment:
