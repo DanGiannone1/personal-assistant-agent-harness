@@ -302,21 +302,28 @@ else
 fi
 
 # ── 4b. ADLS Gen2 Storage ────────────────────────────────────────────────
-echo ">>> Creating ADLS Gen2 storage account..."
-az storage account create \
-    --name "$ADLS_ACCOUNT_NAME" \
-    --resource-group "$RG" \
-    --location "$LOCATION" \
-    --sku Standard_LRS \
-    --kind StorageV2 \
-    --hns true \
-    -o none
+# djgrfpagentadls is a moved-in account (eastus, not $LOCATION) — create only
+# when absent, and never change its region.
+if ! az storage account show --name "$ADLS_ACCOUNT_NAME" --resource-group "$RG" -o none 2>/dev/null; then
+    echo ">>> Creating ADLS Gen2 storage account..."
+    az storage account create \
+        --name "$ADLS_ACCOUNT_NAME" \
+        --resource-group "$RG" \
+        --location "$LOCATION" \
+        --sku Standard_LRS \
+        --kind StorageV2 \
+        --hns true \
+        -o none
+fi
 
-echo ">>> Ensuring ADLS public network access is enabled..."
+# R18: storage stays network-private. Artifacts flow through the blob private
+# endpoint (djgrfpagentadls-blob-pe); the dfs path (Library indexing) is parked
+# with Search for MVP v1. MCAPS policy also enforces this posture.
+echo ">>> Asserting storage public network access is disabled..."
 az storage account update \
     --name "$ADLS_ACCOUNT_NAME" \
     --resource-group "$RG" \
-    --public-network-access Enabled \
+    --public-network-access Disabled \
     -o none
 
 echo ">>> Creating ADLS filesystem..."
