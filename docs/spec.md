@@ -23,6 +23,11 @@ A cross-cutting invariant ties them together — **verifiable execution**: the a
 *only* from `GET /sessions/{id}/app/state`, and the agent's tools mutate that same store, so the
 assistant can only claim work a tool actually performed.
 
+> **Proposed fifth capability — Reporting (I13, not yet built):** the agent composes the app's own
+> data (tasks, events, and optional cited Library passages) into a generated **report** artifact.
+> Scope proposal in [Reporting (proposed)](#reporting-proposed) below and
+> [use-cases.md §7](use-cases.md#7-reporting-proposed).
+
 ## Surfaces
 
 The app has six navigation destinations. The assistant is always present as a docked co-pilot on
@@ -150,6 +155,54 @@ Markdown skills in [`session-container/skills/`](../session-container/skills/), 
 - **`calendar`** — create/move/delete events; agenda reasoning against the "[Today: …]" context.
 - **`documents`** — discover → read → answer strictly from what was read; draft as markdown artifacts.
 - **`research`** — when to call `search_documents`, how to ground answers in retrieved passages and cite sources, and to fail loud rather than fabricate.
+
+## Reporting (proposed)
+
+> **Status: proposed (I13) — not yet built.** This is a scope proposal for sign-off, not shipped
+> behaviour. Trim or extend before implementation.
+
+The agent composes the app's own data into a **generated report** — a cited markdown artifact
+summarising what's due, overdue, and upcoming. Reporting is not a new data source: it reads the
+existing store (tasks, events) and, optionally, the Library, and writes a report the same way
+`write_file` writes any artifact. It reuses **verifiable execution** — the figures come from the
+tools, never from the model's own arithmetic.
+
+**Capability.** *"Generate a weekly status report"*, *"summarise what's overdue"*, *"give me a digest
+of this week"* → a report artifact that opens in the canvas and lands in Documents, with every figure
+traceable to app state.
+
+**Surface.** v1 has **no dedicated surface** — a report is a session artifact in **Documents** and
+the AI Workbench canvas (like any `write_file` draft). A dedicated `/reports` screen (list + history)
+is a **deferred** increment, the same way the manual CRUD path is deferred.
+
+**Tool (proposed).** One tool, added to the Agent tools table above:
+
+| Tool | Purpose |
+|---|---|
+| `generate_report(period, group?, title?)` | Deterministically compose tasks + events (+ optional cited Library passages) over a `day`/`week` window into a markdown report artifact. Returns `WROTE …` / `NO_REPORT_DATA` (noop) / `PERIOD_REQUIRED` (error). |
+
+**Skill (proposed).** A `reporting` skill: when to generate a report, to compose only from tool
+output, to cite Library sources, and to fail loud (`NO_REPORT_DATA`) rather than invent figures.
+
+**Data model.** No new fields for v1 — a report is a workspace artifact, and persistence is already
+free via `save_to_library` ("save this report to my library"). A first-class `reports[]` collection
+with run history is only needed if the deferred `/reports` surface is built.
+
+**Reminders synergy.** A scheduled reminder whose prompt is "generate my weekly status report"
+already runs `generate_report` headless and emails the artifact — no new scheduling code.
+
+**v1 scope (definition-of-done).**
+
+- `generate_report` tool + outcome markers registered (so a failed report never shows a false green check in the trace);
+- the `reporting` skill + a "Reports" line in the system prompt;
+- renders in the canvas / Documents; persistence via existing `save_to_library`;
+- reminders path verified end-to-end;
+- documented in [use-cases.md §7](use-cases.md#7-reporting-proposed);
+- proven by a Playwright journey (ad-hoc generation + empty-state), reconciled against the trace;
+- **Copilot harness only.**
+
+**Deferred (not in v1).** Manual `/reports` surface + `reports[]` history; Deep Agents parity;
+multiple bespoke report types; PDF export.
 
 ## Visual design
 

@@ -119,6 +119,37 @@ if it can't run). Locally a 60-second loop drives it; in production an ACA Job o
 
 ---
 
+## 7. Reporting (proposed)
+
+> **Status: proposed (I13) — not yet built.** Unlike §1–§6, this is a scope proposal, not a runnable
+> journey yet. See [spec.md → Reporting (proposed)](spec.md#reporting-proposed).
+
+Ask the agent to compose your own data into a report — a cited markdown artifact you can read, edit,
+save, or have emailed on a schedule.
+
+| | |
+|---|---|
+| **Manual** | *(deferred)* — a dedicated **Reports** screen with saved report history is a later increment. |
+| **Assistant** | *"Generate a weekly status report."*, *"Summarize what's overdue."*, *"Give me a digest of this week's tasks and meetings."* |
+
+The `generate_report` tool composes tasks + events (and, optionally, cited **Library** passages) over
+a day/week window into a markdown report that opens in the artifact canvas and appears under
+**Documents → Generated this session**. Every figure is pulled from the tools — the agent never does
+its own arithmetic — and it fails loud (`NO_REPORT_DATA`) rather than inventing content when nothing
+falls in the window.
+
+**Persist it:** a report is a session file, so *"save this report to my library"* promotes it into the
+persistent Library (§5) — no new machinery.
+
+**Schedule it:** pair Reporting with §6 — *"Email me a weekly status report every Monday at 8am"* — and
+the reminder runs the report on a cadence and emails it.
+
+> **Note:** Reporting is assistant-driven in v1 (one `generate_report` tool + a `reporting` skill). The
+> manual **Reports** surface, Deep Agents parity, multiple report types, and PDF export are deferred
+> increments.
+
+---
+
 ## Trying it end to end
 
 A single session that exercises everything:
