@@ -287,6 +287,7 @@ def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> N
     assert "privatelink.blob.core.windows.net" in foundation.lower()
     assert "microsoft.network/privateendpoints" in foundation.lower()
     assert "microsoft.network/privatednszones" in foundation.lower()
+    assert "networksecuritygroups" not in "\n".join((foundation, apps)).lower()
     assert "minreplicas: 0" in apps.lower() and "maxreplicas: 1" in apps.lower()
     assert apps.lower().count("workloadprofilename: 'consumption'") == 3
     assert "workload_auth_mode" in apps.lower() and "identity_mode" in apps.lower()
@@ -370,8 +371,95 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
     resource_entries += [("Microsoft.App/managedEnvironments", environment_name)] + [("Microsoft.App/containerApps", name) for name in ("csa-workbench-frontend", "csa-workbench-api", "csa-workbench-runtime")]
     resource_entries += [("Microsoft.DocumentDB/databaseAccounts", cosmos), ("Microsoft.Storage/storageAccounts", storage), ("Microsoft.Network/virtualNetworks", vnet_name), ("Microsoft.Network/privateEndpoints", cosmos_pe), ("Microsoft.Network/privateEndpoints", storage_pe), ("Microsoft.Network/privateDnsZones", cosmos_zone), ("Microsoft.Network/privateDnsZones", storage_zone), ("Microsoft.Network/networkInterfaces", f"{cosmos_pe}-nic"), ("Microsoft.Network/networkInterfaces", f"{storage_pe}-nic"), ("Microsoft.EventGrid/systemTopics", "storage-antimalware"), ("Microsoft.Network/privateDnsZones/virtualNetworkLinks", f"{cosmos_zone}/csa-workbench-vnet-link"), ("Microsoft.Network/privateDnsZones/virtualNetworkLinks", f"{storage_zone}/csa-workbench-vnet-link")]
     resources = [{"type": resource_type, "name": name} for resource_type, name in resource_entries]
-    environment = {**os.environ, "APPS": json.dumps(apps), "RESOURCES": json.dumps(resources), "ASSIGNMENTS": json.dumps(assignments), "COSMOS": json.dumps({"disableLocalAuth": True, "publicNetworkAccess": "Disabled"}), "COSMOS_SQL_ASSIGNMENTS": json.dumps([{"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "api"}, {"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "runtime"}]), "STORAGE": json.dumps({"publicNetworkAccess": "Disabled", "allowSharedKeyAccess": False, "allowBlobPublicAccess": False}), "MANAGED_ENVIRONMENT": json.dumps(managed_environment), "VNET": json.dumps(vnet), "PRIVATE_ENDPOINTS": json.dumps(private_endpoints), "PRIVATE_DNS_ZONES": json.dumps(private_dns_zones), "COSMOS_DNS_LINKS": json.dumps(dns_link()), "STORAGE_DNS_LINKS": json.dumps(dns_link()), "COSMOS_DNS_GROUPS": json.dumps(dns_group(cosmos_zone, [cosmos, f"{cosmos}-eastus2"])), "STORAGE_DNS_GROUPS": json.dumps(dns_group(storage_zone, [storage])), "COSMOS_DNS_RECORDS": json.dumps(records(cosmos) + records(f"{cosmos}-eastus2")), "STORAGE_DNS_RECORDS": json.dumps(records(storage)), "EVENT_TOPICS": json.dumps(event_topics), "EVENT_SUBSCRIPTIONS": json.dumps([{"name": "StorageAntimalwareSubscription", "provisioningState": "Succeeded"}]), "SUBSCRIPTION_ID": subscription, "RESOURCE_GROUP": resource_group, "ACR_RESOURCE_GROUP": acr_group, "AOAI_RESOURCE_GROUP": aoai_group, "ACR_NAME": acr, "AOAI_NAME": aoai, "COSMOS_ACCOUNT_NAME": cosmos, "STORAGE_ACCOUNT_NAME": storage, "FRONTEND_APP_NAME": "csa-workbench-frontend", "API_APP_NAME": "csa-workbench-api", "RUNTIME_APP_NAME": "csa-workbench-runtime", "ENVIRONMENT_NAME": environment_name, "VNET_NAME": vnet_name, "ACA_INFRASTRUCTURE_SUBNET_NAME": aca_subnet, "PRIVATE_ENDPOINT_SUBNET_NAME": pe_subnet, "COSMOS_PRIVATE_ENDPOINT_NAME": cosmos_pe, "STORAGE_PRIVATE_ENDPOINT_NAME": storage_pe, "COSMOS_PRIVATE_DNS_ZONE": cosmos_zone, "STORAGE_PRIVATE_DNS_ZONE": storage_zone, "LOCATION": "eastus2", "SHA": "a" * 40, **principals}
+    environment = {**os.environ, "APPS": json.dumps(apps), "RESOURCES": json.dumps(resources), "NETWORK_SECURITY_GROUPS": "[]", "ASSIGNMENTS": json.dumps(assignments), "COSMOS": json.dumps({"disableLocalAuth": True, "publicNetworkAccess": "Disabled"}), "COSMOS_SQL_ASSIGNMENTS": json.dumps([{"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "api"}, {"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "runtime"}]), "STORAGE": json.dumps({"publicNetworkAccess": "Disabled", "allowSharedKeyAccess": False, "allowBlobPublicAccess": False}), "MANAGED_ENVIRONMENT": json.dumps(managed_environment), "VNET": json.dumps(vnet), "PRIVATE_ENDPOINTS": json.dumps(private_endpoints), "PRIVATE_DNS_ZONES": json.dumps(private_dns_zones), "COSMOS_DNS_LINKS": json.dumps(dns_link()), "STORAGE_DNS_LINKS": json.dumps(dns_link()), "COSMOS_DNS_GROUPS": json.dumps(dns_group(cosmos_zone, [cosmos, f"{cosmos}-eastus2"])), "STORAGE_DNS_GROUPS": json.dumps(dns_group(storage_zone, [storage])), "COSMOS_DNS_RECORDS": json.dumps(records(cosmos) + records(f"{cosmos}-eastus2")), "STORAGE_DNS_RECORDS": json.dumps(records(storage)), "EVENT_TOPICS": json.dumps(event_topics), "EVENT_SUBSCRIPTIONS": json.dumps([{"name": "StorageAntimalwareSubscription", "provisioningState": "Succeeded"}]), "SUBSCRIPTION_ID": subscription, "RESOURCE_GROUP": resource_group, "ACR_RESOURCE_GROUP": acr_group, "AOAI_RESOURCE_GROUP": aoai_group, "ACR_NAME": acr, "AOAI_NAME": aoai, "COSMOS_ACCOUNT_NAME": cosmos, "STORAGE_ACCOUNT_NAME": storage, "FRONTEND_APP_NAME": "csa-workbench-frontend", "API_APP_NAME": "csa-workbench-api", "RUNTIME_APP_NAME": "csa-workbench-runtime", "ENVIRONMENT_NAME": environment_name, "VNET_NAME": vnet_name, "ACA_INFRASTRUCTURE_SUBNET_NAME": aca_subnet, "PRIVATE_ENDPOINT_SUBNET_NAME": pe_subnet, "COSMOS_PRIVATE_ENDPOINT_NAME": cosmos_pe, "STORAGE_PRIVATE_ENDPOINT_NAME": storage_pe, "COSMOS_PRIVATE_DNS_ZONE": cosmos_zone, "STORAGE_PRIVATE_DNS_ZONE": storage_zone, "LOCATION": "eastus2", "SHA": "a" * 40, **principals}
     assert subprocess.run([sys.executable, "-c", verifier], env=environment, text=True, capture_output=True).returncode == 0
+    aca_nsg, private_endpoints_nsg = "csa-workbench-vnet-aca-infrastructure-nsg-eastus2", "csa-workbench-vnet-private-endpoints-nsg-eastus2"
+
+    def governance_nsg(name: str, subnets: list[str]) -> dict[str, Any]:
+        return {"name": name, "location": "EastUS2", "provisioningState": "Succeeded", "securityRules": [], "subnets": [{"id": subnet} for subnet in subnets]}
+
+    governance_nsgs = [governance_nsg(aca_nsg, []), governance_nsg(private_endpoints_nsg, [f"{vnet_id}/subnets/{pe_subnet}".upper()])]
+
+    def resource_inventory_for_nsgs(nsgs: object) -> list[dict[str, Any]]:
+        if not isinstance(nsgs, list):
+            return resources
+        return resources + [{"type": "Microsoft.Network/networkSecurityGroups", "name": nsg["name"]} for nsg in nsgs if isinstance(nsg, dict) and isinstance(nsg.get("name"), str)]
+
+    def run_with_governance_nsgs(nsgs: object, resource_inventory: list[dict[str, Any]] | None = None, location: str = "eastus2") -> subprocess.CompletedProcess[str]:
+        environment["NETWORK_SECURITY_GROUPS"] = json.dumps(nsgs)
+        environment["RESOURCES"] = json.dumps(resource_inventory_for_nsgs(nsgs) if resource_inventory is None else resource_inventory)
+        environment["LOCATION"] = location
+        return subprocess.run([sys.executable, "-c", verifier], env=environment, text=True, capture_output=True)
+
+    def assert_governance_nsg_rejected(nsgs: object, expected_error: str, resource_inventory: list[dict[str, Any]] | None = None, location: str = "eastus2") -> None:
+        rejected = run_with_governance_nsgs(nsgs, resource_inventory, location)
+        assert rejected.returncode != 0
+        assert expected_error in rejected.stderr
+
+    assert run_with_governance_nsgs(governance_nsgs).returncode == 0
+    null_nic_nsgs = deepcopy(governance_nsgs)
+    for nsg in null_nic_nsgs:
+        nsg["networkInterfaces"] = None
+    assert run_with_governance_nsgs(null_nic_nsgs).returncode == 0
+    empty_nic_nsgs = deepcopy(governance_nsgs)
+    for nsg in empty_nic_nsgs:
+        nsg["networkInterfaces"] = []
+    assert run_with_governance_nsgs(empty_nic_nsgs).returncode == 0
+    attached_aca_nsgs = deepcopy(governance_nsgs)
+    attached_aca_nsgs[0]["subnets"] = [{"id": f"{vnet_id}/subnets/{aca_subnet}"}]
+    assert run_with_governance_nsgs(attached_aca_nsgs).returncode == 0
+    assert_governance_nsg_rejected(governance_nsgs[:1], "tenant-governance NSG inventory drifted")
+    assert_governance_nsg_rejected(governance_nsgs + [governance_nsg("extra-nsg", [])], "tenant-governance NSG inventory drifted")
+    custom_rule_nsgs = deepcopy(governance_nsgs)
+    custom_rule_nsgs[0]["securityRules"] = [{"name": "deny-all"}]
+    assert_governance_nsg_rejected(custom_rule_nsgs, f"tenant-governance NSG profile drifted: {aca_nsg}")
+    unattached_private_endpoints_nsgs = deepcopy(governance_nsgs)
+    unattached_private_endpoints_nsgs[1]["subnets"] = []
+    assert_governance_nsg_rejected(unattached_private_endpoints_nsgs, f"tenant-governance NSG subnet associations drifted: {private_endpoints_nsg}")
+    wrong_aca_association_nsgs = deepcopy(governance_nsgs)
+    wrong_aca_association_nsgs[0]["subnets"] = [{"id": f"{vnet_id}/subnets/{pe_subnet}"}]
+    assert_governance_nsg_rejected(wrong_aca_association_nsgs, f"tenant-governance NSG subnet associations drifted: {aca_nsg}")
+    nonempty_nic_nsgs = deepcopy(governance_nsgs)
+    nonempty_nic_nsgs[0]["networkInterfaces"] = [{"id": f"{vnet_id}/networkInterfaces/unrelated"}]
+    assert_governance_nsg_rejected(nonempty_nic_nsgs, f"tenant-governance NSG network-interface associations drifted: {aca_nsg}")
+    malformed_nic_scalar_nsgs = deepcopy(governance_nsgs)
+    malformed_nic_scalar_nsgs[0]["networkInterfaces"] = "unexpected"
+    assert_governance_nsg_rejected(malformed_nic_scalar_nsgs, f"tenant-governance NSG network-interface associations are malformed: {aca_nsg}")
+    malformed_nic_object_nsgs = deepcopy(governance_nsgs)
+    malformed_nic_object_nsgs[0]["networkInterfaces"] = {}
+    assert_governance_nsg_rejected(malformed_nic_object_nsgs, f"tenant-governance NSG network-interface associations are malformed: {aca_nsg}")
+    malformed_subnet_nsgs = deepcopy(governance_nsgs)
+    malformed_subnet_nsgs[0]["subnets"] = None
+    assert_governance_nsg_rejected(malformed_subnet_nsgs, f"tenant-governance NSG subnet associations are malformed: {aca_nsg}")
+    malformed_subnet_association_nsgs = deepcopy(governance_nsgs)
+    malformed_subnet_association_nsgs[0]["subnets"] = [{}]
+    assert_governance_nsg_rejected(malformed_subnet_association_nsgs, f"tenant-governance NSG subnet associations are malformed: {aca_nsg}")
+    assert_governance_nsg_rejected(["malformed", governance_nsgs[1]], "tenant-governance NSG inventory is malformed")
+    malformed_name_nsgs = deepcopy(governance_nsgs)
+    malformed_name_nsgs[0]["name"] = None
+    assert_governance_nsg_rejected(malformed_name_nsgs, "tenant-governance NSG inventory is malformed")
+    assert_governance_nsg_rejected({}, "tenant-governance NSG inventory is malformed")
+    duplicate_name_nsgs = deepcopy(governance_nsgs)
+    duplicate_name_nsgs[1]["name"] = aca_nsg
+    assert_governance_nsg_rejected(duplicate_name_nsgs, "tenant-governance NSG inventory drifted")
+    wrong_name_nsgs = deepcopy(governance_nsgs)
+    wrong_name_nsgs[1]["name"] = "wrong-nsg"
+    assert_governance_nsg_rejected(wrong_name_nsgs, "tenant-governance NSG inventory drifted")
+    wrong_location_nsgs = deepcopy(governance_nsgs)
+    wrong_location_nsgs[1]["location"] = "westus"
+    assert_governance_nsg_rejected(wrong_location_nsgs, f"tenant-governance NSG profile drifted: {private_endpoints_nsg}")
+    location_bypass_nsgs = deepcopy(governance_nsgs)
+    for nsg in location_bypass_nsgs:
+        nsg["location"] = "westus"
+    assert_governance_nsg_rejected(location_bypass_nsgs, f"tenant-governance NSG profile drifted: {aca_nsg}", location="westus")
+    wrong_state_nsgs = deepcopy(governance_nsgs)
+    wrong_state_nsgs[1]["provisioningState"] = "Failed"
+    assert_governance_nsg_rejected(wrong_state_nsgs, f"tenant-governance NSG profile drifted: {private_endpoints_nsg}")
+    assert_governance_nsg_rejected(governance_nsgs, "unexpected resource inventory", resources)
+    assert_governance_nsg_rejected([], "unexpected resource inventory", resources + [{"type": "Microsoft.Network/networkSecurityGroups", "name": aca_nsg}])
+    environment["NETWORK_SECURITY_GROUPS"] = "[]"
+    environment["RESOURCES"] = json.dumps(resources)
+    environment["LOCATION"] = "eastus2"
     environment["RESOURCES"] = json.dumps([{"type": "Microsoft.Search/searchServices"}])
     rejected = subprocess.run([sys.executable, "-c", verifier], env=environment, text=True, capture_output=True)
     assert rejected.returncode != 0

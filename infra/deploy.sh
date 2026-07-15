@@ -158,9 +158,10 @@ echo "Running resource-group what-if before app deployment..."
 "${APPS[@]}" --only-show-errors >/dev/null
 
 verify_inventory() {
-  local apps resources assignments cosmos cosmos_sql_assignments storage managed_environment vnet private_endpoints private_dns_zones cosmos_dns_links storage_dns_links cosmos_dns_groups storage_dns_groups cosmos_dns_records storage_dns_records event_topics event_topic_name event_subscriptions frontend_principal api_principal runtime_principal subscription_id
+  local apps resources network_security_groups assignments cosmos cosmos_sql_assignments storage managed_environment vnet private_endpoints private_dns_zones cosmos_dns_links storage_dns_links cosmos_dns_groups storage_dns_groups cosmos_dns_records storage_dns_records event_topics event_topic_name event_subscriptions frontend_principal api_principal runtime_principal subscription_id
   apps="$(az containerapp list -g "$RESOURCE_GROUP" -o json)"
   resources="$(az resource list -g "$RESOURCE_GROUP" -o json)"
+  network_security_groups="$(az network nsg list -g "$RESOURCE_GROUP" -o json)"
   frontend_principal="$(az identity show -g "$RESOURCE_GROUP" -n csa-workbench-frontend-identity --query principalId -o tsv)"
   api_principal="$(az identity show -g "$RESOURCE_GROUP" -n csa-workbench-api-identity --query principalId -o tsv)"
   runtime_principal="$(az identity show -g "$RESOURCE_GROUP" -n csa-workbench-runtime-identity --query principalId -o tsv)"
@@ -186,7 +187,7 @@ verify_inventory() {
   else
     event_subscriptions='[]'
   fi
-  APPS="$apps" RESOURCES="$resources" ASSIGNMENTS="$assignments" COSMOS="$cosmos" COSMOS_SQL_ASSIGNMENTS="$cosmos_sql_assignments" STORAGE="$storage" MANAGED_ENVIRONMENT="$managed_environment" VNET="$vnet" PRIVATE_ENDPOINTS="$private_endpoints" PRIVATE_DNS_ZONES="$private_dns_zones" COSMOS_DNS_LINKS="$cosmos_dns_links" STORAGE_DNS_LINKS="$storage_dns_links" COSMOS_DNS_GROUPS="$cosmos_dns_groups" STORAGE_DNS_GROUPS="$storage_dns_groups" COSMOS_DNS_RECORDS="$cosmos_dns_records" STORAGE_DNS_RECORDS="$storage_dns_records" EVENT_TOPICS="$event_topics" EVENT_SUBSCRIPTIONS="$event_subscriptions" \
+  APPS="$apps" RESOURCES="$resources" NETWORK_SECURITY_GROUPS="$network_security_groups" ASSIGNMENTS="$assignments" COSMOS="$cosmos" COSMOS_SQL_ASSIGNMENTS="$cosmos_sql_assignments" STORAGE="$storage" MANAGED_ENVIRONMENT="$managed_environment" VNET="$vnet" PRIVATE_ENDPOINTS="$private_endpoints" PRIVATE_DNS_ZONES="$private_dns_zones" COSMOS_DNS_LINKS="$cosmos_dns_links" STORAGE_DNS_LINKS="$storage_dns_links" COSMOS_DNS_GROUPS="$cosmos_dns_groups" STORAGE_DNS_GROUPS="$storage_dns_groups" COSMOS_DNS_RECORDS="$cosmos_dns_records" STORAGE_DNS_RECORDS="$storage_dns_records" EVENT_TOPICS="$event_topics" EVENT_SUBSCRIPTIONS="$event_subscriptions" \
   RESOURCE_GROUP="$RESOURCE_GROUP" ACR_RESOURCE_GROUP="$ACR_RESOURCE_GROUP" AOAI_RESOURCE_GROUP="$AOAI_RESOURCE_GROUP" \
   ACR_NAME="$ACR_NAME" AOAI_NAME="$AOAI_NAME" COSMOS_ACCOUNT_NAME="$COSMOS_ACCOUNT_NAME" STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
   FRONTEND_APP_NAME="$FRONTEND_APP_NAME" API_APP_NAME="$API_APP_NAME" RUNTIME_APP_NAME="$RUNTIME_APP_NAME" SHA="$SHA" SUBSCRIPTION_ID="$subscription_id" \
@@ -197,6 +198,7 @@ import ipaddress
 
 apps = json.loads(os.environ['APPS'])
 resources = json.loads(os.environ['RESOURCES'])
+network_security_groups = json.loads(os.environ['NETWORK_SECURITY_GROUPS'])
 assignments = [assignment for principal_assignments in json.loads(os.environ['ASSIGNMENTS']) for assignment in principal_assignments]
 cosmos = json.loads(os.environ['COSMOS'])
 cosmos_sql_assignments = json.loads(os.environ['COSMOS_SQL_ASSIGNMENTS'])
@@ -235,7 +237,7 @@ for app in apps:
 excluded = ('Microsoft.Search/', 'Microsoft.App/sessionPools', 'Microsoft.CognitiveServices/accounts/projects', 'Microsoft.Communication/', 'Microsoft.ApiManagement/', 'Microsoft.Cdn/', 'Microsoft.Network/natGateways', 'Microsoft.Insights/', 'Microsoft.OperationalInsights/')
 if any(resource['type'].startswith(excluded) for resource in resources):
     raise SystemExit('excluded resource present in MVP resource group')
-forbidden_network_types = ('Microsoft.Network/azureFirewalls', 'Microsoft.Network/virtualNetworkGateways', 'Microsoft.Network/routeTables', 'Microsoft.Network/networkSecurityGroups', 'Microsoft.Network/natGateways')
+forbidden_network_types = ('Microsoft.Network/azureFirewalls', 'Microsoft.Network/virtualNetworkGateways', 'Microsoft.Network/routeTables', 'Microsoft.Network/natGateways')
 if any(resource.get('type') in forbidden_network_types for resource in resources):
     raise SystemExit('forbidden network resource present in MVP resource group')
 if cosmos.get('disableLocalAuth') is not True or cosmos.get('publicNetworkAccess') != 'Disabled':
@@ -263,6 +265,50 @@ environment_profiles = environment_properties.get('workloadProfiles')
 if managed_environment.get('name') != os.environ['ENVIRONMENT_NAME'] or managed_environment.get('properties', {}).get('provisioningState') != 'Succeeded' or environment_properties.get('vnetConfiguration', {}).get('infrastructureSubnetId', '').lower() != aca_infrastructure_subnet_id or not isinstance(environment_profiles, list) or len(environment_profiles) != 1 or environment_profiles[0].get('name') != 'Consumption' or environment_profiles[0].get('workloadProfileType') != 'Consumption':
     raise SystemExit('Container Apps environment private-network profile drifted')
 private_endpoint_subnet_id = f'{vnet_id}/subnets/{os.environ["PRIVATE_ENDPOINT_SUBNET_NAME"]}'
+governance_nsgs = {
+    'csa-workbench-vnet-aca-infrastructure-nsg-eastus2': (aca_infrastructure_subnet_id, True),
+    'csa-workbench-vnet-private-endpoints-nsg-eastus2': (private_endpoint_subnet_id, False),
+}
+governance_nsg_location = 'eastus2'
+if not isinstance(network_security_groups, list):
+    raise SystemExit('tenant-governance NSG inventory is malformed')
+if network_security_groups:
+    if len(network_security_groups) != len(governance_nsgs):
+        raise SystemExit('tenant-governance NSG inventory drifted')
+    nsgs_by_name = {}
+    for nsg in network_security_groups:
+        name = nsg.get('name') if isinstance(nsg, dict) else None
+        if not isinstance(name, str) or not name:
+            raise SystemExit('tenant-governance NSG inventory is malformed')
+        normalized_name = name.lower()
+        if normalized_name in nsgs_by_name:
+            raise SystemExit('tenant-governance NSG inventory drifted')
+        nsgs_by_name[normalized_name] = nsg
+    if set(nsgs_by_name) != set(governance_nsgs):
+        raise SystemExit('tenant-governance NSG inventory drifted')
+    for name, (expected_subnet_id, aca_attachment_is_optional) in governance_nsgs.items():
+        nsg = nsgs_by_name[name]
+        location = nsg.get('location')
+        if not isinstance(location, str) or location.lower() != governance_nsg_location or nsg.get('provisioningState') != 'Succeeded' or nsg.get('securityRules') != []:
+            raise SystemExit(f'tenant-governance NSG profile drifted: {name}')
+        network_interfaces = nsg.get('networkInterfaces')
+        if network_interfaces is not None and not isinstance(network_interfaces, list):
+            raise SystemExit(f'tenant-governance NSG network-interface associations are malformed: {name}')
+        if isinstance(network_interfaces, list) and network_interfaces:
+            raise SystemExit(f'tenant-governance NSG network-interface associations drifted: {name}')
+        associations = nsg.get('subnets')
+        if not isinstance(associations, list):
+            raise SystemExit(f'tenant-governance NSG subnet associations are malformed: {name}')
+        subnet_ids = []
+        for association in associations:
+            subnet_id = association.get('id') if isinstance(association, dict) else None
+            if not isinstance(subnet_id, str) or not subnet_id:
+                raise SystemExit(f'tenant-governance NSG subnet associations are malformed: {name}')
+            subnet_ids.append(subnet_id.rstrip('/').lower())
+        if aca_attachment_is_optional and subnet_ids not in ([], [expected_subnet_id]):
+            raise SystemExit(f'tenant-governance NSG subnet associations drifted: {name}')
+        if not aca_attachment_is_optional and subnet_ids != [expected_subnet_id]:
+            raise SystemExit(f'tenant-governance NSG subnet associations drifted: {name}')
 expected_private_endpoints = {
     os.environ['COSMOS_PRIVATE_ENDPOINT_NAME']: (f'/subscriptions/{os.environ["SUBSCRIPTION_ID"]}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.DocumentDB/databaseAccounts/{os.environ["COSMOS_ACCOUNT_NAME"]}'.lower(), 'Sql'),
     os.environ['STORAGE_PRIVATE_ENDPOINT_NAME']: (f'/subscriptions/{os.environ["SUBSCRIPTION_ID"]}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.Storage/storageAccounts/{os.environ["STORAGE_ACCOUNT_NAME"]}'.lower(), 'blob'),
@@ -359,6 +405,8 @@ expected_direct_resources = {
     ('microsoft.network/privatednszones', os.environ['STORAGE_PRIVATE_DNS_ZONE'].lower()),
 }
 expected_direct_resources |= {('microsoft.network/networkinterfaces', nic_name) for nic_name in nic_names}
+if network_security_groups:
+    expected_direct_resources |= {('microsoft.network/networksecuritygroups', name) for name in governance_nsgs}
 if event_topics:
     expected_direct_resources.add(('microsoft.eventgrid/systemtopics', event_topics[0]['name'].lower()))
 expected_direct_resources |= {
