@@ -1,66 +1,164 @@
 # Testing and evaluation evidence
 
-> **Authority:** Behavioral evidence detail subordinate to the [authoritative design](../design.md) and [MVP requirements](../requirements.md)
+> **Authority:** Behavioral-evidence detail subordinate to the [authoritative design](../design.md)
+> and [MVP requirements](../requirements.md)
+>
+> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+>
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
-> **Current state:** The commands below create local synthetic evidence when run. They do not prove a checkout until their generated bundle is reviewed.
 
-## The rule
+## What counts as proof
 
-CSA Workbench evidence reconciles three things: the real rendered UI, the
-authoritative application state, and structured tool/turn events. Assistant
-prose, a tool label, screenshots alone, and a green command are never success
-oracles.
+CSA Workbench tests a claim against the product state and control event that can make that claim
+true. A passing result identifies its source revision and environment; local demo, real Entra, and
+deployed observations are never interchangeable.
 
-Every result records the source revision, fixture version/hash, local identity
-mode, harness, model deployment, timing, viewport where applicable, structured
-events, normalized state before/after, and its criterion-level verdicts.
-Generated evidence is local runtime output under
-`evidence/mvp/local-synthetic/<runner>/<run-id>/`; it is not source-controlled
-proof and must not be fabricated.
+Use this truth order for each behavior:
 
-## Start with deterministic local fixtures
+1. **Authoritative effect** — read back the exact Cosmos state or Blob bytes the behavior should
+   create, preserve, hide, or reject.
+2. **Structured control** — correlate the typed tool result, navigation event, and one terminal event
+   to the same run and target.
+3. **Rendered behavior** — drive the real frontend as a user and reconcile what it renders with that
+   state and event record.
+4. **Supporting record** — use traces, timings, screenshots, manifests, and command output to explain
+   the run and make review possible.
 
-The MVP synthetic actors are `dan`, `ava`, and `sam`. Their stable fixture gives
-Dan owner access to Website Launch and editor access to Product Launch, Ava owner
-access to Product Launch and Q3 Budget, and Sam viewer access to Website Launch.
-The browser runner creates one additional Engagement to prove sharing and
-outsider isolation without relying on a pre-existing ID.
+The expected behavior must be stated before interpreting the observation. Assistant wording, tool
+progress labels, success-like marker text, browser-cached or optimistic state, HTTP health alone, a
+screenshot alone, and a green build or command are not application-state oracles. Normalizing
+volatile timestamps and store metadata helps compare states; it does not turn wording, static
+inspection, or a runner's own `pass` field into proof.
 
-`scripts/reset_demo_state.py` is intentionally destructive, and only to a
-clearly named local Cosmos emulator database/container. It requires all of:
+## Evidence profiles
 
-- `IDENTITY_MODE=demo` and a nonempty environment-supplied `DEMO_PASSWORD`;
-- a direct `CONFIRM_DEMO_RESET=YES` acknowledgement;
-- a loopback `COSMOS_ENDPOINT`; no Azure or other remote hostname;
-- `COSMOS_DATABASE` and `COSMOS_CONTAINER` whose names explicitly include
-  `demo` or `local`; and
-- no `ARTIFACTS_ACCOUNT`, because reset deletes only the dedicated
-  `.mvp-artifacts/` subtree. It clears only this repository's `workspace/` path,
-  never an arbitrary `WORKSPACE` override.
+| Profile | Oracle and use | Boundary |
+|---|---|---|
+| Unit and contract | Deterministic assertions for domain rules, identity and workload boundaries, tool/event schemas, evidence utilities, and infrastructure inventory logic | No browser, model, data service, Entra redirect, or live Azure proof |
+| Local deterministic users | Guarded `demo` fixtures for Dan, Ava, and Sam; compare personal portfolios, roles, sharing, denial, and exact state effects in a dedicated local Cosmos emulator | Synthetic actors are not tenant identities; local storage and networking are not Azure |
+| Live local model | Deep Agents calls a real configured model; score only typed results, correlated events, and normalized state effects for the versioned seven-case set | Model selection is exercised, but Entra, managed workload identity, and deployed private paths are not |
+| Playwright and responsive captures | A real browser drives the frontend/API at 1440, 1024, and 390 CSS px; DOM behavior, overflow, focus, state, and structured SSE evidence are asserted and six representative screenshots are reviewed | Captures support the asserted host journey; they are not broad visual, accessibility, or `/assistant` proof |
+| Deployed real Entra | The identified immutable revision exercises tenant auth, actor-bound state, API-to-runtime workload identity, private Cosmos/Blob paths, and a typed live turn | Run-specific deployment evidence does not become proof for another revision, tenant actor, or journey |
 
-It removes all documents in that guarded container and the local artifact tree,
-then uses the application demo seeding path. The JSON output reports fixture
-version, normalized SHA-256 hash, stable IDs, and counts. A missing guard is a
-refusal, not a best-effort cleanup.
+One run may contribute to more than one profile, but its claims stay within the environment and
+oracles it actually exercised. Broad production, load, disaster-recovery, multi-region, and
+generalized security test programs are outside the MVP release bar.
 
-## Local verification layers
+## Current evidence record
 
-Run the focused contracts first. They are fast checks of reset guards and the
-event/state oracle, not browser or model proof.
+### Repository-verifiable focused checks
+
+The focused suites cover the shared Engagement rules, demo/Entra mode separation, session and
+workload binding, structured tool/event handling, reset and evidence guards, and the declared Azure
+inventory verifier. The source-controlled checks are:
 
 ```bash
-PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py tests/test_engagement_core.py tests/test_structured_control.py
+PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest \
+  pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py \
+  tests/test_engagement_core.py tests/test_structured_control.py \
+  tests/test_infra_entra_contract.py tests/test_release_boundaries.py
 npm run test:mvp-evidence
-(cd frontend && npm run lint && npm run build)
+(cd frontend && npm run test:contract && npm run lint && npm run build)
 ```
 
-With a pre-existing local emulator and the three services running through
-`uv run dev.py`, run the guarded reset and the live evidence commands. These
-commands do not start or stop the emulator or application services.
+These commands prove only their assertions against the checkout on which they run. Infrastructure
+contract tests exercise the verifier with fixtures; they do not query or deploy Azure. Frontend
+lint/build and contract checks support browser evidence but do not replace it.
+
+### Accepted local browser evidence
+
+The accepted local synthetic Playwright observation has run ID
+`2026-07-15T02-57-58-244Z-1e852bb3`. Its ignored local `results.json` records **34/34 checks**, no
+failures, and no page errors at
+`9142b2a1fe70e86af00b5071b1a4e4215327feb1`. It reconciles three deterministic actors, sharing and
+outsider isolation, viewer affordances, rejected validation with unchanged state, a typed agent
+status update, authoritative UI refresh, wide/compact/narrow overflow, and narrow drawer focus and
+hit-testing.
+
+The same run contains six captures:
+
+- `wide-dan-portfolio.png`;
+- `wide-owner-shared-engagement.png`;
+- `wide-agent-updated-engagement.png`;
+- `compact-sam-viewer.png`;
+- `narrow-dan-drawer-open.png`; and
+- `narrow-dan-workspace.png`.
+
+One frontend file changed after `9142b2a1fe70e86af00b5071b1a4e4215327feb1`: `MessageList.tsx`
+replaced unsupported assistant suggestions with supported Engagement operations. The recorded run
+remains supporting evidence for the unchanged host workflows and responsive layout, but it is not a
+final-SHA bundle and does not prove the corrected suggestion copy interactively. Contract tests,
+lint, build, and a deployed-bundle string check cover that copy-only delta. Generated local bundles
+are ignored runtime output, not checked-in release artifacts.
+
+### Live local model evaluation
+
+[`tests/evals/mvp-cases.json`](../../tests/evals/mvp-cases.json) defines seven readable cases:
+authorized list, grounded read, typed navigation, editor mutation, missing-reason non-commit,
+outsider non-commit, and inert marker/success-like prose. The ignored local observation with run ID
+`2026-07-15T01-27-46-902Z-2ecc70df` records 7/7 with Deep Agents at
+`7bca264d62bf99f0c654443cc2a38e30c92d4f42`. That is historical supporting evidence, not a
+tracked artifact or final-SHA evaluation.
+
+Each case requires one correlated `RUN_STARTED`, exactly one final terminal event, the expected
+typed result where required, and the expected normalized state effect. The missing-reason and
+outsider cases also allow narrowly named safe-non-execution alternatives observed from the model:
+no tool result for the former, or one `list`/`succeeded` result for the latter. Those alternatives
+prove unchanged state and no false effect; they do not prove the typed invalid/not-found branch ran.
+The marker case requires zero tool results, no navigation, and unchanged state. Exact prose, token
+timing, and hidden reasoning are deliberately ungraded.
+
+### Final deployed release observation
+
+The authoritative design records application revision `c544f6c` passing health, the corrected
+deployed suggestion-bundle check, real-Entra `/auth/me`, session creation, authoritative Engagement
+state readback, and a Deep Agents turn. The turn
+`List my engagements.` emitted typed `list_engagements` and successful `engagement.listed` evidence
+before describing the same Cosmos-backed record. It also records a Blob-backed API round trip at the
+final private topology: upload, list, byte-for-byte/hash-equal download, and delete. The live
+post-deployment topology verifier passed for the three SHA-pinned, scale-to-zero apps, private
+Cosmos/Blob access, DNS, inventory, managed-identity role contract, and exact optional
+tenant-governance NSG pair.
+
+These are authoritative release observations, but the repository has no checked-in deployment
+transcript, per-event turn transcript, Blob request/response and hash record, inventory JSON, or
+verifier output. They therefore cannot be independently replayed from this checkout. A successful
+health probe alone would not prove auth, state, typed control, or private data paths.
+
+## Safe, repeatable local evidence
+
+The synthetic fixture uses stable actors `dan`, `ava`, and `sam` in a dedicated local Cosmos
+emulator database/container. [`scripts/reset_demo_state.py`](../../scripts/reset_demo_state.py) is
+destructive only after all of these guards pass:
+
+- `IDENTITY_MODE=demo`, an environment-supplied nonempty `DEMO_PASSWORD`, and
+  `CONFIRM_DEMO_RESET=YES`;
+- an absolute loopback `COSMOS_ENDPOINT`;
+- database and container names that each contain `demo` or `local`;
+- no `ARTIFACTS_ACCOUNT`, with deletion restricted to `.mvp-artifacts/`; and
+- the repository's fixed `workspace/`, not an arbitrary `WORKSPACE` override.
+
+The reset deletes exactly that guarded local container and the dedicated local trees, seeds through
+the application demo path, and reports fixture version, normalized SHA-256 hash, stable IDs, and
+counts. Refusal is the expected outcome when any guard is missing.
+
+Both live runners additionally require `MVP_RESET_BEFORE_RUN=1` and refuse source changes reported by
+`git status`; only generated files under `evidence/mvp/local-synthetic/` are exempt. This prevents a
+committed SHA from labeling uncommitted runner or product code. It also means a documentation edit in
+progress correctly prevents a new accepted bundle. The runners then supply the reset acknowledgement,
+verify loopback app/API targets, reset the fixture, and write run-scoped results beneath:
+
+```text
+evidence/mvp/local-synthetic/agent-evals/<run-id>/results.json
+evidence/mvp/local-synthetic/playwright/<run-id>/results.json
+evidence/mvp/local-synthetic/playwright/<run-id>/*.png
+```
+
+With the emulator and all three services already running, the live commands are:
 
 ```bash
 export IDENTITY_MODE=demo
-export DEMO_PASSWORD='local-test-secret'  # environment only; never source/UI text
+export DEMO_PASSWORD='local-test-secret'  # local environment only
 export COSMOS_ENDPOINT='http://localhost:8081'
 export COSMOS_DATABASE='csa_workbench_demo'
 export COSMOS_CONTAINER='appstate_demo'
@@ -72,85 +170,32 @@ MVP_RESET_BEFORE_RUN=1 npm run eval:mvp
 MVP_RESET_BEFORE_RUN=1 npm run playwright:mvp
 ```
 
-The runner repeats the reset itself only when `MVP_RESET_BEFORE_RUN=1` is set,
-which is the runner-level destructive acknowledgement; it supplies the reset's
-`CONFIRM_DEMO_RESET=YES` acknowledgement itself. Each result therefore starts
-from a verified fixture without a password argument or static secret.
-Both live runners refuse a dirty Git worktree before reset, so a captured source
-revision cannot be mistaken for the contents of uncommitted evidence code.
+The password and emulator key stay in the local environment and must not enter source or browser
+text. [Local development](../development.md) covers service startup. The runners do not start
+services and must never be pointed at Entra or a remote store.
 
-## MVP browser journey
+## Release-bar map
 
-`scripts/mvp_playwright.mjs` drives the real frontend and real API. It captures
-wide `1440×900`, compact `1024×768`, and narrow `390×844` screenshots, checks
-page-level overflow, and verifies narrow drawer focus, Escape closure, and focus
-restoration. It exercises and reconciles:
+| Requirement or journey | Minimum evidence and current boundary |
+|---|---|
+| R1 | Authority/link/terminology review against the release revision; documentation consistency is not inferred from runtime tests |
+| R2 and S5 | Final-SHA deployment plus live topology verifier, health, identity, private data paths, exact inventory, scale, and latency record; raw transcript and cost export remain absent |
+| R3–R5 and S1–S2 | Focused role/identity contracts, deterministic multi-user browser state reconciliation, and real-Entra confirmation; the second real tenant actor remains absent |
+| R6 and S4 | Reviewed real-frontend Playwright journey and six captures at wide, compact, and 390 px; narrow standalone `/assistant` remains absent |
+| R7 and S3 | Tool/schema/event contracts, adversarial inert-text cases, live local model results, and the final typed deployed turn; prose never supplies control or commit evidence |
+| R8 | One criterion-level record that names revision, profile, fixture/configuration, oracles, results, screenshots where applicable, and gaps |
 
-1. distinct Dan/Ava portfolios and a Dan-created Engagement where Dan is owner;
-2. owner sharing Ava as editor, Ava's UI edit, and Dan's authoritative refresh;
-3. Sam's hidden list entry, direct read, forged write, unchanged owner state, and
-   seeded viewer affordances;
-4. visible status-reason validation without an accidental commit; and
-5. a real assistant status change. The runner accepts that change only when a
-   `TOOL_CALL_RESULT` is structured `committed` and the refreshed authoritative
-   Engagement has the exact change. It does not inspect assistant wording as an
-   oracle.
+## Open evidence gaps
 
-Page errors and failed DOM/state/event checks are written to `results.json`.
-Loading/failure injection is deliberately not a broad local fault framework;
-the MVP has validation and permission evidence here, while dependency failures
-remain a separate targeted test when their behavior changes.
+- No clean-worktree browser/eval bundle is stamped with final application SHA `c544f6c`.
+- No second real tenant actor proves deployed collaboration or isolation.
+- No interactive Entra browser record proves redirect/return, rendered portfolio, collaboration, and
+  sign-out.
+- The standalone `/assistant` route is not narrow-screen complete or covered at 390 px.
+- No deployment transcript, live topology output, Blob round-trip transcript, or Azure cost export is
+  checked in; no numeric cost is claimed.
+- Commands, agent turns, and deployment checks have no durable, actor-authorized receipts. Local
+  traces and generated bundles are ephemeral evidence, not a replay or recovery contract.
 
-## MVP live agent evaluation
-
-`tests/evals/mvp-cases.json` is small, versioned, and intentionally readable.
-The live runner covers authorized list/read/navigation, an editor mutation, a
-missing reason, an outsider mutation, and marker/success-like prose. Each case
-requires exactly one terminal event and scores only typed `TOOL_CALL_RESULT`
-data, normalized authoritative state effects, and structured navigation events.
-It records latency but does not grade exact wording, token timing, or hidden
-reasoning.
-
-Every case begins with one correlated `RUN_STARTED` and ends with exactly one
-final terminal event. Its primary path, except for a case explicitly requiring
-zero tool results, requires a valid structured result; operation and status must
-occur on the same result. Where a result includes an Engagement resource ID, it
-must match the case target. A committed update also proves the requested
-status/reason and that no state outside its named Engagement aggregate changed.
-Its target record may differ only in status/reason and the one expected
-`engagement.updated` activity receipt; names, members, customer data, and other
-business fields stay identical.
-
-E5 and E6 also have named, case-specific `safeNonExecution` alternatives for
-the observed model refusal behavior: E5 permits no results; E6 permits exactly
-one `list`/`succeeded` result. Each alternative still requires valid lifecycle,
-an exactly unchanged normalized state and target Engagement, no committed or
-resolved result, and no navigation. It proves safe non-execution only—not that
-the live invalid/not-found denial branch ran. Their primary typed-result paths
-remain the direct denial evidence.
-
-A non-commit case must demonstrate unchanged state. The marker case cannot
-create route or success evidence merely by including route/tool/result-looking
-text in the prompt. A case with a missing, duplicated, malformed, or wrong
-terminal event fails closed.
-
-## Separate profiles
-
-| Profile | What it proves | What it does not prove |
-|---|---|---|
-| Focused contracts | Guard semantics, event parsing, structured-oracle logic, identity/core contracts | A running browser, Cosmos, model, or Azure |
-| Local synthetic browser/evals | Real frontend/API/Deep Agents behavior with deterministic demo actors and a local emulator | Entra, Azure networking, managed identity, or deployment behavior |
-| Real-Entra smoke | Two actual tenant users can sign in and perform the scoped shared Engagement smoke | Broad production hardening or a substitute for local repeatable coverage |
-| Deployed evidence | The identified deployed revision's identity, storage, runtime, and UX behavior | A timeless claim about later revisions |
-
-Real-Entra and deployed runs use their own non-demo data store and explicitly
-record revision/image/configuration. The destructive demo reset is unavailable
-there. No current local result should be relabelled as either profile.
-
-## Review checklist
-
-For R3–R8 and S1–S4, review the generated `results.json` and named screenshots
-at the same run path. Confirm the source revision, fixture hash, structured
-terminal/tool results, normalized state deltas, UI checks, no-leak assertions,
-and screenshots all refer to the same run. Mark unavailable live behavior
-**UNVERIFIED**, rather than replacing it with static plausibility.
+Mark a missing profile **UNVERIFIED**. Do not replace it with source inspection, assistant wording,
+an older revision's result, or a broader production test requirement outside R1–R8 and S1–S5.

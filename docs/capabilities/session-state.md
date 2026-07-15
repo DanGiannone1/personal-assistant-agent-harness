@@ -1,397 +1,197 @@
-# Session and State Capability
+# Session and state
 
-> **Authority:** Canonical capability detail subordinate to [CSA Workbench — Authoritative Product and System Design](../design.md)  
-> **State:** Reference direction; the MVP requires correct actor/session isolation but does not require the full durable-conversation design
+> **Authority:** Capability detail subordinate to the [authoritative design](../design.md)
 >
-> **Applies to:** Conversation ownership, durable state, rehydration, runtime coordination, and compute lifecycle  
-> **Last reviewed:** 2026-07-14  
+> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+>
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
-## The short version
+## What a CSA can count on
 
-The MVP release bar requires that one CSA cannot use another CSA's session and that scale-to-zero
-does not lose Engagement data. Full transcript rehydration, durable private chat uploads, turn
-receipts, and draft promotion are documented below as reference patterns, not as implied MVP scope.
+An agent session is a temporary working conversation, not the product record. It remains usable only
+while the owning API process and runtime state remain alive. If either is replaced, CSA Workbench
+creates a new session and reloads the actor's durable product state.
 
-CSA Workbench separates the place where work is kept from the compute that temporarily helps with it:
+The durable boundary is the Engagement:
 
-- **Cosmos is the filing cabinet.** It owns structured records: actors, personal state,
-  Engagements, conversations, messages, upload metadata, and turn receipts.
-- **Blob is the file room.** It owns durable bytes: private conversation files and shared
-  Engagement artifacts.
-- **The session runtime is a rented desk.** It may hold a warm agent, materialized files, caches,
-  and scratch while a turn runs. The desk may disappear at any time.
+- Cosmos DB keeps actors, personal state, Engagement aggregates, membership, artifact metadata, and
+  activity.
+- Blob Storage keeps Engagement artifact bytes.
+- The API process keeps session ownership.
+- The runtime process and its filesystem keep chat continuity, uploads, generated drafts, harness
+  memory, and locks. API/runtime filesystems may also keep optional local traces.
+- The browser keeps the current session ID and completed visible messages in actor-namespaced
+  `sessionStorage`.
 
-The product rule is that losing the rented desk must not lose anything the user reasonably expects
-to resume. A conversation is therefore an actor-owned product record, not a container identity. It
-can be reopened after a browser refresh, process restart, scale-in, or cold start. Compute rebuilds
-from Cosmos and Blob; it never becomes the system of record.
+Consequently, an API or runtime replacement does not remove an Engagement, its members, or its
+committed artifacts. It can remove the conversation, chat uploads, generated working files, and
+trace files. The MVP does not promise durable conversations, server-side transcripts, checkpoints,
+turn receipts, resumable streams, or upload promotion.
 
-Conversations remain private even when they are associated with an Engagement. Uploading or drafting
-inside an Engagement-scoped conversation does not share the file. Sharing is a separate, explicit
-**Save to Engagement** action that creates an Engagement artifact under current membership and role
-rules.
+## State boundary
 
-## Product promises
+| State | Current owner | Lifetime |
+|---|---|---|
+| Actor profile and personal workspace | Cosmos DB | Durable across sessions and compute replacement |
+| Engagement record, membership, tasks, conventions, artifact metadata, activity | Cosmos DB | Durable across sessions and compute replacement |
+| Engagement artifact bytes | Blob Storage in the Entra deployment | Durable across sessions and compute replacement |
+| Session ID and actor binding | API and runtime process maps | Lost when the relevant process is replaced |
+| Harness conversation | Live `AgentSession`; Deep Agents uses `InMemorySaver` | Lost with the runtime session or process |
+| Chat upload, generated file, upload manifest | Per-session runtime workspace directory | Ephemeral filesystem state |
+| Completed chat shown after a same-tab reload | Browser `sessionStorage` | Browser-tab state, not server truth |
+| Structured and raw trace JSONL | Local process filesystem when tracing is enabled | Optional and ephemeral; no user-retrievable receipt |
+| Per-session turn and manifest locks | Runtime process memory | Process-local only |
 
-This capability makes six promises to the user:
+Cosmos updates to personal and Engagement documents use optimistic ETag replacement with bounded
+retry. That protects durable aggregate writes from lost updates; it does not make a chat, stream, or
+session durable and is not a command-idempotency receipt.
 
-1. **Resume means resume.** The conversation list, visible messages, durable private uploads, and
-   behavior receipts survive loss of browser or agent compute; an unsaved generated draft is clearly
-   excluded from that promise.
-2. **Private stays private.** A conversation and its files belong to one authenticated actor. An
-   Engagement association supplies context, not access for other members.
-3. **Sharing is deliberate.** Only an explicit successful promotion creates a shared Engagement
-   artifact.
-4. **New is not reset.** Starting a new conversation does not delete the previous conversation and
-   never resets personal records, Engagement records, or shared artifacts.
-5. **One turn at a time.** A conversation cannot run two overlapping turns. Competing sends fail
-   visibly rather than racing or queuing invisibly.
-6. **Failure leaves evidence.** An accepted turn has a durable receipt and exactly one honest
-   terminal state, including failure, cancellation, interruption, or unknown commit state.
+## Session lifecycle
 
-## State taxonomy and ownership
+### Create and bind
 
-State is classified by who owns it and what loss would mean. Storage technology follows that
-classification rather than the lifecycle of an agent framework.
+`POST /sessions` requires the configured user authentication. The API generates a 16-character
+opaque ID and asks the runtime to create that session with the authenticated actor in the internal
+`X-User-Id` header. The runtime creates the workspace and records a write-once
+`session ID -> actor ID` binding. Only after runtime creation succeeds does the API record the same
+owner in its process-local maps and return `201`.
 
-| State | Owner and visibility | System of record | Runtime responsibility |
-|---|---|---|---|
-| Actor identity and minimal persona | One authenticated actor | Cosmos actor record | Receive a trusted projection; never infer identity |
-| Personal tasks, preferences, and working context | One actor | Cosmos personal records | Read live through permissioned application services |
-| Engagement, membership, status, tasks, conventions, and activity | The Engagement; current members are role-gated | One Cosmos Engagement aggregate/partition | Read and mutate only through live authorization and ETag checks |
-| Conversation metadata and product-visible transcript | One actor; optionally tagged to an Engagement | Cosmos conversation aggregate | Keep a warm copy and rehydrate it on demand |
-| Turn context and behavior receipt | The conversation owner | Cosmos, attached to the conversation in v1 | Emit normalized events and terminal state; do not rely on raw runtime logs |
-| User uploads | One conversation owner | Blob bytes plus Cosmos conversation metadata | Materialize only the uploads needed by the active conversation |
-| Generated working drafts | One conversation owner while the runtime exists | None until **Keep in Personal Library** or **Save to Engagement** commits | Scratch; label as unsaved and safe to lose |
-| Engagement artifacts | The Engagement | Blob bytes plus Engagement metadata in Cosmos | Use only after an explicit, authorized promotion |
-| Search documents or indexes | Derived from an authorized durable source | Optional, rebuildable projection | Never broaden the source scope; absent from the baseline |
-| Harness memory, framework checkpoint, caches, conversions, and intermediate files | No durable product owner | None | Ephemeral cache or scratch; safe to discard |
-| Runtime locks and active stream handles | One running process | None in v1 | Coordinate the active turn under the single-replica deployment constraint |
+The workspace is created immediately; the harness is initialized lazily on the first turn. Neither
+session map is written to Cosmos.
 
-The private conversation Blob namespace holds user uploads, not ordinary generated drafts. A draft
-may be visible in the artifact canvas while it remains explicitly labelled **Private working draft ·
-not saved**. It becomes durable only through **Keep in Personal Library** or **Save to Engagement**,
-which create a new durable document in the selected scope. Losing runtime scratch makes an unsaved
-draft unavailable; the transcript and receipt may record that it existed but never imply the bytes
-can be resumed.
+### Own and validate
 
-## Durable conversation record
+Every session-scoped API route first probes the runtime and compares the authenticated actor with
+the API's owner map. An unknown session, an owner mismatch, and a session whose API owner binding was
+lost all return `404`, so another actor cannot use a guessed ID to learn that a session exists.
 
-For v1, one Cosmos conversation aggregate is the simple source of truth. It is not an event-sourcing
-system and does not mirror every raw SDK event. Its logical shape is:
+The runtime separately checks its write-once actor binding for chat and file calls. A different
+forwarded actor receives the same `404`, without changing or deleting the original session. If a
+runtime restart leaves an old workspace but loses its actor map, the runtime fails closed rather
+than allowing the workspace to be claimed.
 
-```text
-Conversation
-  id
-  ownerActorId
-  engagementId?          # context association only
-  title
-  status                 # active | archived
-  createdAt, updatedAt
-  messages[]             # product-visible user and assistant messages
-  files[]                # durable private user-upload metadata and provenance
-  turns[]                # bounded behavior receipts
-  version / ETag
-```
+There is no session-list or server-side conversation-history API. On page initialization, the
+frontend checks the actor's stored session ID. A live session restores the browser's completed
+messages and reloads files plus authoritative Cosmos state. A genuine `404` clears the stored chat
+and creates a new session. A timeout, network failure, or `5xx` keeps the stored ID and shows Retry;
+it is not treated as proof that the session disappeared.
 
-Each message has a stable ID, role, timestamp, and product-visible content. Each durable conversation
-file has a stable file ID, safe display name, content type, size, Blob key, `uploaded` origin, and
-creation attribution. Filenames are labels, not identity; two same-named files do not overwrite one
-another. Unsaved generated drafts are not entries in `files[]`.
+### Delete, reset, and New session
 
-Each turn receipt contains:
+`DELETE /sessions/{id}` first checks ownership, removes the API's in-memory binding, and makes a
+best-effort runtime delete. The runtime serializes cleanup with the turn lock, destroys the harness,
+and removes the session workspace. Runtime cleanup failure is logged but does not change the API's
+`204` response; this is cleanup, not a durable deletion receipt.
 
-- stable conversation, turn, and input-message IDs;
-- accepted, started, and terminal timestamps;
-- the stored safe `CONTEXT_APPLIED` inspector projection or its durable reference;
-- normalized tool names, structured outcomes, and affected stable record IDs;
-- output-message ID when one exists; and
-- exactly one terminal state: `completed`, `failed`, `cancelled`, `interrupted`, or
-  `unknown_commit`.
+The runtime also has an internal reset operation that destroys the harness and workspace, then
+recreates an empty directory under the same actor binding. It does not reset Cosmos or Blob.
 
-The receipt deliberately excludes credentials, hidden chain-of-thought, complete prompts containing
-trusted runtime projections, and unbounded raw SDK telemetry. Azure Monitor remains useful for
-operations, but it does not replace the user-retrievable receipt.
+The UI's **New session** action aborts its active stream, best-effort deletes the old session, clears
+conversation-local UI and browser state, creates a new session, then reloads the actor's durable
+personal and Engagement state. It intentionally does not delete personal records, Engagements,
+membership, activity, or committed Engagement artifacts. The old conversation and its workspace
+are not retained as a resumable history.
 
-The aggregate is bounded as a product record. V1 may apply an explicit conversation-length or file
-count limit and must fail before a Cosmos document limit is reached. It does not add transcript
-sharding, an archive service, or an event store before measured need.
+## Runtime trust boundary
 
-## Conversation privacy and actor binding
+The deployed runtime has internal ingress and `WORKLOAD_AUTH_MODE=entra`. Before it accepts the
+forwarded actor header, middleware validates an API managed-identity bearer token for the configured
+tenant, runtime audience, API caller object ID, and `invoke` application role. The API obtains that
+token for HTTPS runtime calls. Only `/health` is exempt.
 
-Conversation ownership is established only from authenticated backend state:
+Local plain-HTTP development explicitly runs without workload-token authentication. That local
+profile does not weaken the deployed boundary. In both profiles, the actor is bound by server code
+and supplied to product tools outside model-selected arguments; a model cannot select a different
+actor by changing the prompt or a tool parameter.
 
-1. Creation writes `ownerActorId` from the validated Entra or synthetic demo identity.
-2. Listing filters by that actor.
-3. Read, resume, append, upload, archive, and promotion first load the conversation and compare its
-   owner with the authenticated actor.
-4. An absent conversation and another actor's conversation return the same not-found behavior.
-5. The browser, model, and model-visible tool arguments never supply an authoritative actor ID.
+## Turns, streaming, and concurrency
 
-`engagementId` is a context tag, not an access-control list. Other Engagement members cannot list or
-open the conversation. On every turn, CSA Workbench rechecks whether the actor can still see the associated
-Engagement before using its conventions or facts. Losing membership removes that Engagement context
-and blocks later promotion; it does not transfer or expose the private conversation.
+The frontend prevents overlapping sends from one UI with synchronous in-flight and streaming
+guards. The runtime is authoritative: it keeps one `asyncio.Lock` per session, acquires it before the
+SSE generator starts, and immediately returns `409 Session is busy` if another turn already owns the
+lock. Locks remain in that runtime process for its lifetime so reset cannot replace a lock while an
+older turn still holds it. Different sessions can proceed independently.
 
-The orchestrator binds the authenticated actor, conversation ID, context ID, and workspace outside
-model-visible arguments. The internal runtime accepts that trusted binding from the orchestrator and
-does not rebind a live conversation because a caller supplied a different header.
+The API proxies typed AG-UI events and validates their order. A stream must begin with
+`RUN_STARTED`, keep message and tool lifecycles correlated, and end with one valid `RUN_FINISHED` or
+`RUN_ERROR`. The proxy holds the terminal event until clean upstream EOF. A malformed, truncated, or
+unterminated stream receives synthetic closure events where possible and a `RUN_ERROR`; raw stream
+text is never searched for success markers.
 
-## Conversation lifecycle
+The runtime applies a per-turn timeout, 300 seconds by default. Timeout or runtime failure destroys
+the live harness, emits `RUN_ERROR`, and releases the session lock. The workspace remains unless the
+session is reset or deleted.
 
-### Create and list
+**Stop is a client-side stream abort.** The UI ignores later buffered events and makes input usable
+again. There is no public cancel endpoint, cancellation acknowledgement, or durable cancelled state.
+The Copilot adapter attempts to abort its SDK turn when its generator closes. The deployed Deep
+Agents adapter has no explicit cancellation acknowledgement; closing the active async stream is its
+only propagation path. A tool mutation that committed before disconnect remains committed, and Stop
+itself does not prove whether the server stopped before or after that commit. The next authoritative
+state read is the only product truth. Streams cannot be resumed.
 
-Creating a conversation first creates its Cosmos record and returns its durable ID. It does not wake
-the session runtime. Listing or opening conversation history is an application-data operation and
-must also work while agent compute is at zero.
+This coordination is valid only with one live API process and one live runtime process. The current
+deployment enforces minimum `0` and maximum `1` replica for frontend, API, and runtime. There is no
+distributed lease, shared session registry, cross-replica routing, durable turn queue, or recovery
+coordinator. Increasing API or runtime replicas would break the ownership and locking assumptions
+and is outside the MVP.
 
-The dock and full workbench are two views of the same selected conversation. Moving between them,
-collapsing the dock, navigating the host application, or resizing the viewport does not create a new
-conversation or cancel a turn.
+## Workspace and upload limits
 
-### Upload and private draft
+Each runtime session uses a server-chosen directory below `WORKSPACE`. Chat uploads and converted
+working files are written there, and generated drafts use the same ephemeral space. The upload
+manifest records whether a visible file was uploaded or generated; a separate process-local lock
+serializes manifest changes.
 
-An upload follows bytes-first, metadata-second ordering:
+These files are not Engagement artifacts. Only the Engagement artifact API creates durable
+Engagement bytes in Blob and commits their metadata in Cosmos. Starting a new session, runtime
+scale-in, or revision replacement may remove session files without affecting already committed
+Engagement artifacts.
 
-1. Authorize the actor-owned conversation and mint a file ID.
-2. Store the original bytes in the conversation's private Blob prefix. Store a reusable converted
-   representation there too when document conversion is required for later rehydration.
-3. Append file metadata to the conversation with an ETag-protected update.
-4. Surface the file only after metadata commits.
+The session runtime does not reconstruct chat, uploads, or generated files after replacement. It has
+no transcript or workspace rehydration source. Browser messages can repaint a same-tab history, but
+they do not restore harness memory and are not replayed into a new agent session.
 
-A metadata failure may leave an inaccessible orphan for later cleanup; it never creates a listed
-file with missing bytes.
+## Failure and recovery
 
-A generated draft stays in runtime scratch and the UI labels it unsaved. **Keep in Personal
-Library** copies it to the actor's durable private document scope; **Save to Engagement** copies it
-to the authorized shared artifact scope. There is no implicit “durable conversation draft” state in
-v1.
-
-### Start a turn
-
-A turn uses this order:
-
-1. Authenticate the actor and authorize the conversation.
-2. Reject the request with `409 conversation_busy` if that conversation already has an active turn.
-3. Validate the UI destination and compose one immutable trusted turn context on the server.
-4. Persist the user message and a `started` receipt before invoking model compute.
-5. Cold-start or reuse the runtime, rehydrate transcript and needed files, and invoke the selected
-   `AgentSession` adapter.
-6. Persist the safe context projection and normalized tool outcomes as the turn progresses.
-7. Persist the assistant message when present, choose exactly one terminal state, and release the
-   in-process conversation lock.
-8. Re-read authoritative application state before displaying any claimed mutation as complete.
-
-The user's message remains distinct from trusted context. Resume never replays an old context
-snapshot as current authority; the context composer reads current identity, membership, and live
-records for every new turn.
-
-### Stop, disconnect, and retry
-
-Stop requests cancellation from the runtime and marks the receipt `cancelled` only when cancellation
-is known. A browser disconnect does not prove cancellation. The coordinator attempts to finish or
-cancel the runtime operation, reconciles authoritative state, and records `interrupted` or
-`unknown_commit` when the result cannot be established.
-
-Already committed tool mutations are never rolled back merely because streaming stopped. Retrying a
-turn does not automatically replay a destructive or mutating tool call. The UI first refetches state
-and shows the stored receipt so the user can choose a safe next action.
-
-### Resume and rehydration
-
-Resume is deterministic reconstruction, not recovery of a particular container:
-
-1. Load the actor-owned conversation, transcript, file metadata, and prior receipts from Cosmos.
-2. Reconcile any non-terminal prior receipt with the runtime/process evidence available; if completion
-   cannot be proven, mark it `interrupted` or `unknown_commit` rather than successful.
-3. Recreate the conversation workspace under a server-chosen path.
-4. Download the conversation files needed for the next turn from Blob.
-5. Create a fresh harness session and replay the bounded, normalized product transcript through the
-   harness adapter.
-6. Compose fresh trusted context and begin the new turn.
-
-Deep Agents may use an in-memory checkpointer while warm, and Copilot may retain its SDK session while
-warm. Neither is authoritative. Harness replacement or scale-in must leave the same conversation
-record usable.
-
-### New conversation
-
-**New conversation** creates a new actor-owned Cosmos record and selects it. It clears only the new
-view's conversation-local UI state and starts with no private files. It does not delete or reset:
-
-- the prior conversation, transcript, files, or receipts;
-- personal tasks, profile, preferences, or working context;
-- any Engagement record, task, convention, membership, activity, or status; or
-- any promoted Engagement artifact.
-
-The previous conversation remains in the actor's conversation list unless the actor separately
-archives it. Permanent deletion, retention schedules, legal hold, and export are outside v1.
-
-### Explicit promotion
-
-**Save to Engagement** is a separate application command. It reauthorizes the conversation owner and
-current Engagement membership, requires the product role allowed by the artifact contract, copies
-the selected private bytes into an Engagement artifact Blob identity, commits Engagement metadata and
-attribution, and returns a structured result. Only that committed result makes the file shared.
-
-An active Engagement, filename match, assistant suggestion, or successful private upload never
-promotes automatically. Removing or archiving the conversation does not remove an already committed
-Engagement artifact.
-
-## Concurrency and consistency
-
-V1 deliberately uses a small deployment and a small coordination model:
-
-- at most one orchestrator replica and one internal session-runtime replica;
-- one in-process lock per conversation in the turn coordinator and a matching runtime guard;
-- immediate `409 conversation_busy` for a competing send;
-- Cosmos ETag checks for conversation, personal, and Engagement aggregate updates; and
-- stable client/request IDs for bounded idempotent retries of message acceptance, upload metadata,
-  promotion, and application mutations.
-
-Different conversations may proceed independently within the runtime's supported request
-concurrency. Two tabs opening the same conversation share durable history but cannot run overlapping
-turns. The UI guard improves responsiveness; the server remains authoritative.
-
-This design does **not** add a distributed lease service, workflow engine, queue, or event-sourcing
-layer in v1. The one-replica limit is a real architectural constraint, not a claim that process-local
-coordination scales horizontally. Increasing either replica count requires a fresh design record and
-behavioral evidence for durable actor/session binding, single-turn exclusion, cancellation, and
-recovery across replicas.
-
-## Degraded and failure behavior
-
-Failure is scoped and remains visible:
-
-| Failure | Required behavior |
+| Condition | Current behavior and limit |
 |---|---|
-| Cosmos unavailable | Do not create, resume, accept a turn, or claim a mutation. The UI may retain clearly stale last-known content but disables state-changing actions until an authoritative read succeeds |
-| Blob unavailable while opening a conversation | Transcript and receipts may still load; mark affected files unavailable. A turn that requires those bytes fails or proceeds only with an explicit omitted-file notice |
-| Blob write succeeds but metadata commit fails | File remains invisible; retry by stable request/file ID cannot create duplicate visible metadata |
-| Session runtime unavailable or cold-start timeout | Manual CSA Workbench remains usable; persist a failed/interrupted receipt, show a recoverable error, and never infer tool success |
-| Browser/SSE disconnect | Do not equate disconnect with cancellation. Reconcile the receipt and authoritative application state before enabling retry |
-| Tool result or commit acknowledgement is lost | Record `unknown_commit`, refetch the target record, and do not navigate or narrate success until the commit is proven |
-| Context source is omitted or unavailable | Record the degraded source in the stored context projection; use only safe defaults and never invent identity, permission, scope, or facts |
-| Runtime or workspace is destroyed | Rehydrate from Cosmos and Blob. Loss of unpresented scratch is expected and requires no recovery |
-| Conversation is busy | Return a stable conflict immediately; do not silently queue, duplicate, or switch conversations |
+| Stored session still exists | Same-tab reload restores browser messages and refreshes files plus Cosmos state |
+| API process replaced or scaled to zero | API owner map is gone; the old ID fails ownership and the UI creates a new session |
+| Runtime process/workspace replaced or scaled to zero | Runtime session, actor map, harness memory, uploads, drafts, and local traces are gone; the UI creates a new session |
+| Old workspace exists without runtime actor binding | Runtime returns `404` and fails closed; it does not rebind the workspace |
+| Runtime cold start | Session creation waits for the runtime; the cost-minimized deployment accepts the delay |
+| Runtime unavailable or creation times out | UI shows a retryable session error; durable Cosmos/Blob data remains, but session-gated UI/API work waits for a valid new session |
+| Cosmos unavailable | Durable reads and writes fail; the session does not become an alternative state store |
+| Stream timeout or malformed upstream lifecycle | UI receives `RUN_ERROR`; there is no durable receipt or resumable cursor |
+| Browser disconnect or Stop | Client observation ends; server cancellation and commit status are not durably acknowledged |
+| Runtime delete cleanup fails | API binding is removed and cleanup is logged; residual runtime files are not a promised retrievable session |
 
-The application remains useful for direct Engagement work when model compute is unavailable. A
-failure in the assistant path cannot become a reason to hide or corrupt authoritative manual paths.
+The `0-1` replica profile therefore gives zero idle compute and accepts cold starts, but it also
+makes replacement visible as a new conversation. Durable product state can be reloaded only after a
+new actor-bound session is established; the current manual APIs are also session-gated.
 
-## Compute lifecycle and fixed target
+## Evidence and precise gaps
 
-The v1 target is a **plain internal Azure Container Apps session-runtime app on the consumption
-profile**, with minimum replicas `0` and maximum replicas `1`. The frontend and orchestrator also
-scale to zero and are limited to one orchestrator replica under the coordination constraint above.
-Cold starts are accepted. A safe cold start means CSA Workbench can reconstruct a selected conversation from
-Cosmos and Blob before the next model turn; it does not mean reviving a particular process.
+The [authoritative design](../design.md) records that the deployed application revision passed
+real-Entra session creation, authoritative Engagement readback, and a typed Deep Agents turn. It also
+records an observed scale-to-zero cold start of roughly 24 seconds. The checked-in infrastructure
+contract fixes all three Container Apps at `0-1` replicas, and focused tests cover workload-token
+validation, write-once runtime actor binding, fail-closed orphan workspaces, cross-actor file denial,
+structured stream lifecycle validation, and the replica limits.
 
-| Runtime option | Status in this design | Reason |
-|---|---|---|
-| Plain ACA scale-to-zero app | **Fixed v1 target** | Simple GA compute lifecycle, zero idle compute, and no durable-state dependency on runtime |
-| ACA Dynamic Sessions pool | Historical bridge only | Strong per-session isolation was useful, but the reported one-warm-instance floor conflicts with the fixed zero-idle baseline |
-| ACA Sandboxes | Optional future investigation | May later improve resume latency or isolation, especially if code execution is introduced, but preview behavior is not a v1 dependency or state store |
+The repository does not contain a release-candidate behavioral record that deliberately replaces
+the API/runtime and captures both session loss and durable Cosmos/Blob survival. A historical
+[ACA Dynamic Sessions test](../../review/aca-state-test.md) confirmed that workspace state persisted
+only within a live sandbox and was destroyed on cooldown, but it used the former Dynamic Sessions
+topology and is not proof of the current plain Container Apps deployment.
 
-The runtime app uses server-selected per-conversation workspace directories inside one process. That
-is acceptable only for the v1 no-shell/no-code-execution tool surface and the single-replica profile.
-It is not final risk acceptance for a broader execution surface. Adding shell, arbitrary code,
-autonomous subagents, or untrusted execution requires a new isolation decision before implementation.
+Current MVP gaps are intentionally narrow:
 
-Schedulers and reminders are absent. There is no always-on loop, background workflow engine, or
-scheduled-agent exception to scale-to-zero.
+- no durable conversation list, transcript, chat upload, checkpoint, turn receipt, or trace store;
+- no explicit server cancellation result or interrupted-turn reconciliation;
+- no resumable SSE cursor and no automatic replay of a lost turn;
+- no rehydration of harness memory or workspace files after process replacement; and
+- no safe multi-replica session ownership or turn exclusion.
 
-## V1 simplifications
-
-The capability intentionally excludes machinery that does not prove the core product:
-
-- no distributed lease, durable work queue, event sourcing, or cross-replica session routing;
-- no session affinity as a substitute for durable ownership;
-- no framework checkpointer as a product database;
-- no Dynamic Sessions warm pool in the target deployment;
-- no ACA Sandbox, snapshot, mounted-volume, or preview API dependency;
-- no scheduler, reminder, background turn, or autonomous workflow;
-- no Search dependency for conversation resume;
-- no automatic promotion or shared conversation;
-- no multi-region, disaster-recovery automation, retention engine, legal hold, or archive service;
-- no raw chain-of-thought or unbounded SDK-event persistence; and
-- no IDA-specific state, runtime, taxonomy, or integration. IDA remains reference-only.
-
-These exclusions do not weaken the durability promise. They keep the system complete at the product
-boundary while postponing horizontal scale and production-hardening work until evidence requires it.
-
-## Current integrated state versus target
-
-Static inspection of `master@1fcaac6` shows useful foundations but not this target:
-
-| Concern | Current integrated evidence | Target difference |
-|---|---|---|
-| Personal and Engagement data | Cosmos has per-user personal records and Engagement aggregates with ETag retry paths ([`appdb.py`](../../session-container/appdb.py)) | Retain them; new-conversation and compute lifecycle never reset them |
-| Engagement artifact bytes | Blob/local adapter plus Engagement metadata and membership-gated routes exist ([`artifact_store.py`](../../artifact_store.py); [`app.py`](../../app.py)) | Keep the same durable/shared boundary and make promotion from private conversation explicit |
-| Conversation ownership | Orchestrator keeps session owner in process memory (`session_manager.py:109-112`), and an orchestrator restart loses that binding | Store owner on the Cosmos conversation and authorize every request from authenticated actor state |
-| Browser resume | Session ID and completed messages use per-user `sessionStorage` (`frontend/src/lib/session.ts:4-48`) | Server conversation list and Cosmos transcript are authoritative across tabs, browsers, and devices |
-| Harness continuity | Deep Agents uses `InMemorySaver`; Copilot creates a live SDK session (`session-container/agent_deepagents.py:1152-1161`; `agent.py:1326-1341`) | Warm optimization only; both rehydrate from one normalized transcript |
-| Workspace files | Uploads, generated files, and origin manifest live under an ephemeral session workspace (`session-container/server.py:296-383`) | User uploads live in Blob and materialize on demand; generated drafts remain labelled scratch until explicitly kept or shared |
-| Turn exclusion | Session server uses a per-process `asyncio.Lock` and returns 409 while locked (`server.py:237-288`) | Preserve the behavior under the explicit one-orchestrator/one-runtime constraint and durable receipts |
-| Turn evidence | Optional local rotating JSONL is process-local (`trace_logging.py:16-48`) | Cosmos stores the safe, user-retrievable turn receipt; Azure Monitor remains operational evidence |
-| Compute deployment | Deploy script defaults toward a plain ACA scale-to-zero runtime, while older architecture prose still describes Dynamic Sessions | Plain ACA is now the fixed target; historical prose and runbooks do not override this capability |
-
-The current deploy script also has a concrete static defect: the plain ACA branch expands
-`SESSION_ENV_VARS` at `infra/deploy.sh:455` and `:464`, before the array is defined at `:482`.
-Therefore the checked-in default path is evidence of intended direction, not proof of a runnable
-deployment. Correcting that script belongs to implementation and infrastructure ownership, not this
-design document.
-
-Runtime behavior, deployed identity binding, scale-to-zero, and rehydration remain **UNVERIFIED** at
-this baseline until behavioral evidence proves them.
-
-## Behavioral oracles
-
-Implementation and review must prove behavior at the product boundary. The following are observable
-oracles, not suggestions about test framework:
-
-1. **Cross-browser resume.** Create a conversation, exchange messages, upload a file, close the
-   browser, and sign in elsewhere. The same actor sees the conversation, transcript, file, and turn
-   receipts without relying on prior browser storage.
-2. **Actor isolation.** A second actor cannot list or open the conversation or its Blob-backed files,
-   even when both actors are members of the associated Engagement. A guessed ID is indistinguishable
-   from an unknown ID.
-3. **Explicit promotion.** A private file is invisible to another Engagement member before **Save to
-   Engagement**. After an authorized committed promotion, it appears once as a durable Engagement
-   artifact with attribution and survives conversation/runtime loss.
-4. **New conversation safety.** Starting a new conversation leaves the old one resumable and leaves
-   personal records, Engagement records, membership, activity, and artifacts byte-for-byte or
-   semantically unchanged.
-5. **Orchestrator restart.** Restart the orchestrator. The actor can still list and authorize the
-   conversation because ownership does not depend on the old process map.
-6. **Runtime scale-in.** Remove the runtime workspace and scale the runtime to zero. The next turn
-   cold-starts, rematerializes the uploaded file, replays transcript continuity, and answers a
-   reference to prior conversation content without treating old context as current authorization.
-7. **Harness replacement.** Resume the same stored conversation through each supported harness
-   adapter. Both receive the same normalized product transcript; neither requires its former
-   in-memory checkpointer or SDK process.
-8. **Competing sends.** Two tabs send to the same conversation concurrently. Exactly one turn is
-   accepted; the other receives `conversation_busy`; no duplicate message, tool call, mutation, or
-   terminal receipt appears.
-9. **Interrupted stream.** Disconnect during a mutating turn. CSA Workbench does not call it successful from
-   prose or absence of an error. It stores an honest terminal/unknown state and refetches the target
-   record before offering a retry.
-10. **Blob partial failure.** Force metadata commit failure after bytes are written. The file is not
-    listed, retry does not duplicate it, and the conversation remains usable.
-11. **Missing Blob bytes.** Remove or make one referenced Blob unavailable. Transcript still opens,
-    the file is visibly unavailable, and a file-dependent turn fails or records explicit omission
-    rather than proceeding as if it read the file.
-12. **Membership change.** Remove the conversation owner from its associated Engagement. The private
-    conversation remains theirs, but fresh Engagement context is omitted and promotion or
-    Engagement reads are denied under current membership.
-13. **Cold-start honesty.** With all compute at zero, manual durable data remains intact. A cold-start
-    timeout creates a failed/interrupted receipt and no success claim; a later retry resumes safely.
-14. **Receipt reconciliation.** For every accepted turn, the UI-visible context inspector, normalized
-    tool outcomes, terminal state, and authoritative record agree. No assistant sentence is accepted
-    as evidence on its own.
-15. **Zero-idle profile.** With frontend, orchestrator, and runtime idle, deployed compute reaches
-    zero. A later authenticated cold start can resume a pre-existing conversation and complete a
-    smoke turn.
-
-Exact model wording, token timing, restoration of unpresented scratch, and recovery of a particular
-container are not behavioral oracles.
+Those gaps define the MVP boundary; they are not hidden future requirements.

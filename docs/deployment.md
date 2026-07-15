@@ -1,54 +1,133 @@
-# Deployment status
+# Azure deployment runbook
 
-The current deployment script and GitHub workflow are **UNVERIFIED** implementation
-artifacts. They are not an approved deployment runbook and this page makes no claim
-that running either produces the target CSA Workbench profile. Do not treat a successful CLI
-command, workflow, image build, or health endpoint as deployment evidence.
+> **Purpose:** Operate the current guarded deployment; architecture authority remains in
+> [Infrastructure](capabilities/infrastructure.md).
+>
+> **Verified application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+>
+> **Last verified:** 2026-07-15 in `csa-workbench-rg`, East US 2
 
-The authoritative Azure topology, identity boundaries, scale contract, deployment
-oracles, and target local profile are in
-[Infrastructure](capabilities/infrastructure.md). The release evidence required for
-deployment-affecting work is in [Testing and evals](capabilities/testing-evals.md).
+## What this runbook deploys
 
-## Target profile
+The baseline creates one Container Apps Consumption environment with three apps: a public frontend,
+a public API, and an internal session runtime. Each scales from zero to one replica. Cosmos DB and
+Blob Storage disable public network access and use two private endpoints plus private DNS. Workload
+access uses managed identity.
 
-The intended baseline is three Container Apps consumption workloads: external
-frontend and orchestrator, plus an internal session runtime. Cosmos serverless and
-Blob are private, durable stores; workloads use scoped managed identities; Search is
-off by default; all compute can scale to zero. Deep Agents is the deployed primary
-harness. Copilot is a local, reported portability check, not a release gate.
+The deployment reuses, but does not create, the configured Azure Container Registry and Azure
+OpenAI account. Azure OpenAI remains on identity-authenticated public TLS. Search, warm session
+pools, NAT Gateway, Firewall, Front Door, APIM, VPN, and broader private ingress are not part of this
+profile.
 
-This section describes the target only. It does not assert that the integrated
-scripts, cloud resources, or a running revision satisfy it.
+Read [Infrastructure](capabilities/infrastructure.md) for the exact resource, identity, network,
+cost, and exclusion contract before changing the deployment.
 
-## Current static blockers
+## Prerequisites
 
-Inspection of `infra/deploy.sh`, `.github/workflows/deploy.yml`, and the integrated
-runtime identifies blockers already reconciled in the Infrastructure capability:
+- Azure CLI with Bicep support and an authenticated account in the intended subscription.
+- Permission to create subscription/resource-group deployments, reconcile the three dedicated
+  Entra applications, assign the declared roles, build images in the shared ACR, and read the shared
+  Azure OpenAI account.
+- A clean Git worktree at the exact revision to deploy. Image tags are the full 40-character commit
+  SHA; `latest` is not used.
+- The existing ACR and Azure OpenAI defaults, or explicit environment overrides for them.
 
-- the script and workflow describe different, legacy deployment shapes; the workflow
-  is not a reliable representation of the current script or target baseline;
-- the workflow uses a long-lived Azure credential and lacks the target behavioral
-  gates; the target requires GitHub OIDC and exact-revision evidence;
-- process-local session, conversation, upload, and authorization state prevents the
-  required rehydration and safe multi-replica behavior;
-- the script permits orchestrator replicas beyond the process-local ownership model,
-  includes a subscription-scope role fallback, and disables runtime pool
-  authentication in its default path;
-- the optional Search path injects an admin key into workload configuration, so it
-  must remain off; and
-- current traces are local files rather than actor-authorized durable behavior
-  receipts.
+The script accepts narrow environment overrides such as `LOCATION`, `RESOURCE_GROUP`, `ACR_NAME`,
+`ACR_RESOURCE_GROUP`, `AOAI_NAME`, `AOAI_RESOURCE_GROUP`, and `AZURE_DEPLOYMENT`. Review the defaults
+at the top of [`infra/deploy.sh`](../infra/deploy.sh) before applying.
 
-Additional local-topology and current-versus-target findings, including the missing
-emulator wiring, are maintained in
-[Infrastructure](capabilities/infrastructure.md#current-integrated-state-versus-target).
+## Dry run
 
-## Safe posture
+From the repository root:
 
-Do not deploy from this checkout on the strength of the existing script or workflow.
-Before an authorized deployment, resolve the blockers above and run the affected
-deployed-behavior profile against an identified revision: identity, private data
-paths, durable state and receipts, replica/scale behavior, and a real browser
-journey must agree. Until then, deployment state, runtime behavior, and operational
-claims remain **UNVERIFIED**.
+```bash
+./infra/deploy.sh
+```
+
+With `APPLY` unset or false, the script validates its tools and clean revision, compiles both Bicep
+entrypoints, inspects any existing Container Apps environment, and runs the safe foundation what-if
+when recovery state permits. It does not reconcile Entra, build images, or deploy resources.
+
+If the named environment exists with an incompatible network contract, dry run fails closed and
+reports that recovery requires an explicit apply. It does not delete the environment or pretend an
+invalid what-if is useful.
+
+## Apply
+
+```bash
+APPLY=true ./infra/deploy.sh
+```
+
+The apply path:
+
+1. validates the existing environment and recovery allowlist;
+2. if recovery is required, deletes only the three named apps and their named environment;
+3. runs foundation what-if and deployment;
+4. reconciles the three dedicated Entra registrations;
+5. builds frontend, API, and runtime images at the same full Git SHA;
+6. runs the app what-if and deployment; and
+7. executes the live exact-inventory verifier.
+
+The recovery allowlist is intentional. An unexpected app, environment, Entra shape, or resource
+inventory fails closed rather than being adopted or deleted.
+
+## What success means
+
+The final verifier checks live Azure JSON. It requires:
+
+- exactly the frontend, API, and internal runtime apps with the declared ports, resources, `0–1`
+  scale, and identical SHA tags;
+- the exact VNet, two subnets, two approved private endpoints, two private DNS zones/links/groups,
+  and private A records;
+- disabled Cosmos public/local-key access and disabled Storage public/shared-key/public-blob access;
+- the required resource-scoped managed-identity and Cosmos data-plane roles, with no
+  subscription-scoped workload assignment; and
+- the expected resource allowlist, excluding the deferred services named above.
+
+Tenant policy may add one Defender for Storage Event Grid system topic and the exact
+`StorageAntimalwareSubscription`. The application does not require them. The verifier accepts their
+absence and validates their exact shape when present.
+
+Tenant governance may also add no NSGs or the exact East US 2 pair named in
+[Infrastructure](capabilities/infrastructure.md). Application Bicep declares no NSGs. When the pair
+is present, the verifier requires both successful resources, no custom rules or NIC associations,
+and only the approved ACA/private-endpoint subnet attachments. Partial, extra, or mismatched policy
+state fails.
+
+A successful deployment command or health endpoint alone is not acceptance. Follow
+[Testing and evals](capabilities/testing-evals.md) for real-Entra, state, typed agent, Blob, browser,
+and responsive evidence.
+
+## Verified release observation
+
+For `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`:
+
+- all three apps were healthy and pinned to that SHA;
+- the frontend and API were public, the runtime was internal, and all apps were `0–1`;
+- the deployed frontend bundle contained only the supported Engagement-oriented assistant
+  suggestions;
+- real-Entra `/auth/me`, session creation, Cosmos-backed Engagement readback, and a typed
+  `list_engagements` Deep Agents turn succeeded;
+- Blob upload/list/exact-hash download/delete succeeded with Storage public access disabled;
+- the exact topology verifier passed, including the optional tenant-governance NSG pair; and
+- cold frontend/API starts were roughly 24 seconds, an accepted scale-to-zero tradeoff.
+
+The application images remain stamped with the application revision above. The later verifier-only
+commit `1411c0a` changed `infra/deploy.sh` and its tests, not the application image contents; that
+checked-in verifier was then run read-only against the deployed SHA.
+
+The running URLs for that environment are:
+
+- frontend: <https://csa-workbench-frontend.bluedesert-4d686b6f.eastus2.azurecontainerapps.io>
+- API: <https://csa-workbench-api.bluedesert-4d686b6f.eastus2.azurecontainerapps.io>
+- runtime: internal DNS only; it is not a public endpoint
+
+The repository does not contain the raw deployment transcript, inventory JSON, Blob hash record,
+timing log, or billing export. The observations above are release evidence recorded by the
+[authoritative design](design.md), not replayable artifacts committed to Git.
+
+## Workflow boundary
+
+`.github/workflows/deploy.yml` is validation-only. It runs focused infrastructure contracts and
+compiles Bicep; it has no deployment credential, image publication, Azure mutation, or release
+evidence upload. The guarded manual script is the current deployment path.

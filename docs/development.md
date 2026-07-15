@@ -1,96 +1,109 @@
-# Local development
+# Local development runbook
 
-This is the runbook for the **current checkout**, not a promise that it meets the
-[target design](design.md). Local runtime behavior is **UNVERIFIED** until you run
-the relevant journey and record its UI, state, and trace evidence. The target local
-topology and evidence bar live in [Infrastructure](capabilities/infrastructure.md)
-and [Testing and evals](capabilities/testing-evals.md).
+> **Purpose:** Run and verify the current checkout locally. Product and architecture authority
+> remains in the [authoritative design](design.md).
 
-## Before you start
+## Local shape
 
-Install Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 20.9+ with npm, and
-Docker only if you will supply a Cosmos emulator. You also need an Azure OpenAI
-endpoint and deployment.
+The launcher preserves the three application boundaries:
 
-The current application requires Cosmos for app state; it fails rather than falling
-back to a file. A laptop should use a Cosmos emulator and its emulator key
-(`COSMOS_KEY`), not a private Azure Cosmos account. **Gap:** this repository does
-not currently start or configure a Cosmos emulator (the checked-in Compose file
-starts only the three application services). Obtain and configure that emulator
-separately before expecting the stack to start. Do not infer local/Azure parity from
-the code or this page.
+```text
+browser -> frontend :3000 -> API :8000 -> runtime :8080 -> Azure OpenAI
+                              |             |
+                              `------ Cosmos emulator supplied separately
+API -> local artifact directory
+```
 
-## Configure and start
+Local development uses deterministic `demo` identity. It does not emulate Entra workload identity,
+private endpoints, private DNS, Container Apps scaling, or the deployed network boundary.
+
+## Prerequisites
+
+- Python 3.12+
+- [`uv`](https://docs.astral.sh/uv/)
+- Node.js 20.9+ and npm
+- an Azure OpenAI endpoint/deployment reachable with the developer's Azure identity
+- a separately supplied Cosmos emulator
+
+The repository does not start or configure a Cosmos emulator. Its Compose file starts only the
+three application services. Azurite is also not wired into the local profile.
+
+## Configure
 
 ```bash
 cp .env.example .env
-# Keep IDENTITY_MODE=demo locally and set DEMO_PASSWORD to a local/test secret.
-# Do not commit the secret or put it in browser-facing configuration.
 az login
 uv sync
 (cd session-container && uv sync)
-(cd frontend && npm install)
-uv run dev.py
+(cd frontend && npm ci)
 ```
 
-Set `AZURE_ENDPOINT`, `AZURE_DEPLOYMENT`, `COSMOS_ENDPOINT`, the appropriate Cosmos settings,
-and a local/test `DEMO_PASSWORD` in `.env` first. Leave `IDENTITY_MODE=demo` for this local launcher.
-`az login` supplies the developer identity used by Azure OpenAI and any AAD-authenticated service.
-`dev.py` requires `.env`, points the orchestrator to the local runtime, clears `workspace/` and local
-traces, then starts:
+Set these values in `.env` for the local environment:
 
-| Service | Address |
-|---|---|
-| Next.js frontend | <http://localhost:3000> |
-| FastAPI orchestrator | <http://localhost:8000> |
-| Session runtime | <http://localhost:8080> |
+- `IDENTITY_MODE=demo`;
+- a nonempty local/test `DEMO_PASSWORD` that is never committed or exposed in browser config;
+- `AZURE_ENDPOINT` and `AZURE_DEPLOYMENT`;
+- the emulator `COSMOS_ENDPOINT`, `COSMOS_DATABASE`, `COSMOS_CONTAINER`, and emulator-only
+  `COSMOS_KEY`; and
+- optionally `ARTIFACTS_DIR` for local durable Engagement artifact bytes.
 
-Stop the launcher with Ctrl-C. It owns all three child processes; restart the
-launcher instead of assuming an individually started service has the same local
-environment.
+The application requires Cosmos and fails visibly rather than falling back to a local JSON store.
+Use database/container names containing `demo` or `local` when running the guarded fixture reset.
 
-## Harness selection
+Search and document conversion are optional legacy capabilities. Leave them unconfigured for the
+MVP profile. Search is not required for navigation, Engagement work, or direct artifact access.
 
-Deep Agents is the current code default. Select Copilot only for the local,
-non-release-blocking portability check:
+## Start and stop
 
 ```bash
 uv run dev.py
+```
+
+Open <http://localhost:3000>. `dev.py` validates demo mode, points the API at the local runtime,
+clears ephemeral workspace/traces, and starts all three processes. Stop the launcher with Ctrl-C;
+restart it instead of assuming one independently started process has the same configuration.
+
+Deep Agents is the default. Copilot is a local, non-release-blocking portability check:
+
+```bash
 AGENT_BACKEND=copilot uv run dev.py
 ```
 
-The runtime recognizes `deepagents` and otherwise selects the Copilot adapter; use
-those two documented values. The startup log identifies the selected backend.
+Agent sessions, chat, uploads, generated files, and local traces are ephemeral. Restarting the API
+or runtime may require a new session. Cosmos-backed Engagements and locally stored Engagement
+artifacts remain separate from that session lifecycle.
 
-## Optional current configuration
+## Safe checks
 
-Search is optional and off when its endpoint/key are absent. Its present adapter
-uses an admin key and is not the target baseline; an unavailable search capability
-must remain visibly unavailable rather than being treated as grounded retrieval.
-ADLS/Content Understanding configuration is also optional in the current code;
-without it, conversion is disabled. Authentication and deployment-only settings are
-annotated in [`.env.example`](../.env.example).
-
-## Verify the current checkout
-
-The full evidence contract and result interpretation live in [Testing and
-evals](capabilities/testing-evals.md). With an independently configured local
-Cosmos emulator and `uv run dev.py` already running, use its guarded commands:
+The focused deterministic checks do not require a running browser stack:
 
 ```bash
-PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py tests/test_engagement_core.py tests/test_structured_control.py
+PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest \
+  pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py \
+  tests/test_engagement_core.py tests/test_structured_control.py \
+  tests/test_infra_entra_contract.py tests/test_release_boundaries.py
 npm run test:mvp-evidence
-(cd frontend && npm run lint && npm run build)
+(cd frontend && npm run test:contract && npm run lint && npm run build)
+```
 
-# The reset also requires a demo/local Cosmos database+container and this dedicated
-# artifact directory (see Testing and evals for the complete local export block).
-ARTIFACTS_DIR=.mvp-artifacts CONFIRM_DEMO_RESET=YES uv run python scripts/reset_demo_state.py
+Live synthetic model/browser evidence requires the emulator and all three services to be running,
+an explicit guarded reset, loopback targets, and a clean worktree:
+
+```bash
+export IDENTITY_MODE=demo
+export DEMO_PASSWORD='local-test-secret'
+export COSMOS_ENDPOINT='http://localhost:8081'
+export COSMOS_DATABASE='csa_workbench_demo'
+export COSMOS_CONTAINER='appstate_demo'
+export COSMOS_KEY='your-emulator-key'
+export ARTIFACTS_DIR='.mvp-artifacts'
+
+CONFIRM_DEMO_RESET=YES uv run python scripts/reset_demo_state.py
 MVP_RESET_BEFORE_RUN=1 npm run eval:mvp
 MVP_RESET_BEFORE_RUN=1 npm run playwright:mvp
 ```
 
-The reset and live runners require explicit demo/local-emulator guards; see the
-testing document before using them. They do not start or stop user services.
-Review the generated `evidence/mvp/local-synthetic/` bundle alongside the
-authoritative state and structured events. Until a current bundle is reviewed,
-live browser, model, Entra, and deployed behavior remains **UNVERIFIED**.
+The reset is destructive only to the explicitly guarded local fixture. The runners refuse a dirty
+source worktree and do not start or stop services. Review their state/event results and screenshots;
+a runner's `pass` field or assistant wording is not an oracle by itself. See
+[Testing and evals](capabilities/testing-evals.md) for the complete evidence contract.

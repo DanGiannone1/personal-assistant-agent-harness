@@ -9,21 +9,21 @@ to run customer engagements. An embedded assistant can navigate and operate the 
 renders, so a claim cannot outrun the state that was actually read or changed.
 
 The application is the product; chat is one control surface. The repository also serves as a
-reference implementation for modern agent-harness patterns—trusted context, replaceable runtimes,
-structured outcomes, durable state outside compute, and behavior traces—without depending on IDA or
-becoming a generic agent platform.
+reference implementation for modern agent-harness patterns—trusted actor binding, replaceable
+runtimes, structured outcomes, durable product state outside compute, and behavioral
+evidence—without depending on IDA or becoming a generic agent platform.
 
 ## Start here
 
 - [Authoritative design](docs/design.md) — product promise, scope, domain, system/trust/state
-  boundaries, target architecture, and current-versus-target reconciliation.
-- [v1 requirements](docs/requirements.md) — release requirements, acceptance scenarios, and
+  boundaries, implemented architecture, verified evidence, and explicit gaps.
+- [v1 requirements](docs/requirements.md) — release requirements, acceptance journeys, and
   verification profiles.
 - [Development](docs/development.md) — current local prerequisites, configuration, and commands.
 
-The design is the intended architecture, not a claim that every target behavior is implemented.
-Runtime behavior at the current integrated baseline remains **UNVERIFIED** unless current evidence is
-linked from a work item or review record.
+The design distinguishes implemented behavior, verified evidence, and intentionally deferred
+patterns. The current application revision is deployed and behaviorally verified as recorded there;
+remaining evidence gaps are named rather than hidden behind a generic target-state disclaimer.
 
 ## Product shape
 
@@ -42,19 +42,20 @@ Next.js web app
     ▼
 FastAPI orchestrator
     │ authentication, application APIs, session/turn coordination
+    │ Entra workload identity
     ▼
-Agent session runtime
-    │ Deep Agents primary / Copilot secondary
+Internal agent session runtime
+    │ Deep Agents deployed / Copilot local portability check
     ▼
-Shared application services ── Cosmos (records/receipts)
-                            └── Blob (uploads/artifacts)
-                            └── optional scoped Search
+Shared Engagement core ── Cosmos (actors and Engagements)
+                       └── Blob (durable Engagement artifacts)
 ```
 
-The frontend, orchestrator, and runtime are separate deployment boundaries. Product authorization,
-validation, mutation, and structured outcomes belong to one application layer used by REST and agent
-tool adapters. Framework state and runtime files are cache/scratch, never the only copy of work worth
-keeping.
+The frontend, orchestrator, and runtime are separate deployment boundaries. The six basic
+Engagement operations—create, list, get, update, set status, and share/change membership—use one
+application core behind REST and agent-tool adapters. Member removal, tasks, conventions, and
+artifacts remain manual application paths. Agent sessions, chat history, uploads, and local traces
+are ephemeral in the MVP; durable Engagement records and artifacts remain outside compute.
 
 ## Run the current implementation locally
 
@@ -72,7 +73,7 @@ cp .env.example .env
 az login
 uv sync
 (cd session-container && uv sync)
-(cd frontend && npm install)
+(cd frontend && npm ci)
 uv run dev.py
 ```
 
@@ -88,9 +89,9 @@ Deep Agents is the current default. To exercise the secondary harness:
 AGENT_BACKEND=copilot uv run dev.py
 ```
 
-Optional document conversion, Search, Entra, and tracing configuration is described in
-[development.md](docs/development.md). Search is not required for navigation, CRUD, direct document
-work, or drafting.
+Local storage and optional-service boundaries are described in
+[development.md](docs/development.md). Search and document conversion remain off in the MVP profile
+and are not required for Engagement work or direct artifact access.
 
 ## Documentation map
 
@@ -106,14 +107,14 @@ work, or drafting.
 | Capability | Detailed authority |
 |---|---|
 | [UI/UX](docs/capabilities/ui-ux.md) | Information architecture, interaction, responsive behavior, accessibility |
-| [Context](docs/capabilities/context.md) | Per-turn context, projections, precedence, and inspector |
+| [Context](docs/capabilities/context.md) | Prompt hints, live grounding, trust boundaries, precedence, and inspector |
 | [Navigation](docs/capabilities/navigation.md) | Typed navigation tools, destination validation, and route effects |
-| [CRUD](docs/capabilities/crud.md) | Commands, validation, outcomes, confirmation, idempotency, and concurrency |
-| [Documents and retrieval](docs/capabilities/documents-retrieval.md) | Uploads, drafts, artifacts, retrieval, and citations |
-| [Session and state](docs/capabilities/session-state.md) | Conversation durability, rehydration, and compute boundaries |
-| [Agent harness](docs/capabilities/agent-harness.md) | Harness seam, tools, prompts/skills, events, cancellation, and traces |
+| [CRUD](docs/capabilities/crud.md) | Engagement commands, roles, validation, outcomes, and current persistence semantics |
+| [Documents and retrieval](docs/capabilities/documents-retrieval.md) | Durable Engagement artifacts, ephemeral session files, and optional retrieval boundaries |
+| [Session and state](docs/capabilities/session-state.md) | Ephemeral conversations, durable product state, and compute boundaries |
+| [Agent harness](docs/capabilities/agent-harness.md) | Harness seam, typed tools/events, workload binding, cancellation, and ephemeral traces |
 | [Identity and access](docs/capabilities/identity-access.md) | Actors, sign-in, authorization policy and roles, privacy, and service identity |
-| [Infrastructure](docs/capabilities/infrastructure.md) | Local/Azure topology, cost boundary, observability, and degraded modes |
+| [Infrastructure](docs/capabilities/infrastructure.md) | Verified local/Azure topology, private data paths, deployment, and cost boundary |
 | [Testing and evals](docs/capabilities/testing-evals.md) | Behavioral evidence, test layers, eval datasets, and release profiles |
 
 ### Runbooks
@@ -121,7 +122,7 @@ work, or drafting.
 | Document | Purpose |
 |---|---|
 | [Development](docs/development.md) | Operate and verify the current repository locally |
-| [Deployment](docs/deployment.md) | Current deployment status, target profile, and safe deployment direction |
+| [Deployment](docs/deployment.md) | Guarded dry run, apply workflow, verified profile, and post-deployment checks |
 
 The root README is the repository and documentation front door. Capability documents are
 subordinate to the high-level design and own only their named detail. Runbooks describe mechanics;

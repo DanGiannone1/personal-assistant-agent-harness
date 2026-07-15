@@ -2,7 +2,8 @@
 
 > **Authority:** Canonical MVP release bar
 >
-> **State:** Target until proven by evidence from the release revision
+> **State:** Release bar; current profile-specific evidence and gaps are tracked in
+> [Testing and evals](capabilities/testing-evals.md)
 >
 > **Applies to:** Product acceptance and release completion
 >
@@ -46,7 +47,8 @@ CSA's private or non-member data.
 
 A CSA can create, list, open, and edit an Engagement; manage its membership; and share its durable
 record with another member. The manual UI and agent tools apply the same validation and
-authorization rules and read back authoritative state after changes.
+authorization rules for the six supported shared operations and read back authoritative state after
+changes. Manual-only operations are identified rather than presented as agent parity.
 
 ### R6 — Professional responsive experience
 
@@ -121,5 +123,6 @@ multi-region recovery, or other production-hardening programs. A capability docu
 future reference pattern, but it cannot make that pattern an MVP requirement unless this file is
 explicitly changed.
 
-Completion is not inferred from code, prose, or a green build. Every criterion remains unverified
-until the final release revision has the evidence named above.
+Completion is not inferred from code, prose, or a green build. Read criterion status from the
+profile-specific evidence and gaps in [Testing and evals](capabilities/testing-evals.md); this file
+defines the bar and does not convert one environment's observation into another's proof.

@@ -1,231 +1,190 @@
 # Navigation Capability
 
-> **Authority:** Detailed navigation design subordinate to [the authoritative design](../design.md)
+> **Authority:** Canonical navigation detail subordinate to the [authoritative design](../design.md)
 >
-> **State:** Target MVP contract with current gaps called out below
+> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
 >
-> **Applies to:** Manual navigation, assistant navigation, route effects, and navigation evidence
+> **Applies to:** Manual host navigation, assistant destinations, route effects, and navigation evidence
 >
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
-## The short version
+## In plain language
 
-People navigate CSA Workbench in two ways:
+CSA Workbench has two ways to move around:
 
-1. They click a visible UI control that already owns a destination.
-2. They ask the assistant, which calls a typed navigation tool with a destination identifier.
+- A person clicks an application control. The host view changes immediately, without asking the
+  assistant.
+- The assistant calls the typed `navigate` tool. The application checks the requested destination
+  and emits a structured route event only when it resolves successfully.
 
-Both paths end at the same validated destination catalog. Neither path extracts a route from user
-text, assistant prose, marker strings, tool names, or raw stream data.
+The assistant can interpret a request, but its words cannot move the application. A URL, route name,
+tool name, marker string, or JSON-looking text in either user's or assistant's prose is inert.
 
-The model may interpret what the person meant. The application remains responsible for validating
-where the model asked to go and whether the signed-in actor may go there.
+The current implementation has a deliberately small assistant destination catalog. Manual controls
+cover more host views than that catalog; they are direct product controls, not natural-language
+navigation. Engagement destinations are resolved with the authenticated actor's current membership,
+not a user ID or role supplied by the model.
 
-## User outcomes
+## Implemented contract
 
-- A CSA can open their Engagement portfolio immediately.
-- A member can open a specific Engagement from a list, card, link, or assistant request.
-- A stale, malformed, or unauthorized destination does not move the UI.
-- An ambiguous request results in a question or structured choices, not a guessed route.
-- Navigation behaves consistently in the wide sidebar, compact layout, and narrow drawer.
+### Manual routing
 
-## Design rules
+The host starts at `/engagements`. Host navigation items, portfolio cards, tabs, task links, and quick
+links call `onNavigate` with application-owned routes. A manual action:
 
-1. **Routes are data, not prose.** A route effect is a structured object with a catalog ID and
-   canonical path.
-2. **The catalog is authoritative.** Every UI link and agent navigation request resolves through one
-   destination catalog.
-3. **The actor is bound outside the model.** The model never supplies a user ID or role.
-4. **Authorization is checked at use time.** A destination that was once valid can be rejected after
-   membership changes.
-5. **The newest human action wins.** A delayed agent result cannot override navigation the user made
-   after the turn began.
-6. **Text is never a control protocol.** Chat content and rendered assistant content are inert.
+1. changes the visible host route immediately;
+2. increments a monotonic navigation version;
+3. records the visit; and
+4. starts a non-blocking authoritative-state refresh.
 
-## Destination catalog
+No manual route is sent through the model or SSE stream. Engagement detail routes accept only canonical
+Engagement and task IDs. The screen then renders only an Engagement present in the actor-filtered
+application state; malformed, missing, and inaccessible Engagement routes use the same neutral
+not-found presentation.
 
-The catalog is a small application-owned registry. Static destinations are defined in code; scoped
-destinations are completed with an authorized resource ID.
+Manual navigation is broader than assistant navigation. Personal utilities, task detail, Engagement
+team settings, and `/assistant` are reachable through product controls but are not assistant catalog
+destinations.
 
-```ts
-type DestinationId =
-  | "engagements"
-  | "engagement_overview"
-  | "engagement_tasks"
-  | "engagement_artifacts"
-  | "workbench";
+### Assistant destination catalog
 
-type Destination = {
-  id: DestinationId;
-  path: string;
-  label: string;
-  engagementId?: string;
-};
-```
+Both harnesses expose the same `NavigateCommand`: a required `destination_id` from a `Literal` type and
+an optional `engagement_id`. The current catalog is:
 
-The MVP catalog stays intentionally small. A capability does not receive a route merely because a
-frontend component exists. Routes that survive from older Personal Assistant screens are not active
-MVP destinations unless the root design names them.
+| Destination ID | Canonical path |
+|---|---|
+| `engagements` | `/engagements` |
+| `workbench` | `/home` |
+| `engagement_overview` | `/engagements/{engagement_id}` |
+| `engagement_tasks` | `/engagements/{engagement_id}/tasks` |
+| `engagement_artifacts` | `/engagements/{engagement_id}/documents` |
 
-The backend owns canonical path construction. The browser and model may request a catalog ID and
-resource ID; they do not construct arbitrary paths.
+`workbench_core.tool_protocol` rejects unknown destination IDs, malformed Engagement IDs, mismatched
+scoping, and paths that do not exactly match this catalog. A failed result cannot carry a destination;
+only `resolved` or `committed` results may do so. There is no arbitrary-URL or free-form-path tool.
 
-## Manual navigation
+The current service does not resolve natural-language text. When an assistant request needs a specific
+Engagement, the model must first obtain an authorized stable ID through an Engagement read tool and then
+pass that ID to `navigate`.
 
-Sidebar items, drawer items, Engagement cards, breadcrumbs, and structured suggestion buttons carry
-a complete destination object or enough stable identifiers to request one. Clicking them navigates
-immediately after local shape validation.
+### Actor-authorized Engagement resolution
 
-Manual controls do not send their labels through the model and do not ask a text resolver where to
-go. A visual label may change without changing the destination contract.
+The model-visible command has no actor, role, or session field. The orchestrator authenticates the
+caller, verifies that caller owns the agent session, and forwards the bound actor to the internal
+runtime. The runtime keeps the session-to-actor binding write-once and closes over that actor when it
+builds the tool.
 
-## Assistant navigation
+For an Engagement-scoped destination, the resolver validates the ID, loads the current Engagement, and
+checks current membership. A missing Engagement and a real Engagement hidden from a non-member both
+produce `not_found` with the same `engagement.not_found` code and unavailable wording. A successful
+result contains the stable Engagement ID and the canonical destination. The browser also requires that
+the Engagement appear in its latest actor-filtered application state before applying the route.
 
-The harness exposes a narrow product tool:
+### Structured route event
 
-```ts
-type NavigateCommand = {
-  destinationId: DestinationId;
-  engagementId?: string;
-};
-
-type NavigateResult =
-  | { status: "resolved"; destination: Destination }
-  | { status: "ambiguous"; choices: Destination[] }
-  | { status: "invalid"; message: string }
-  | { status: "not_found" }
-  | { status: "forbidden" }
-  | { status: "failed"; message: string };
-```
-
-The tool adapter binds the authenticated actor and session outside `NavigateCommand`. It then:
-
-1. validates the command schema;
-2. resolves the catalog entry;
-3. loads any referenced Engagement;
-4. checks current membership;
-5. returns a canonical structured result; and
-6. emits a structured route effect only for `resolved`.
-
-If the model needs an Engagement ID, it uses an authorized read tool such as `list_engagements` or
-`get_engagement`. It does not pass the original chat message into a keyword resolver.
-
-## Structured route effect
-
-A successful tool result is translated into an explicit event:
+A successful navigation tool call produces a native `ProductToolResult`, followed by:
 
 ```ts
-type NavigationEvent = {
+{
   type: "NAVIGATION_RESOLVED";
   runId: string;
   destination: Destination;
   requestedAtNavigationVersion: number;
-};
+}
 ```
 
-The frontend reducer accepts the event only when:
+The runtime emits this event only from the validated native tool result. The orchestrator validates the
+SSE lifecycle and requires the event to match exactly one still-open `resolved` or `committed` tool
+result in the same run. The browser repeats that correlation check before its reducer sees the event.
 
-- its schema is valid;
-- its `runId` belongs to the active conversation turn;
-- the destination exists in the client catalog;
-- the path matches the catalog entry and identifiers;
-- the current navigation version still equals `requestedAtNavigationVersion`; and
-- no terminal error or cancellation invalidated the run.
+The reducer changes the route only when all of these are true:
 
-The assistant's visible sentence is unrelated to that decision. Text such as “Opening the
-Engagement now,” a URL, `NAVIGATE:`, `CHIPS:`, JSON-looking prose, or a tool name cannot move the UI.
+- `runId` is the active turn;
+- `requestedAtNavigationVersion` is the version captured when that turn was sent;
+- Stop has not cancelled the client-side turn;
+- the destination ID, Engagement ID, and path match the client catalog; and
+- a scoped Engagement is present in the current authorized application state.
 
-## Ambiguity and choices
+Assistant text is rendered only as text and is not searched for navigation markers or paths.
 
-The application does not guess among duplicate Engagement names. An authorized lookup may return
-multiple structured choices. The assistant asks the person to choose, or the UI renders buttons
-whose destination objects are already bound.
+### Supersession, cancellation, and failure
 
-Selecting a choice is a direct product action. It does not send “the first one” through another
-model turn merely to recover an ID the application already knows.
+- **Newer manual navigation wins.** Every manual action increments the version, so a delayed route event
+  from a turn sent under an older version is ignored.
+- **Stop blocks later buffered effects.** Stop marks the active turn cancelled before aborting the
+  stream. Subsequent buffered events from that turn are ignored. Stop does not roll back a route effect
+  already applied or a product mutation already committed.
+- **Resolution failures stay put.** Unknown or malformed destinations return `invalid`; missing or
+  inaccessible Engagements return `not_found`; neither result can carry a route.
+- **Stream failures stay visible.** Invalid framing, event ordering, run correlation, or tool-result
+  correlation becomes a terminal stream error. The invalid event is not applied.
+- **A later terminal error does not undo earlier success.** `NAVIGATION_RESOLVED` is applied when it
+  arrives, before `RUN_FINISHED`. If a valid route event was already accepted and the turn later ends in
+  `RUN_ERROR`, the current implementation reports the error but does not roll the route back.
 
-Choices contain only destinations the actor could access when they were created. Membership is
-still checked again when a choice is used.
+Only one turn may stream in a session at a time, so two assistant turns do not race each other for the
+route.
 
-## Quick links
+### Responsive and accessible interaction
 
-Quick links are optional convenience controls derived from authorized recent destinations. They may
-rank by recency or frequency because no chat text is involved. They use the same destination objects
-and live authorization check as every other manual control.
+At 1200 CSS px and above, manual destinations are exposed in the persistent navigation rail. Below
+1200 px, the same controls move into a modal drawer. The drawer moves focus inside when opened, traps
+Tab, closes on Escape or backdrop activation, and restores focus to its launcher. Navigation items and
+Engagement tabs are semantic buttons and expose the current page with `aria-current`; narrow host
+controls use the implemented 44 px minimum target size.
 
-Quick links never influence an agent's interpretation of a new request and never grant access.
+The verified 390 px host journey opens the drawer, checks focus entry and Escape restoration, reaches
+the final Engagement card, and finds no page-level horizontal overflow. The separate `/assistant`
+layout is not part of that narrow-screen claim.
 
-## Failure behavior
+## Evidence status
 
-| Condition | Required behavior |
-|---|---|
-| Unknown destination ID | Return `invalid`; route stays unchanged |
-| Missing Engagement | Return `not_found`; reveal no membership information |
-| Non-member Engagement | Return the same external shape as `not_found` |
-| Malformed structured event | Ignore it, record a safe diagnostic, keep the route stable |
-| Ambiguous authorized target | Return structured choices; do not choose automatically |
-| Tool or transport failure | Show a neutral error; do not navigate |
-| Cancelled run | Ignore later route effects from that run |
-| User navigates while agent runs | Preserve the user's newer route |
+### Implemented and verified
 
-## Responsive and accessible behavior
+The focused structured-control tests prove catalog and path validation, live membership filtering,
+neutral non-member results, native result extraction in both harnesses, matching tool schemas, framed
+SSE lifecycle validation, and rejection of unbound navigation events:
+[`tests/test_structured_control.py`](../../tests/test_structured_control.py).
 
-- The wide layout exposes the catalog in a stable sidebar.
-- Compact and narrow layouts expose the same destinations in a focus-managed drawer.
-- The 390 CSS-pixel journey has no page-level horizontal scrolling or unreachable navigation.
-- Current location is conveyed semantically as well as visually.
-- Drawer open/close restores focus to the invoking control.
-- Ambiguous choices are keyboard-operable buttons with unique accessible names.
-- Route changes update focus and announce the new page without announcing assistant prose as a
-  navigation command.
+The frontend contract proves active-run and navigation-version correlation, cancellation handling,
+exact path and Engagement-ID validation, cached authorized membership, and rejection of marker-like
+destinations: [`frontend/src/lib/navigation.contract.ts`](../../frontend/src/lib/navigation.contract.ts).
 
-## Deliberate simplifications
+The ignored local Deep Agents observation with run ID
+`2026-07-15T01-27-46-902Z-2ecc70df` passed all seven cases. `MVP-E3` contains a typed `navigate` call, a
+`resolved` native result, one matching `NAVIGATION_RESOLVED`, and one correlated terminal event.
+`MVP-E7` placed `NAVIGATION_RESOLVED`, `TOOL_CALL_RESULT`, success-like text, and an Engagement path in
+the user prompt; it produced no tool result, no navigation event, and no state change.
 
-- No embedding index or semantic router is required for MVP navigation.
-- No client-side natural-language or keyword resolver exists.
-- No generic URL-opening tool exists.
-- No model-generated arbitrary path is accepted.
-- No cross-tenant or external destination catalog exists.
-- Manual search, if retained, is a separate UI feature and not an agent control channel.
+The ignored local browser observation with run ID
+`2026-07-15T02-57-58-244Z-1e852bb3` passed 34 checks against the real host UI, including the 390 px
+drawer interaction and responsive assertions described above. Neither ignored result is portable
+evidence in a fresh clone.
 
-## Current implementation versus target
+### Remaining gaps
 
-At integrated `master@1fcaac6`, navigation is not yet compliant:
-
-- both harnesses encode navigation and choices into marker text;
-- frontend code parses those strings to decide route effects;
-- browser-composed context is inserted into the user message;
-- catalog and route logic are duplicated across frontend and harness code; and
-- the default product route still includes older Personal Assistant navigation.
-
-The divergent `iron-clad-navigation` worktree contains useful UI ideas but also retains lexical
-message resolution and marker-based chips. It is evidence to inspect, not a branch to merge. The MVP
-must replace the control protocol rather than polish it.
-
-Runtime behavior remains **UNVERIFIED** until the release evidence exercises the structured path.
-
-## Behavioral oracles
-
-| Scenario | Expected evidence |
-|---|---|
-| Manual portfolio navigation | One direct destination action; no model request |
-| Assistant opens an Engagement | Typed `navigate` command, authorized `resolved` result, one matching route event |
-| Unauthorized Engagement ID | `not_found`-shaped result, no route change, no leaked title |
-| Duplicate names | Structured choices; no automatic navigation |
-| Marker-like user text | No route change without a valid navigation tool result and event |
-| Marker-like assistant text | No route change without a valid navigation tool result and event |
-| Malformed event | Reducer rejects it and keeps the current route |
-| User moves during a run | Delayed route event is ignored |
-| Narrow viewport | Drawer journey succeeds at 390 CSS px with reviewed screenshot |
-
-Playwright is the primary UI evidence. Contract tests additionally prove schema validation,
-authorization, event ordering, and the absence of text-parsing control paths.
+- The agent eval and browser evidence were recorded at earlier source revisions, not the final release
+  SHA. A later copy-only `MessageList.tsx` change did not alter navigation code, so the browser run
+  remains supporting navigation evidence, but a final-SHA rerun is absent.
+- The browser journey verifies a structured Engagement mutation and refresh, but it does not drive an
+  assistant navigation and assert the resulting visible route. The live agent eval proves the stream,
+  while the visible route effect is covered by the frontend contract rather than end-to-end browser
+  evidence.
+- Cancellation and version supersession are contract-tested at the reducer boundary, not in a live
+  browser race. A route accepted before Stop or a later terminal failure is not rolled back.
+- `ambiguous` exists in the shared result vocabulary, but the current navigation service does not
+  return structured choices and the UI does not render navigation choice controls. The model must ask
+  for clarification before calling `navigate` with a stable ID.
+- Destination definitions are repeated across the Python resolver/core and TypeScript client. Current
+  tests cover their accepted behavior, but the catalog is not generated from one cross-language source.
+- Route changes do not explicitly focus or announce the new page, and full keyboard, screen-reader,
+  reduced-motion, zoom/reflow, and WCAG 2.2 AA conformance evidence has not been recorded.
 
 ## Related authority
 
 - [Authoritative design](../design.md)
 - [MVP success criteria](../requirements.md)
-- [Agent harness](agent-harness.md)
-- [Context](context.md)
 - [UI/UX](ui-ux.md)
+- [Agent harness](agent-harness.md)
+- [Identity and access](identity-access.md)
 - [Testing and evals](testing-evals.md)

@@ -1,509 +1,319 @@
 # Agent Harness Capability
 
-> **Authority:** Canonical capability detail subordinate to [CSA Workbench — Authoritative Product and System Design](../design.md)  
-> **State:** Target design, reconciled with integrated `master@1fcaac6`  
-> **Applies to:** Harness selection, the `AgentSession` seam, prompt and skill composition, product-tool adaptation, AG-UI events, cancellation, and turn traces  
-> **Last reviewed:** 2026-07-14  
+> **Authority:** Canonical harness detail subordinate to the [authoritative design](../design.md)
+>
+> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+>
+> **Applies to:** Harness selection, the `AgentSession` seam, product-tool adaptation, AG-UI/SSE events, turn coordination, cancellation, and traces
+>
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
-## The short version
+## In plain language
 
-CSA Workbench is an Engagement workspace, not an agent framework with a demo attached. The assistant is one
-way to operate the same permissioned application core used by the manual UI. If the agent runtime
-is unavailable, users can still read and maintain their work.
+CSA Workbench is an Engagement application with an assistant, not an agent platform. A person can
+operate the product directly, and the assistant uses a small set of typed tools over the same durable
+Engagement records. The model does not choose the actor, role, session, route, or meaning of success.
 
-The harness has one job: turn a user's request and a small trusted context projection into assistant
-text and calls to approved CSA Workbench tools. It does not own identity, authorization, validation, durable
-state, or the meaning of success. Deep Agents is the deployed primary harness. Copilot is a local,
-non-release-blocking portability check. They share one narrow `AgentSession` contract, one static
-prompt, one skill catalog, one product-tool contract, and one normalized event stream.
+Deep Agents is the deployed primary harness. A Copilot adapter remains available for a local,
+non-release-blocking portability check. Both fit the same operational `AgentSession` seam and expose
+the same seven model-visible tool names and schemas.
 
-The promise is the product's central invariant: **a claim never outruns reality**. A tool reports a
-structured outcome from the runtime's application-core instance. The browser then re-reads
-authoritative state.
-Neither persuasive model prose nor a harness-native “tool completed” signal proves that a mutation
-committed.
+The important result of a tool call is a structured `ProductToolResult`, not the tool label or the
+assistant's sentence. The browser renders that result, accepts navigation only from a correlated
+structured event, and refreshes authoritative application state after tool activity and terminal
+events. This is how the harness supports the product rule that a claim cannot outrun reality.
 
-This capability deliberately excludes shell access, arbitrary code execution, autonomous subagents,
-multi-agent workflows, and weekly-review-style autonomous routines. IDA and other future consumers
-may study the contracts, but they create no v1 integration or compatibility requirement.
+## One turn, end to end
 
-## A turn in plain language
+For a normal assistant request, the implemented path is:
 
-When an editor asks, “Make Northstar Yellow because the security review slipped,” CSA Workbench processes the
-request as follows:
+1. The API authenticates the browser actor and verifies that actor owns the ephemeral session.
+2. For an HTTPS runtime endpoint, the API obtains a managed-identity token for the configured runtime
+   audience. It sends the actor in an internal header covered by that workload-authenticated call.
+3. In deployed Entra mode, the runtime validates the workload token. It then checks its write-once
+   session-to-actor binding and takes the process-local lock for that session.
+4. The selected `AgentSession` sends the prompt to the model with exactly seven typed product tools.
+   Each tool is closed over the trusted actor and session workspace; neither is a model argument.
+5. Engagement tools call the runtime's instance of the shared `workbench_core.EngagementService`,
+   which re-reads current Cosmos state and applies current membership, role, and validation rules.
+6. The harness preserves the native structured result and emits correlated AG-UI events as SSE.
+7. The API proxy and browser independently validate framing and lifecycle order. The browser applies
+   only valid structured navigation and refreshes current application state.
 
-1. The orchestrator verifies the signed-in actor and owned conversation, then validates the current
-   UI location as an untrusted hint.
-2. The turn coordinator creates one immutable context snapshot containing only the safe information
-   relevant to this turn and emits `CONTEXT_APPLIED`.
-3. The configured `AgentSession` gives the model the user's words, kept distinct from trusted context,
-   plus the safe prompt projection and approved skills/tools.
-4. The model calls `set_engagement_status`. Actor, session, workspace, context, and permission scope
-   are already bound by the runtime; the model cannot choose them.
-5. The tool adapter calls the same versioned application-core package as the manual REST path. Its
-   runtime instance reauthorizes the actor, checks the Yellow-requires-a-reason rule, performs an
-   idempotent ETag-safe commit, writes activity, and returns a structured `committed` outcome.
-6. The coordinator streams the structured tool result and assistant response through AG-UI, persists
-   the turn receipt, and emits exactly one terminal event.
-7. The browser reloads the Engagement and may follow the committed canonical destination. The visible
-   status comes from the saved record, not the model's sentence.
+The current implementation does not yet have a separate coordinator abstraction that owns typed
+events, trusted context, and acknowledged cancellation across both adapters. It also has no durable
+turn receipt or complete trusted-context composition layer. Those gaps do not weaken actor binding or
+tool authorization, which are enforced outside the prompt and model-visible schemas.
 
-If the operation is denied, ambiguous, invalid, a no-op, cancelled, or fails, the route stays put and
-the actual outcome remains visible. If cancellation races with a commit, CSA Workbench reconciles state and
-explains that stopping the response did not roll back already committed work.
+## Harness seam and selection
 
-## Responsibilities and trust boundaries
-
-| Component | Owns | Must not own or trust |
-|---|---|---|
-| Web application | User text and UI intent, AG-UI reduction, direct catalog-backed navigation, authoritative-state refresh | Identity, permissions, trusted context, confirmation policy, success inferred from prose or tool name |
-| Authenticated orchestrator | Actor authentication, conversation/session ownership, request bounds, validated forwarding, SSE proxy, durable conversation and turn records | Harness SDK behavior, model prompt assembly, domain mutation rules |
-| Turn coordinator | Run ID and lifecycle, context composition, harness selection, deadline, cancellation, event normalization, terminal state, receipt correlation | Domain authorization, validation, target resolution, or storage policy |
-| `AgentSession` adapter | Model session, safe prompt injection, shared skill/tool registration, harness-event translation | Product rules, durable product state, model-supplied identity, marker-string outcome classification |
-| Static prompt and skills | Interpretation guidance and bounded procedures | Authorization, hidden state, durable memory, tool implementation, new capability or permission |
-| Bound product-tool adapter | Exact model-visible tool allowlist and runtime binding to actor/session/context/workspace | Independent business rules, global owner state, public/shared-key access, identity in model arguments |
-| Shared `workbench_core` package | One versioned implementation of live authorization, validation, strict resolution, confirmation, idempotency, ETag commit, activity, structured outcomes and canonical destinations | Harness-specific policy, UI presentation, or process-local correctness |
-| Repositories and stores | Persistence, versions, atomic aggregate replacement, durable bytes and derived indexes | User-visible outcome policy or authorization decisions |
-| Trace and receipt sinks | Correlated context, tool, outcome, duration, failure, and terminal evidence | Credentials, unrestricted content, hidden chain-of-thought, or reconstructed success |
-
-The browser and model are intent sources, not authorities. Hard safety boundaries live in runtime tool
-allowlists, service authentication, actor/session binding, live application authorization, and data
-partitioning. Prompt instructions reinforce those boundaries but never replace them.
-
-## The stable `AgentSession` seam
-
-Only the harness adapter varies between Deep Agents and Copilot. The stable product-facing seam is a
-small typed protocol:
+`session-container/server.py` imports one of two concrete classes behind the same small runtime-facing
+shape:
 
 ```python
-class AgentSession(Protocol):
-    async def run(self, turn: TurnInput) -> AsyncIterator[AgentEvent]: ...
-    async def cancel(self, run_id: str, reason: str) -> None: ...
-    async def aclose(self) -> None: ...
+AgentSession(working_dir, token=None, session_id="default", user_id="dan")
 
-
-@dataclass(frozen=True)
-class TurnInput:
-    run_id: str
-    user_text: str
-    context_id: str
-    prompt_context: PromptContext
+async with session:
+    async for sse_frame in session.send(prompt, navigation_version):
+        ...
 ```
 
-`PromptContext` is the already-redacted model projection described by
-[Context](context.md). It does not contain credentials, effective permissions, raw memberships,
-approval material, full record collections, or the trusted tool projection.
+The server also reads the common `token`, `user_id`, and `raw_sdk_log_path` properties. This is a
+stable and useful seam: session creation, actor binding, locking, timeout, and HTTP transport stay in
+the server while model and SDK mechanics stay in the adapter.
 
-The session factory binds model configuration, model authentication, conversation/thread identity,
-the shared prompt and skill catalog, the product-tool connection, and the trace writer. Actor ID,
-owned conversation/session, workspace, retrieval filters, and `contextId` are bound outside
-model-visible arguments. They are not fields the model can alter in `TurnInput` or a tool schema.
+It is not the more transport-neutral `run/cancel/aclose` protocol described in earlier target designs.
+The adapters currently yield already-formatted SSE strings, expose token and raw-log details, and use
+async context-manager teardown. Cancellation is implicit in generator closure rather than a common
+acknowledged method.
 
-The seam intentionally omits:
-
-- SSE strings or HTTP response types;
-- raw SDK log paths;
-- bearer-token refresh mechanics;
-- framework-specific status, session, checkpoint, or callback objects;
-- the product application core and repositories; and
-- generic plugin or third-harness registration machinery.
-
-An adapter yields typed normalized `AgentEvent` values. The coordinator serializes those events to
-AG-UI/SSE and persists their safe receipt projection. This keeps transport framing, terminal
-semantics, and timeout behavior out of duplicated harness code.
-
-### Coordinator ownership
-
-For every accepted turn, the coordinator owns:
-
-- generation and correlation of `run_id`, `thread_id`, and `context_id`;
-- one immutable context composition before model execution;
-- `RUN_STARTED` and `CONTEXT_APPLIED` emission;
-- the 300-second initial turn budget and outer-layer grace;
-- cancellation propagation and dirty-session disposal;
-- normalization of adapter events into the product event contract;
-- exactly one terminal `RUN_FINISHED` or `RUN_ERROR` event;
-- persistence of a terminal turn receipt even when the client disconnects; and
-- authoritative-state reconciliation instructions after tools, failure, cancellation, or unknown
-  commit state.
-
-The coordinator may be a logical module inside the existing session runtime. This design does not
-require another deployable service.
-
-## Harness selection and parity
-
-`AGENT_BACKEND` accepts exactly `deepagents` or `copilot`. Missing configuration selects
-`deepagents`. Any other value fails startup with a clear configuration error. Harness selection is
-fixed for a session and recorded on every turn receipt.
-
-There is no automatic fallback. Switching to another harness after a model, tool, transport, or
-timeout failure could repeat a mutation, change interpretation, hide an operational defect, or
-produce a reply from different conversation state.
+`AGENT_BACKEND` accepts exactly `deepagents` or `copilot`, defaults to `deepagents`, and fails startup
+for any other value. Selection is fixed when the runtime process imports the adapter. There is no
+automatic or mid-turn fallback, so a failed turn is not replayed through the other harness.
 
 ### Deep Agents primary
 
-Deep Agents is the deployed release gate. It must pass the complete supported product journey and
-failure profile on the Azure reference deployment. Framework-provided planning, shell, arbitrary
-filesystem, code execution, and subagent tools are absent from the model-visible allowlist. If the
-framework cannot remove them through a supported configuration, the adapter must pin and verify the
-small exclusion boundary; their presence is a startup or contract-test failure, not an invitation to
-use them.
+Deep Agents uses `AzureChatOpenAI`, an in-memory LangGraph checkpointer, native LangChain tools, and
+`create_deep_agent`. The adapter excludes the framework's planning, shell, generic filesystem, and
+subagent tool names and raises if a runtime event reports a tool outside the approved inventory.
 
-### Copilot secondary
+The deployed runtime uses its own managed identity for Azure OpenAI. The API deployment sets legacy
+Azure OpenAI token forwarding off, while the runtime obtains a Cognitive Services token through its
+configured identity when it initializes the harness.
 
-Copilot implements the same seam and supported CSA Workbench behavior locally. Its failure is recorded and
-triaged but does not block a deployed release. It has no product capability that Deep Agents lacks
-and cannot introduce a separate prompt, skill, tool, outcome, or UI contract.
+### Copilot portability check
 
-### What parity means
+Copilot uses the same model-visible tool inventory and product result contract through native Copilot
+tools. It is selectable for local comparison but is not a deployed release dependency. Focused tests
+prove exact schema equality and representative structured-result equality across the two adapters;
+they do not prove identical model wording, SDK events, cancellation behavior, or complete live parity
+for every turn.
 
-Parity requires both harnesses to have:
+## Model-visible tools and the shared Engagement core
 
-- the same approved model-visible tool names and JSON schemas;
-- the same static prompt and eligible skill catalog versions;
-- the same runtime-bound identity and context rules;
-- the same application-core authorization, validation, mutation, and outcome behavior;
-- the same required AG-UI ordering and terminal invariants;
-- the same cancellation and timeout contract; and
-- the same observable product effects for the supported local evaluation set.
+The single active Pydantic schema catalog in
+[`session-container/mvp_tool_schemas.py`](../../session-container/mvp_tool_schemas.py) defines:
 
-Parity does not require identical assistant wording, token timing, internal planning, raw SDK event
-shape, model request format, or diagnostic reasoning/skill-load events. Optional harness-native
-metadata cannot affect routing, state, authorization, success presentation, or release acceptance.
+| Tool | Purpose |
+|---|---|
+| `navigate` | Resolve one destination from the application catalog |
+| `list_engagements` | List Engagements visible to the bound actor |
+| `create_engagement` | Create an Engagement with the actor as owner |
+| `get_engagement` | Read one visible Engagement by stable ID |
+| `update_engagement` | Change supported Engagement fields |
+| `set_engagement_status` | Set Green, Yellow, or Red with the required reason |
+| `share_engagement` | Add a member or change a member role as an owner |
 
-## Prompt, skills, context, and tool composition
+Both adapters return exactly those tools, in that order, and derive their JSON schemas from the same
+Pydantic models. Actor, role, session ID, and workload credentials are absent from every schema.
+Legacy task, calendar, document, and schedule helper functions remain in the large adapter modules,
+but they are not returned to the model in this release.
 
-The model-facing turn has four distinct inputs. They are composed by the adapter without blending
-their authority:
+The six Engagement tools instantiate `EngagementService` over the same repository adapter used by
+the manual Engagement REST path. That shared core owns the implemented basic Engagement membership,
+role, validation, no-op, mutation, and activity behavior. `navigate` uses the separate catalog-backed
+navigation service and returns the same `ProductToolResult` type.
 
-1. **One shared static product prompt.** It defines CSA Workbench's role, commit-before-claim rule, supported
-   product boundary, tool-use posture, and concise professional response style. It is small,
-   cacheable, versioned, and not copied into each harness source file.
-2. **One shared skill catalog.** Approved `SKILL.md` files contain capability-specific procedure and
-   use the same source files for both harnesses. Harness adapters may load them differently, but the
-   eligible catalog and resulting product behavior remain the same.
-3. **One per-turn prompt projection.** The context service supplies safe display identity, validated
-   current location and active Engagement, minimal persona, applicable Engagement conventions, and
-   small live summaries. It is injected as trusted context, not prefixed to browser-authored user
-   text and not checkpointed as user speech.
-4. **One product tool allowlist.** Narrow typed tools are loaded from the shared tool adapter. No
-   framework built-ins are exposed merely because a harness provides them.
+This is shared-core parity for basic Engagement operations, not for the whole application. Manual
+tasks, conventions, artifacts, and member removal have broader REST/UI coverage and are not all in
+the model inventory or the shared service. There is no active external MCP tool server in this turn
+path; the adapters call the core in process.
 
-The user's message remains distinguishable from every trusted layer. Conversation checkpoints
-preserve conversation continuity only; they are not the source of persona, authorization, durable
-memory, current records, context inspector data, or application state. Context is recomposed every
-turn, and tools read changing facts live.
+## Typed outcomes
 
-Style precedence is `turn instruction > applicable Engagement convention > persona > application
-default`. Authorization and live facts are not part of that precedence: authorization is an absolute
-ceiling, and current permissioned records override remembered or prompt-projected facts.
-
-Skills are procedures, not agents. A skill may explain how to use already approved tools but cannot
-add tools, widen scope, store hidden memory, bypass confirmation, or turn one request into an
-unapproved autonomous workflow. The existing multi-step weekly-review routine is excluded from the
-supported catalog. Skill-load and model reasoning-summary events are diagnostic-only and are not
-rendered as evidence of product work. Hidden chain-of-thought is never requested, streamed, stored,
-or exposed.
-
-If an optional context source such as persona or conventions is unavailable, composition records an
-explicit omission and the turn may proceed with safe defaults. Failure to establish authenticated
-actor/session ownership or a valid trusted tool binding stops the turn.
-
-## Shared application core and product tools
-
-`workbench_core` is the one implementation of CSA Workbench behavior, imported into two process boundaries:
-
-```text
-Orchestrator: manual UI -> REST adapter ---------> local workbench_core instance -> repositories
-Runtime:      agent -> bound csa-workbench-tools tool -> local workbench_core instance -> repositories
-                                      same package, schemas, outcomes, and contract version
-```
-
-The package owns live membership and role checks, target and scope resolution, schemas and cross-field
-validation, confirmation policy, idempotency, ETag retry behavior, activity, durable receipts, and
-structured outcomes. A concurrency retry re-reads the aggregate and rechecks authorization, target,
-validation, and confirmation before commit.
-
-REST handlers call the orchestrator instance directly. The model-facing adapter exposes narrow
-capability tools such as `list_engagements`, `set_engagement_status`, `create_task`, and
-`save_artifact_to_engagement`; it delegates immediately to the runtime instance and contains no
-independent mutation policy. There is no application-service HTTP callback and REST never calls MCP.
-
-Both workload images carry the same Git revision and `workbench_core` contract version. The orchestrator
-checks that version when establishing a runtime session, refuses a mismatch, and records it in the
-turn receipt. ETags and same-aggregate idempotency receipts preserve correctness across the two
-instances. Actor/session context is bound independently at each adapter and every operation
-reauthorizes live state; the package contains no manual-versus-agent policy branch.
-
-### Internal `csa-workbench-tools` adapter and MCP direction
-
-The logical tool adapter is named `csa-workbench-tools`. Tool names remain product capability names; they
-are not prefixed with `deepagents_`, `copilot_`, or `mcp_`. Traces record the adapter and harness in
-separate fields.
-
-The adapter is session-bound. Actor, owned conversation/session, workspace, retrieval scopes, and
-`contextId` are supplied through trusted runtime binding rather than model arguments. The v1
-baseline is an in-process typed adapter calling the runtime's local `workbench_core` instance. A later
-session-bound stdio MCP wrapper may expose the same schemas when harness portability evidence
-justifies the extra process, but it cannot add policy, credentials, or a public endpoint. MCP remains
-a replaceable protocol adapter, not the domain layer or an architectural requirement for REST.
-
-The legacy remote `flow-appstate` MCP server is outside this architecture. Its shared-key,
-global-owner, remotely reachable posture is incompatible with CSA Workbench's actor-bound application
-contract. It should be retired rather than adapted into the harness substrate. This capability does
-not authorize an external MCP endpoint or an IDA bypass path.
-
-## AG-UI event contract
-
-AG-UI is the normalized semantic event protocol. SSE is only its current browser transport. One turn
-has this required shape:
-
-```text
-RUN_STARTED
-CONTEXT_APPLIED
-  TEXT_MESSAGE_START -> TEXT_MESSAGE_CONTENT* -> TEXT_MESSAGE_END
-  TOOL_CALL_START -> TOOL_CALL_ARGS* -> TOOL_CALL_RESULT -> TOOL_CALL_END
-  ...text and tool groups may repeat...
-RUN_FINISHED | RUN_ERROR
-```
-
-The first two events precede model or tool output. Text is associated with stable message IDs. Every
-started product tool call has one structured result and one end event. If failure or cancellation
-interrupts a call before its outcome is known, the coordinator closes it with a structured `failed`
-result whose commit state is unknown and requires reconciliation. Exactly one of `RUN_FINISHED` or
-`RUN_ERROR` terminates the run. A clean stream close without a valid terminal event is an error.
-
-Malformed required frames, invalid ordering, duplicate terminal events, unknown required schema
-versions, and truncated UTF-8/SSE frames fail loud. The orchestrator parses framed event types; it
-does not search raw bytes for strings such as `RUN_ERROR`. The browser ignores only explicitly
-forward-compatible optional events and must surface corruption of a required event.
-
-`REASONING_*`, `SKILL_LOADED`, or equivalent harness-native events are optional diagnostics outside
-the product parity contract. They are not success evidence and are not required by the frontend.
-
-### `CONTEXT_APPLIED`
-
-`CONTEXT_APPLIED` carries the safe inspector projection produced by the context composer, including
-`context_id`, snapshot time, effective scope and reason, applied items, omitted/degraded sources, and
-freshness. It never carries the trusted tool projection, credentials, hidden policy, raw visit
-history, inaccessible names, or chain-of-thought. The UI's **What I used** view renders this stored
-projection rather than reconstructing context from current browser or database state.
-
-### Structured `TOOL_CALL_RESULT`
-
-The tool result mirrors a safe projection of the application-core outcome. It is not inferred by
-parsing a leading marker from prose:
+`workbench_core` translates a service `Outcome` into a safe, transport-neutral
+`ProductToolResult`. The current public shape is:
 
 ```json
 {
-  "type": "TOOL_CALL_RESULT",
-  "tool_call_id": "call-7",
-  "result": {
-    "status": "committed",
-    "code": "engagement.status_changed",
-    "operation": "update",
-    "scope": {"kind": "engagement", "id": "eng-42"},
-    "resource": {"kind": "engagement", "id": "eng-42", "version": "etag-9"},
-    "destination": {
-      "id": "destination:engagement:eng-42:overview",
-      "title": "Northstar",
-      "route": "/engagements/eng-42"
-    },
-    "audit_id": "activity-81"
-  }
+  "status": "committed",
+  "code": "engagement.committed",
+  "operation": "update",
+  "message": "",
+  "resource": {"kind": "engagement", "id": "eng-42"}
 }
 ```
 
-The core statuses are `committed`, `noop`, `needs_confirmation`, `ambiguous`, `invalid`,
-`not_found`, `forbidden`, `conflict`, and `failed`. Read and navigation contracts may use
-`succeeded` and `resolved` where no domain mutation occurs. Optional typed fields carry authorized
-candidates, field errors, confirmation previews and IDs, retry guidance, citations, or an unknown
-commit-state warning.
+The accepted status vocabulary is `committed`, `resolved`, `succeeded`, `noop`,
+`needs_confirmation`, `ambiguous`, `invalid`, `not_found`, `forbidden`, `conflict`, and `failed`.
+Only `committed` and `resolved` may carry a destination. The destination validator accepts only the
+catalog IDs and exact canonical paths described by [Navigation](navigation.md).
 
-Only `committed` or `resolved` may carry a canonical destination that can move the UI. The browser
-does not maintain a list of tool names assumed to set routes. `failed` with unknown commit state
-forces a refetch before the assistant or UI can state what happened.
+Not every accepted status is produced by the current Engagement service. It does not implement
+durable confirmation records, caller-visible expected versions, idempotency keys, or typed storage
+failure receipts. A current result contains no Cosmos ETag, activity ID, durable command receipt, or
+full Engagement record. See [CRUD](crud.md) for the exact implemented operation and concurrency
+boundary.
 
-## Cancellation and timeout
+Each harness stores the typed result in native tool metadata rather than parsing model-visible text:
+Copilot uses `tool_telemetry.product_result`; Deep Agents uses a LangChain tool artifact. Missing or
+invalid native metadata becomes a structured `tool.missing_native_result` failure. Marker-like prose
+does not become a product result.
 
-The coordinator's initial per-turn budget is 300 seconds. Orchestrator transport and browser
-inactivity watchdogs use that same configured budget plus a small outer grace so the coordinator,
-not a client timer, normally emits the terminal error. Model connection/startup and file upload have
-their own bounded operations; they do not silently extend the turn deadline.
+## AG-UI over SSE
 
-Stop follows one path:
+The adapters normalize their different SDK events to this implemented lifecycle:
 
-1. The browser aborts its stream and marks later buffered presentation effects invalid.
-2. The orchestrator closes the upstream stream and preserves the owned conversation/run identity.
-3. The coordinator cancels the run task and calls `AgentSession.cancel(run_id, "user")`.
-4. The adapter interrupts the harness and waits for it to become idle within a short grace period.
-5. If a clean stop cannot be proven, the coordinator closes and recreates that harness session before
-   accepting another turn.
-6. The receipt records `cancelled`, any known tool outcome, and whether authoritative reconciliation
-   is required.
-7. The browser refetches authoritative state and keeps the route in place.
+```text
+RUN_STARTED
+  TEXT_MESSAGE_START -> TEXT_MESSAGE_CONTENT* -> TEXT_MESSAGE_END
+  TOOL_CALL_START -> TOOL_CALL_ARGS? -> TOOL_CALL_RESULT -> TOOL_CALL_END
+  NAVIGATION_RESOLVED?            # while its matching tool result is still open
+  ... groups may repeat ...
+RUN_FINISHED | RUN_ERROR
+```
 
-Timeout uses the same cancellation path with reason `timeout` and ends in one `RUN_ERROR`. New
-conversation waits for cancellation and session teardown rather than racing a new run against the old
-one. Session-level serialization prevents two active turns for one conversation; ETag and idempotency
-remain necessary because different sessions or retries may act on the same Engagement.
+Optional `REASONING_START`, `REASONING_DELTA`, and `REASONING_END` events may also appear. They are
+presentation diagnostics, not evidence that product work succeeded. There is no implemented
+`CONTEXT_APPLIED` event or persisted context projection.
 
-Cancellation is not rollback. A tool that already returned a committed receipt remains committed,
-even if the user stops before assistant prose arrives. A tool still running when cancellation occurs
-must either return a known outcome or leave the turn in unknown commit state until authoritative
-refetch and receipt reconciliation. Buffered navigation effects from a cancelled turn are never
-applied.
+`TOOL_CALL_RESULT` carries the validated `ProductToolResult`. For a destination-bearing `resolved` or
+`committed` result, the runtime may also emit `NAVIGATION_RESOLVED` with the run ID, the exact
+destination, and the navigation version captured when the turn began. Navigation remains a separate
+structured effect; neither assistant text nor a tool-name allowlist moves the browser.
 
-## Trace and turn receipts
+The API proxy frames complete LF or CRLF SSE records, uses strict incremental UTF-8 decoding, parses
+JSON, and validates run, message, tool, result, navigation, and terminal order. It holds an upstream
+terminal event until clean EOF establishes that no duplicate follows. On malformed or interrupted
+streams it closes any known open message/tool lifecycle where possible and emits a safe `RUN_ERROR`.
 
-CSA Workbench keeps two related evidence channels:
+The frontend repeats the lifecycle validation before reducing an event. It rejects malformed JSON,
+unknown event types, wrong correlation, events after a terminal, truncated frames, and a clean close
+without a terminal. It accepts navigation only when the native result, run, navigation version,
+catalog destination, cancellation state, and current actor-filtered Engagement state agree.
 
-- a user-retrievable durable turn receipt in Cosmos for product evidence; and
-- operational traces in Azure Monitor or local structured logs for diagnostics.
+The adapters normally emit one terminal event, and the validating proxy prevents a second terminal
+from reaching the browser. This is stream validation rather than a durable exactly-once turn record.
 
-The normalized coordinator event and application-core outcome are the canonical evidence. Raw SDK
-event logs are optional adapter diagnostics and never a release oracle.
+## Locking, timeout, cancellation, and failure
 
-A turn receipt contains, subject to safe redaction:
+### Locking and timeout
 
-- actor, conversation, thread, run, context, and harness identifiers;
-- `workbench_core` contract, static prompt, skill catalog, context, event, and tool schema versions;
-- context snapshot time plus the applied/omitted inspector projection or its durable reference;
-- model deployment and adapter, without credentials;
-- each product tool name and call ID, safe arguments, start/end times, structured status/code,
-  resource version, idempotency receipt, activity/audit ID, and duration;
-- citations or grounded source identifiers when a read depends on documents;
-- cancellation, timeout, transport, context, and application failure reason codes;
-- terminal state and whether authoritative reconciliation succeeded; and
-- total latency and token/usage data when safely available.
+The runtime owns one `asyncio.Lock` per session. It verifies the actor before acquiring the lock,
+acquires it before the stream generator starts, and returns `409 Session is busy` when another turn
+already holds it. The lock object remains for the process lifetime so reset cannot create a second
+lock while an earlier request still uses the first.
 
-Arguments and results have distinct model, UI, receipt, and operational projections when their
-sensitivity differs. Do not store bearer tokens, passwords, confirmation secrets, unrestricted
-documents, hidden tool context, inaccessible resource names, raw membership collections, or hidden
-chain-of-thought. Full user text and raw SDK payload capture is off by default and requires an
-explicit short-lived diagnostic mode with access and retention controls.
+Each runtime turn has a configured timeout, 300 seconds by default. A timeout or unhandled runtime
+turn failure destroys that live harness, emits `RUN_ERROR`, and releases the session lock in `finally`.
+The browser also has a separate 600-second inactivity timer. That timer aborts its observation and
+shows an error; it is not a server-side cancellation acknowledgement.
 
-Trace writes must not be split among independent processes appending incompatible JSON shapes to the
-same file. Local JSONL and Azure Monitor may use different sinks, but they derive from the same typed
-coordinator/tool events and correlation IDs. Receipt persistence failure is visible: the product does
-not advertise a retrievable trace when it did not save one.
+### Stop and disconnect
 
-## Failure contract
+Stop marks the browser turn cancelled, aborts the fetch, ignores later buffered events, and makes the
+input usable. Copilot attempts to abort its SDK turn when its `send()` generator closes. Deep Agents
+has no explicit cancel method or acknowledgement; closing the async event stream is the propagation
+path. New session also aborts the browser stream and then asks the runtime to delete the old session;
+runtime deletion is serialized by the same lock.
 
-| Failure | Required behavior |
-|---|---|
-| Unknown harness name or tool inventory drift | Fail startup or the harness contract check; never silently select another backend |
-| Model authentication, rate limit, filter, or provider failure | Emit one safe `RUN_ERROR`, persist reason, reconcile any started tools, offer retry where safe |
-| Optional persona/convention source unavailable | Emit an explicit omitted/degraded context item and continue with safe defaults |
-| Actor/session binding or authorization context unavailable | Stop before model/tool execution; do not degrade identity |
-| Tool returns `noop`, `ambiguous`, `invalid`, `not_found`, or `forbidden` | Preserve exact structured status; no success language or route effect |
-| Confirmation required | Return a backend-issued actor-bound preview and confirmation ID; do not ask a model to convert “yes” into authority |
-| ETag conflict | Re-read and recheck all dependent rules; return `conflict` after bounded retries rather than last-write-wins |
-| Tool transport fails before commit is known | Mark commit state unknown, suppress route effects and success claims, then refetch/reconcile |
-| Client disconnects or presses Stop | Continue coordinator cleanup and receipt persistence; cancel harness; refetch state; never imply rollback |
-| Turn exceeds 300 seconds | Cancel, dispose an unclean harness session, emit one timeout `RUN_ERROR`, persist terminal receipt |
-| Upstream stream truncates or required event is malformed | Fail loud with a normalized stream error; do not leave the UI indefinitely Working |
-| State or receipt refresh fails after a claimed commit | Show stale/unknown freshness and retry; do not let assistant prose stand in for state |
-| Raw diagnostic logging fails | Preserve product execution but report observability degradation; durable receipt requirements remain enforced |
+Cancellation is not rollback. A tool may have committed before the disconnect, and the current Stop
+handler does not itself await an authoritative refresh or receive a known commit state. The next state
+read remains authoritative. There is no strict guarantee that a Deep Agents provider/tool operation
+has stopped when the UI becomes idle, no durable `cancelled` state, and no resumable stream.
 
-## Behavioral oracles
+### Visible failures
 
-Harness verification reconciles three observations: the real UI, authoritative product state, and
-the durable turn receipt. Exact assistant prose is not an oracle.
+- Invalid, forbidden, missing, ambiguous, no-op, and failed tool outcomes remain structured and do
+  not produce navigation.
+- Unknown harness names fail startup rather than selecting Copilot silently.
+- Workload-token failures reject the runtime call before the forwarded actor header is trusted.
+- Provider and adapter failures end in a safe terminal error; rate-limit and content-filter cases get
+  bounded user-facing messages.
+- Malformed, truncated, wrongly ordered, or duplicate-terminal upstream streams fail closed in the
+  proxy and browser.
+- A tool result or mutation already delivered before a later terminal failure is not rolled back; the
+  browser refreshes authoritative state on tool end and terminal success or error.
 
-### Contract evidence
+The system does not currently durably distinguish “failed before commit” from “response lost after
+commit.” It therefore makes no safe automatic replay or strict cancellation claim.
 
-- Both adapters consume the same prompt, skill catalog, product-tool schema, and typed turn fixture.
-- Required event ordering, message/tool correlation, UTF-8 framing, one-terminal behavior, malformed
-  frame failure, and context-before-model ordering are asserted independently of an SDK.
-- Unknown backend values fail closed, and both model-visible tool inventories exactly match the
-  approved shared allowlist with no shell, code, arbitrary filesystem, planning, or subagent tools.
-- Structured tool outcomes survive adapter and AG-UI translation without marker parsing or loss of
-  status, destination, confirmation, error, citation, or receipt fields.
+## Prompt, context, memory, and traces
 
-### Behavioral evidence
+The two adapters currently contain separate copies of the same small static product prompt and append
+an actor-grounding line when the harness is created. Both expose skills as disabled; there is no
+shared active skill catalog in this release.
 
-- Deep Agents passes the complete deployed Azure journey: identity isolation, membership trimming,
-  viewer read-only behavior, Yellow/Red reason validation, task and artifact operations, grounded
-  reads, deterministic navigation, context inspection, receipt retrieval, and deliberate tool
-  failure.
-- Copilot passes the same supported journey locally against the same repeatable seed, application
-  service, and frontend. A failure is reported but does not block deployment.
-- Every mutation assertion checks the resulting record/version in authoritative state and the
-  matching committed receipt. Every non-commit assertion proves state and route did not change.
-- Repeated create delivery with the same idempotency receipt produces one resource and one activity
-  record.
-- Concurrent updates reauthorize and revalidate after ETag conflict; unsafe ambiguity ends as
-  `conflict` rather than silently overwriting newer state.
-- **What I used** equals the stored `CONTEXT_APPLIED` projection, and trusted actor/session/tool
-  bindings are absent from model-visible tool arguments.
+Per-turn display context is still assembled in the browser. The frontend fetches a context bundle,
+builds a bracketed preamble containing date, current view, display user, persona, and applicable
+conventions, and concatenates it with the user's message before sending one `prompt` string. If the
+bundle fetch fails, it sends date and current view without personalization. The inspector renders the
+fetched bundle, not a server-emitted record of exactly what the harness accepted.
 
-### Failure and recovery evidence
+This browser composition is useful current behavior, but it is not a trusted immutable context
+architecture: user text and context are not separate server-side fields, there is no context ID or
+`CONTEXT_APPLIED` event, and the projection is not persisted. The product's hard actor and permission
+boundaries do not depend on that preamble.
 
-- Deliberately failing, no-op, ambiguous, invalid, not-found, forbidden, and confirmation-required
-  tools are never shown or narrated as committed.
-- Cancellation is exercised before a tool, during a tool, after commit but before assistant prose,
-  during streaming text, and during rapid New Conversation. Buffered routes do not apply, state is
-  reconciled, and already committed work remains visible.
-- Timeout, provider failure, token expiry, context-source degradation, tool transport loss, malformed
-  SSE, truncated stream, receipt-write failure, and post-tool state-refresh failure all end visibly
-  with one terminal event and an appropriate receipt/degradation signal.
-- Raw Deep Agents and Copilot event sequences may differ, but their normalized product events,
-  structured outcomes, state effects, and receipts satisfy the same assertions.
+Conversation continuity is ephemeral. Deep Agents uses `InMemorySaver`; Copilot keeps its live SDK
+session; the browser stores completed visible messages in actor-namespaced `sessionStorage`. Runtime
+workspace files, conversation state, and browser chat do not become durable product records.
 
-## Simplifications and non-goals
+When enabled, local tracing writes process-local JSONL and optional per-session raw SDK JSONL. Raw SDK
+capture can include the full prompt and is diagnostic-only. The runtime can also initialize Azure
+Monitor HTTP tracing when configured, but the repository does not implement a complete correlated
+turn-observability contract. There is no actor-authorized trace API, durable turn receipt, retention
+contract, or guarantee that traces survive scale-in or revision replacement.
 
-- Two explicit adapters and one factory are enough; there is no generic harness plugin platform.
-- Deep Agents is primary and Copilot is secondary; there is no automatic or mid-turn fallback.
-- No shell, arbitrary code execution, autonomous subagents, planning tool, generic filesystem, or
-  multi-agent workflow is exposed.
-- No weekly-review-style autonomous multi-mutation routine is part of the approved skill catalog.
-- MCP is an optional internal tool transport, not the application core, public API, durable state,
-  authorization boundary, or prerequisite for manual REST.
-- The legacy shared-key `flow-appstate` MCP path is retired rather than preserved through a
-  compatibility shim.
-- Context is not a durable memory system, and a conversation checkpoint is not product state.
-- Reasoning summaries and skill-load notifications are diagnostics only; hidden chain-of-thought is
-  never collected or exposed.
-- Harness parity does not require identical prose, token cadence, raw SDK events, or framework
-  internals.
-- This capability does not add an IDA integration, public MCP endpoint, connector platform,
-  scheduler, workflow engine, third harness, or speculative autonomy.
+## Evidence status
 
-## Current integrated state versus target
+### Verified behavior
 
-The integrated baseline contains a useful seam and substantial proof, but static inspection shows
-that the target contract is not implemented yet. Runtime behavior at this baseline remains
-**UNVERIFIED** unless supported by separately current behavioral evidence.
+Focused tests at the deployed application revision cover:
 
-| Current evidence at `master@1fcaac6` | Target gap |
-|---|---|
-| `session-container/server.py:33-41` selects Deep Agents by default but treats every other string as Copilot; `master@1fcaac6:docs/development.md:53-80` and `master@1fcaac6:README.md:37-45` still describe Copilot as default | One exact fail-closed selector and Deep-primary documentation/configuration |
-| `master@1fcaac6:docs/harnesses.md:15-38` and both current classes expose a seam whose `send()` yields already formatted SSE and whose token/raw-log properties are consumed by the server | Typed `run/cancel/aclose`; coordinator-owned lifecycle, transport, token refresh, and logs |
-| `session-container/agent.py:82-177` and `agent_deepagents.py:95-189` duplicate a large system prompt | One shared small versioned static prompt |
-| Copilot loads `session-container/skills/` at `agent.py:1304-1339`; Deep setup at `agent_deepagents.py:1152-1161` does not load the shared catalog | One approved catalog and parity evidence; weekly-review routine excluded |
-| Product tools are duplicated across `agent.py:473-1214` and `agent_deepagents.py:313-1043` | Thin shared `csa-workbench-tools` adapter over the runtime instance of one `workbench_core` package |
-| Tool status, cards, and navigation chips are parsed from marker text in `agent.py:245-302` and `agent_deepagents.py:248-293` | Native structured service outcome preserved through AG-UI |
-| `frontend/src/hooks/useAgentSession.ts:484-506` fetches a context bundle, creates bracketed prompt text in the browser, and sends it as part of the prompt | Server-side immutable composition; user text separate; stored `CONTEXT_APPLIED` |
-| `frontend/src/components/AssistantPanel.tsx:129-142` renders the fetched bundle rather than the event actually supplied to the harness | Inspector renders persisted event projection |
-| `frontend/src/hooks/useAgentSession.ts:9-24,441-456` infers route following from `outcome === "ok"` and a hard-coded tool-name set | Follow only an explicit structured committed/resolved destination |
-| Both adapters can emit `RUN_ERROR` followed by `RUN_FINISHED` (`agent.py:1512-1525`; `agent_deepagents.py:1265-1276`) | Coordinator emits exactly one terminal event |
-| `session_manager.py:252-280` detects terminal events by searching raw text chunks for `RUN_FINISHED` or `RUN_ERROR` | Parse framed typed events and validate ordering/schema |
-| `frontend/src/lib/sse.ts:63-95` silently drops malformed data frames | Corruption of required events fails loud |
-| Copilot aborts an active SDK turn in `agent.py:1527-1567`; the Deep POC records unproven cancellation at `review/2026-06-24-deepagents-poc/FINDINGS.md:127-142`; frontend Stop at `useAgentSession.ts:559-565` does not itself reconcile state | One tested coordinator cancellation path and post-stop authoritative refetch |
-| Session agent trace helpers emit only when logger `trace` has a handler (`agent.py:59-79`; `agent_deepagents.py:68-82`), while `session-container/trace_logging.py:19-56` prepares a path without installing that handler | One typed trace/receipt pipeline with reliable correlation and retrieval |
-| `session-container/server.py:266-273` logs a prompt preview and raw SDK records may store the full prompt | Safe receipt projections; full prompt/raw capture off by default |
-| `mcp_server.py:1-15,178-200` defines a shared-key global-owner remote server and its tools call removed global `appdb.load/update` APIs | Exclude and retire; do not use as the actor-bound harness substrate |
+- exact Copilot/Deep Agents tool inventory and JSON-schema equality;
+- representative native result parity and rejection of marker-text substitutes;
+- `ProductToolResult` and destination validation;
+- framed SSE parsing, lifecycle correlation, interruption closure, and one-terminal forwarding;
+- workload-token tenant, audience, caller, role, and failure checks; and
+- Engagement authorization, validation, no-op, and resulting-state behavior.
 
-The smallest dependency-ordered migration is:
+The primary sources are
+[`tests/test_structured_control.py`](../../tests/test_structured_control.py),
+[`tests/test_release_boundaries.py`](../../tests/test_release_boundaries.py), and
+[`tests/test_engagement_core.py`](../../tests/test_engagement_core.py).
 
-1. establish the shared application-core package and structured outcomes;
-2. establish immutable actor/session binding, server-side context, and durable turn receipts;
-3. introduce coordinator-owned typed events and the `AgentSession.run/cancel/aclose` seam;
-4. connect Deep Agents to the shared prompt, approved skills, and bound `csa-workbench-tools` adapter;
-5. connect Copilot to the same contracts and remove duplicated tools/prompts/marker parsing; then
-6. prove deployed Deep behavior and local Copilot parity with the oracles above.
+The ignored local Deep Agents observation with run ID
+`2026-07-15T01-27-46-902Z-2ecc70df` passed seven structured cases at source revision `7bca264`,
+including typed reads, mutation, navigation, denial/non-execution, exact terminal validation, and a
+marker-like prompt that produced no false effect.
 
-This sequence keeps framework replacement subordinate to product truth and avoids building protocol
-layers before the application core has one authoritative behavior to expose.
+The ignored local browser observation with run ID
+`2026-07-15T02-57-58-244Z-1e852bb3` passed 34 checks at source revision `9142b2a`, including a
+structured Engagement update followed by authoritative state/UI refresh. These ignored results are
+local observations, not portable evidence in a fresh clone.
+
+The [authoritative design](../design.md) records the final deployed release-candidate smoke: the Deep
+Agents turn `List my engagements.` emitted a typed `list_engagements` call and successful
+`engagement.listed` result before describing the exact Cosmos-backed Engagement. That smoke also
+covered workload-authenticated runtime invocation and authoritative Engagement readback.
+
+### Remaining evidence and implementation gaps
+
+- The local eval and browser bundles predate the deployed application revision. A fresh clean-worktree
+  local Deep Agents bundle at `c544f6c` is absent.
+- The deployed typed `list_engagements` turn is recorded in the authoritative design, but there is no
+  durable turn receipt or checked-in per-event deployed transcript to inspect independently.
+- Copilot has focused schema/result contract evidence, not a current full live local parity bundle.
+- Prompt and per-turn context sources are duplicated or browser-composed; skills are disabled and no
+  server-recorded applied-context projection exists.
+- Stop/disconnect, timeout during a tool, and unknown commit state are not covered by an acknowledged
+  end-to-end cancellation contract. Deep Agents cancellation is not proven strict.
+- The shared core covers basic Engagement operations only; universal manual/agent capability parity is
+  not implemented.
+- Traces and turn state are ephemeral, optional, and incomplete. There are no durable receipts or
+  implemented user-facing observability promises.
+
+These are precise release limits, not authorization to add a coordinator, external MCP service,
+durable conversation system, broad observability program, or other hardening outside the MVP.
+
+## Related authority
+
+- [Authoritative design](../design.md)
+- [MVP success criteria](../requirements.md)
+- [CRUD](crud.md)
+- [Navigation](navigation.md)
+- [Context](context.md)
+- [Session and state](session-state.md)
+- [Identity and access](identity-access.md)
+- [Testing and evals](testing-evals.md)
