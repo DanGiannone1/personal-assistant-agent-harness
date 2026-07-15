@@ -14,7 +14,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 API_NAME = "CSA Workbench API"
 WEB_NAME = "CSA Workbench Web"
@@ -154,12 +154,59 @@ def ensure_application(graph: GraphClient, desired: dict[str, Any]) -> dict[str,
     return graph.post("applications", desired)
 
 
+def _is_valid_https_uri(value: Any) -> bool:
+    if not isinstance(value, str) or any(character.isspace() for character in value):
+        return False
+    try:
+        parsed = urlparse(value)
+        return (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.netloc == parsed.hostname
+            and not parsed.path
+            and not parsed.params
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
+
+
+def ensure_web_application(graph: GraphClient, api_client_id: str, redirect_uri: str) -> dict[str, Any]:
+    if not _is_valid_https_uri(redirect_uri):
+        raise GraphError("CSA Workbench Web requires a valid HTTPS redirect URI")
+    desired = web_shape(api_client_id, redirect_uri)
+    existing = _one_application(graph, WEB_NAME)
+    if not existing:
+        return graph.post("applications", desired)
+
+    _assert_shape(existing, {
+        "displayName": WEB_NAME,
+        "signInAudience": "AzureADMyOrg",
+        "requiredResourceAccess": desired["requiredResourceAccess"],
+    })
+    spa = existing.get("spa")
+    redirect_uris = spa.get("redirectUris") if isinstance(spa, dict) else None
+    if not isinstance(redirect_uris, list) or len(redirect_uris) != 1 or not _is_valid_https_uri(redirect_uris[0]):
+        raise GraphError("CSA Workbench Web has malformed SPA redirectUris; refusing to mutate it")
+    expected_redirect_uris = [redirect_uri]
+    if redirect_uris != expected_redirect_uris:
+        graph.patch(f"applications/{existing['id']}", {"spa": {"redirectUris": expected_redirect_uris}})
+        return {**existing, "spa": {**spa, "redirectUris": expected_redirect_uris}}
+    return existing
+
+
 def ensure_service_principal(graph: GraphClient, app_id: str) -> dict[str, Any]:
+    existing = find_service_principal(graph, app_id)
+    return existing if existing else graph.post("servicePrincipals", {"appId": app_id})
+
+
+def find_service_principal(graph: GraphClient, app_id: str) -> dict[str, Any] | None:
     query = "servicePrincipals?$filter=" + quote(f"appId eq '{app_id}'", safe="?$=&'")
     values = graph.get(query).get("value", [])
     if len(values) > 1:
         raise GraphError(f"duplicate service principals for dedicated application {app_id}")
-    return values[0] if values else graph.post("servicePrincipals", {"appId": app_id})
+    return values[0] if values else None
 
 
 def ensure_identifier_uri(graph: GraphClient, application: dict[str, Any]) -> dict[str, Any]:
@@ -203,10 +250,7 @@ def _preauthorization_entries(entries: Any) -> frozenset[tuple[str, tuple[str, .
 
 
 def ensure_runtime_assignment(graph: GraphClient, runtime_sp_id: str, api_uami_principal_id: str) -> None:
-    assignments = [
-        assignment for assignment in graph.get(f"servicePrincipals/{runtime_sp_id}/appRoleAssignedTo").get("value", [])
-        if assignment.get("principalId") == api_uami_principal_id
-    ]
+    assignments = runtime_assignments_for_api_identity(graph, runtime_sp_id, api_uami_principal_id)
     if len(assignments) > 1:
         raise GraphError("duplicate runtime application-role assignments for API managed identity")
     if assignments:
@@ -221,11 +265,80 @@ def ensure_runtime_assignment(graph: GraphClient, runtime_sp_id: str, api_uami_p
     })
 
 
+def runtime_assignments_for_api_identity(graph: GraphClient, runtime_sp_id: str, api_uami_principal_id: str) -> list[dict[str, Any]]:
+    return [
+        assignment for assignment in graph.get(f"servicePrincipals/{runtime_sp_id}/appRoleAssignedTo").get("value", [])
+        if assignment.get("principalId") == api_uami_principal_id
+    ]
+
+
+def _validate_identifier_uri(application: dict[str, Any]) -> None:
+    expected = [f"api://{application['appId']}"]
+    existing = application.get("identifierUris", [])
+    if existing not in ([], expected):
+        raise GraphError(f"{application['displayName']} has conflicting identifierUris; refusing to mutate it")
+
+
+def _validate_api_preauthorization(api: dict[str, Any], web_client_id: str) -> None:
+    api_configuration = api.get("api")
+    if not isinstance(api_configuration, dict):
+        raise GraphError("CSA Workbench API has malformed API configuration")
+    if "preAuthorizedApplications" not in api_configuration or api_configuration["preAuthorizedApplications"] == []:
+        return
+    expected = [
+        {"appId": web_client_id, "delegatedPermissionIds": [API_SCOPE_ID]},
+        {"appId": AZURE_CLI_CLIENT_ID, "delegatedPermissionIds": [API_SCOPE_ID]},
+    ]
+    if _preauthorization_entries(api_configuration["preAuthorizedApplications"]) != _preauthorization_entries(expected):
+        raise GraphError("CSA Workbench API has conflicting pre-authorized applications")
+
+
+def preflight_entra(graph: GraphClient, frontend_redirect_uri: str, api_uami_principal_id: str) -> None:
+    """Reject existing dedicated-application drift before any Graph mutation."""
+    api = _one_application(graph, API_NAME)
+    web = _one_application(graph, WEB_NAME)
+    runtime = _one_application(graph, RUNTIME_NAME)
+    if api:
+        _assert_shape(api, api_shape())
+        _validate_identifier_uri(api)
+    if runtime:
+        _assert_shape(runtime, runtime_shape())
+        _validate_identifier_uri(runtime)
+    if web:
+        _assert_shape(web, {
+            "displayName": WEB_NAME,
+            "signInAudience": "AzureADMyOrg",
+            "requiredResourceAccess": web_shape(api["appId"] if api else "unresolved-api", frontend_redirect_uri)["requiredResourceAccess"],
+        })
+        spa = web.get("spa")
+        redirect_uris = spa.get("redirectUris") if isinstance(spa, dict) else None
+        if not isinstance(redirect_uris, list) or len(redirect_uris) != 1 or not _is_valid_https_uri(redirect_uris[0]):
+            raise GraphError("CSA Workbench Web has malformed SPA redirectUris; refusing to mutate it")
+    if api and web:
+        _validate_api_preauthorization(api, web["appId"])
+    if api and not web:
+        preauthorized = api.get("api", {}).get("preAuthorizedApplications") if isinstance(api.get("api"), dict) else None
+        if preauthorized not in (None, []):
+            raise GraphError("CSA Workbench API has pre-authorized applications but CSA Workbench Web is absent")
+    for application in (api, web, runtime):
+        if application:
+            find_service_principal(graph, application["appId"])
+    if runtime:
+        runtime_sp = find_service_principal(graph, runtime["appId"])
+        if runtime_sp:
+            assignments = runtime_assignments_for_api_identity(graph, runtime_sp["id"], api_uami_principal_id)
+            if len(assignments) > 1:
+                raise GraphError("duplicate runtime application-role assignments for API managed identity")
+            if assignments and (assignments[0].get("appRoleId") != RUNTIME_ROLE_ID or assignments[0].get("principalId") != api_uami_principal_id):
+                raise GraphError("API managed identity has a conflicting runtime application-role assignment")
+
+
 def ensure_entra(graph: GraphClient, tenant_id: str, frontend_redirect_uri: str, api_uami_principal_id: str) -> EntraIds:
-    if not tenant_id or not frontend_redirect_uri.startswith("https://") or not api_uami_principal_id:
+    if not tenant_id or not _is_valid_https_uri(frontend_redirect_uri) or not api_uami_principal_id:
         raise GraphError("tenant id, HTTPS frontend redirect URI, and API managed-identity principal id are required")
+    preflight_entra(graph, frontend_redirect_uri, api_uami_principal_id)
     api = ensure_identifier_uri(graph, ensure_application(graph, api_shape()))
-    web = ensure_application(graph, web_shape(api["appId"], frontend_redirect_uri))
+    web = ensure_web_application(graph, api["appId"], frontend_redirect_uri)
     runtime = ensure_identifier_uri(graph, ensure_application(graph, runtime_shape()))
     ensure_api_preauthorization(graph, api, web["appId"])
     api_sp = ensure_service_principal(graph, api["appId"])

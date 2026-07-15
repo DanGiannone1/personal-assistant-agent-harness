@@ -16,6 +16,60 @@ var apiIdentityName = 'csa-workbench-api-identity'
 var runtimeIdentityName = 'csa-workbench-runtime-identity'
 var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 var blobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+var virtualNetworkName = 'csa-workbench-vnet'
+var acaInfrastructureSubnetName = 'aca-infrastructure'
+var privateEndpointSubnetName = 'private-endpoints'
+var cosmosPrivateEndpointName = 'csa-workbench-cosmos-pe'
+var storagePrivateEndpointName = 'csa-workbench-storage-pe'
+var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
+// This is the Azure public-cloud Private Link suffix required by the approved Storage endpoint.
+#disable-next-line no-hardcoded-env-urls
+var storagePrivateDnsZoneName = 'privatelink.blob.core.windows.net'
+
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+  name: virtualNetworkName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        '10.42.0.0/24'
+      ]
+    }
+    subnets: [
+      {
+        name: acaInfrastructureSubnetName
+        properties: {
+          addressPrefix: '10.42.0.0/27'
+          delegations: [
+            {
+              name: 'aca-environment'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: privateEndpointSubnetName
+        properties: {
+          addressPrefix: '10.42.0.32/27'
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+    ]
+  }
+}
+
+resource acaInfrastructureSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: virtualNetwork
+  name: acaInfrastructureSubnetName
+}
+
+resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: virtualNetwork
+  name: privateEndpointSubnetName
+}
 
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
@@ -25,6 +79,15 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
       destination: null
       logAnalyticsConfiguration: null
     }
+    vnetConfiguration: {
+      infrastructureSubnetId: acaInfrastructureSubnet.id
+    }
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
   }
 }
 
@@ -64,7 +127,7 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
     consistencyPolicy: {
       defaultConsistencyLevel: 'Session'
     }
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     disableLocalAuth: true
   }
 }
@@ -103,7 +166,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     name: 'Standard_LRS'
   }
   properties: {
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowSharedKeyAccess: false
@@ -121,6 +184,112 @@ resource blobContainer 'Microsoft.Storage/storageAccounts/blobServices/container
   name: 'engagement-artifacts'
   properties: {
     publicAccess: 'None'
+  }
+}
+
+resource cosmosPrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: cosmosPrivateDnsZoneName
+  location: 'global'
+}
+
+resource storagePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: storagePrivateDnsZoneName
+  location: 'global'
+}
+
+resource cosmosPrivateDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: cosmosPrivateDnsZone
+  name: 'csa-workbench-vnet-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+    registrationEnabled: false
+  }
+}
+
+resource storagePrivateDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: storagePrivateDnsZone
+  name: 'csa-workbench-vnet-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+    registrationEnabled: false
+  }
+}
+
+resource cosmosPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: cosmosPrivateEndpointName
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'cosmos-sql'
+        properties: {
+          privateLinkServiceId: cosmos.id
+          groupIds: [
+            'Sql'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource storagePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: storagePrivateEndpointName
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'storage-blob'
+        properties: {
+          privateLinkServiceId: storage.id
+          groupIds: [
+            'blob'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource cosmosPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: cosmosPrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'cosmos'
+        properties: {
+          privateDnsZoneId: cosmosPrivateDnsZone.id
+        }
+      }
+    ]
+  }
+}
+
+resource storagePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: storagePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'blob'
+        properties: {
+          privateDnsZoneId: storagePrivateDnsZone.id
+        }
+      }
+    ]
   }
 }
 
