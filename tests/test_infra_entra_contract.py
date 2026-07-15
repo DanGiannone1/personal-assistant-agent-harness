@@ -38,8 +38,9 @@ class FakeGraph:
             app_id = unquote(path).split("appId eq '", 1)[1].split("'", 1)[0]
             return {"value": [deepcopy(sp) for sp in self.sps if sp["appId"] == app_id]}
         if "/appRoleAssignedTo?" in path:
-            principal = unquote(path).split("principalId eq ", 1)[1]
-            return {"value": [deepcopy(item) for item in self.assignments if item["principalId"] == principal]}
+            raise AssertionError("runtime app-role relationship queries must not use Graph filters")
+        if "/appRoleAssignedTo" in path:
+            return {"value": deepcopy(self.assignments)}
         raise AssertionError(path)
 
     def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -91,6 +92,43 @@ def test_entra_helper_is_idempotent_without_duplicate_graph_posts() -> None:
     second = entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
     assert second == first
     assert len(graph.posts) == post_count
+    assert any(path.endswith("/appRoleAssignedTo") for path, _ in graph.posts)
+
+
+def test_entra_helper_accepts_reordered_preauthorization_entries_without_patching() -> None:
+    graph = FakeGraph()
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    api = next(app for app in graph.apps if app["displayName"] == entra.API_NAME)
+    api["api"]["preAuthorizedApplications"].reverse()
+    patch_count = len(graph.patches)
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    assert len(graph.patches) == patch_count
+    api["api"]["preAuthorizedApplications"][0]["delegatedPermissionIds"] = ["wrong-permission"]
+    with pytest.raises(entra.GraphError, match="conflicting pre-authorized"):
+        entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+
+
+@pytest.mark.parametrize("malformed", [None, {}, ""])
+def test_entra_helper_rejects_falsey_malformed_preauthorization_without_patching(malformed: object) -> None:
+    graph = FakeGraph()
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    api = next(app for app in graph.apps if app["displayName"] == entra.API_NAME)
+    api["api"]["preAuthorizedApplications"] = malformed
+    patch_count = len(graph.patches)
+    with pytest.raises(entra.GraphError, match="malformed pre-authorized"):
+        entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    assert len(graph.patches) == patch_count
+
+
+def test_entra_helper_rejects_unexpected_preauthorization_keys_without_patching() -> None:
+    graph = FakeGraph()
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    api = next(app for app in graph.apps if app["displayName"] == entra.API_NAME)
+    api["api"]["preAuthorizedApplications"][0]["unexpected"] = "value"
+    patch_count = len(graph.patches)
+    with pytest.raises(entra.GraphError, match="malformed pre-authorized"):
+        entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    assert len(graph.patches) == patch_count
 
 
 def test_entra_helper_fails_closed_for_duplicate_or_conflicting_dedicated_apps() -> None:

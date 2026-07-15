@@ -166,18 +166,35 @@ def ensure_api_preauthorization(graph: GraphClient, api: dict[str, Any], web_cli
         {"appId": web_client_id, "delegatedPermissionIds": [API_SCOPE_ID]},
         {"appId": AZURE_CLI_CLIENT_ID, "delegatedPermissionIds": [API_SCOPE_ID]},
     ]
-    actual = api.get("api", {}).get("preAuthorizedApplications", [])
-    if actual and actual != expected:
-        raise GraphError("CSA Workbench API has conflicting pre-authorized applications")
-    if actual != expected:
+    api_configuration = api.get("api")
+    if not isinstance(api_configuration, dict):
+        raise GraphError("CSA Workbench API has malformed API configuration")
+    if "preAuthorizedApplications" not in api_configuration or api_configuration["preAuthorizedApplications"] == []:
         graph.patch(f"applications/{api['id']}", {"api": {**api_shape()["api"], "preAuthorizedApplications": expected}})
+        return
+    actual = api_configuration["preAuthorizedApplications"]
+    if _preauthorization_entries(actual) != _preauthorization_entries(expected):
+        raise GraphError("CSA Workbench API has conflicting pre-authorized applications")
+
+
+def _preauthorization_entries(entries: Any) -> frozenset[tuple[str, tuple[str, ...]]]:
+    if not isinstance(entries, list):
+        raise GraphError("CSA Workbench API has malformed pre-authorized applications")
+    normalized: list[tuple[str, tuple[str, ...]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"appId", "delegatedPermissionIds"} or not isinstance(entry.get("appId"), str) or not isinstance(entry.get("delegatedPermissionIds"), list) or not all(isinstance(permission, str) for permission in entry["delegatedPermissionIds"]):
+            raise GraphError("CSA Workbench API has malformed pre-authorized applications")
+        normalized.append((entry["appId"], tuple(sorted(entry["delegatedPermissionIds"]))))
+    if len(set(normalized)) != len(normalized):
+        raise GraphError("CSA Workbench API has duplicate pre-authorized applications")
+    return frozenset(normalized)
 
 
 def ensure_runtime_assignment(graph: GraphClient, runtime_sp_id: str, api_uami_principal_id: str) -> None:
-    path = f"servicePrincipals/{runtime_sp_id}/appRoleAssignedTo?$filter=" + quote(
-        f"principalId eq {api_uami_principal_id}", safe="?$=&"
-    )
-    assignments = graph.get(path).get("value", [])
+    assignments = [
+        assignment for assignment in graph.get(f"servicePrincipals/{runtime_sp_id}/appRoleAssignedTo").get("value", [])
+        if assignment.get("principalId") == api_uami_principal_id
+    ]
     if len(assignments) > 1:
         raise GraphError("duplicate runtime application-role assignments for API managed identity")
     if assignments:
