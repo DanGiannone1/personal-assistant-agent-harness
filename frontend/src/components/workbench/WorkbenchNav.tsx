@@ -14,7 +14,7 @@ import {
   Menu,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "@/lib/types";
 import { useAppAuth } from "@/components/AppAuthProvider";
 
@@ -25,11 +25,13 @@ export default function WorkbenchNav({
   viewRoute,
   onNavigate,
   assistantActive = false,
+  onDrawerOpenChange,
 }: {
   appState: AppState | null;
   viewRoute: string;
   onNavigate: (route: string) => void;
   assistantActive?: boolean;
+  onDrawerOpenChange?: (open: boolean) => void;
 }) {
   const router = useRouter();
   const { user, signOut } = useAppAuth();
@@ -37,10 +39,15 @@ export default function WorkbenchNav({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
 
-  const closeDrawer = () => {
-    setDrawerOpen(false);
+  const setDrawer = useCallback((open: boolean) => {
+    setDrawerOpen(open);
+    onDrawerOpenChange?.(open);
+  }, [onDrawerOpenChange]);
+
+  const closeDrawer = useCallback(() => {
+    setDrawer(false);
     requestAnimationFrame(() => triggerRef.current?.focus());
-  };
+  }, [setDrawer]);
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -79,7 +86,18 @@ export default function WorkbenchNav({
       cancelAnimationFrame(visibilityFrame);
       if (focusFrame !== undefined) cancelAnimationFrame(focusFrame);
     };
-  }, [drawerOpen]);
+  }, [closeDrawer, drawerOpen]);
+
+  useEffect(() => () => onDrawerOpenChange?.(false), [onDrawerOpenChange]);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1199px)");
+    const onChange = (event: MediaQueryListEvent) => {
+      if (!event.matches && drawerOpen) setDrawer(false);
+    };
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [drawerOpen, setDrawer]);
 
   const navItem = (route: string, label: string, Icon: typeof Home) => {
     const active =
@@ -142,6 +160,7 @@ export default function WorkbenchNav({
           if (drawerOpen) closeDrawer();
         }}
         className={`tw-nav-item ${assistantActive ? "tw-nav-item-active" : ""}`}
+        aria-current={assistantActive ? "page" : undefined}
       >
         <Sparkles size={16} strokeWidth={2.25} />
         <span>Assistant</span>
@@ -188,7 +207,7 @@ export default function WorkbenchNav({
         aria-label="Open navigation"
         aria-controls="workbench-nav"
         aria-expanded={drawerOpen}
-        onClick={() => setDrawerOpen(true)}
+        onClick={() => setDrawer(true)}
       >
         <Menu size={20} />
       </button>

@@ -35,6 +35,7 @@ interface WorkbenchAppProps {
   workspaceStale?: string | null;
   sessionError?: string | null;
   onRetrySession?: () => Promise<void>;
+  onDrawerOpenChange?: (open: boolean) => void;
 }
 
 // A task is overdue iff its due date is past today and it isn't Done — computed
@@ -69,15 +70,13 @@ function OverdueBadge() {
 
 export default function WorkbenchApp({
   appState, loading, viewRoute, onNavigate, sessionId, uploadedFiles, generatedFiles, newRecordIds, agentWorking,
-  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh, quickLinks = [], workspaceStale, sessionError, onRetrySession,
+  onSaveToLibrary, onRemoveFromLibrary, onUpload, onRefresh, quickLinks = [], workspaceStale, sessionError, onRetrySession, onDrawerOpenChange,
 }: WorkbenchAppProps) {
   return (
     <div className="tw-app" data-testid="workbench-app">
-      {/* Workspace-scoped a11y/polish overrides (kept here, not in the contended globals.css):
-          darker muted text for AA contrast, a visible keyboard focus ring, and minor layout fixes.
+      {/* Workspace-scoped a11y/polish overrides: visible keyboard focus ring and minor layout fixes.
           Scoped to .tw-app so the co-pilot dock keeps its own styling. */}
       <style>{`
-        .tw-app { --text-muted: #6b6e7b; --color-text-muted: #6b6e7b; }
         .tw-app .tw-stat-label { min-height: 0; }
         .tw-app .tw-breadcrumb { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tw-app :focus-visible { outline: 2px solid var(--brand-primary, #0073ea); outline-offset: 2px; border-radius: 6px; }
@@ -96,7 +95,7 @@ export default function WorkbenchApp({
       </div>
 
       <div className="tw-body">
-        <WorkbenchNav appState={appState} viewRoute={viewRoute} onNavigate={onNavigate} />
+        <WorkbenchNav appState={appState} viewRoute={viewRoute} onNavigate={onNavigate} onDrawerOpenChange={onDrawerOpenChange} />
 
         {/* Content */}
         <div className="tw-content" data-testid="workbench-content">
@@ -684,16 +683,27 @@ function useMut(onRefresh: () => Promise<void>) {
 function AddTaskBar({ sessionId, onRefresh, groups }: { sessionId: string | null; onRefresh: () => Promise<void>; groups: string[] }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
+  const [titleError, setTitleError] = useState("");
   const [priority, setPriority] = useState("Medium");
   const [group, setGroup] = useState("General");
   const [due, setDue] = useState("");
+  const titleRef = useRef<HTMLInputElement>(null);
   const { busy, err, run } = useMut(onRefresh);
   if (!open) return <button type="button" style={{ ...docActionBtn, marginTop: 4 }} data-testid="add-task-btn" onClick={() => setOpen(true)}><Plus size={13} /> Add task</button>;
-  const submit = () => { if (!sessionId || !title.trim()) return; run(async () => { await createTask(sessionId, { title: title.trim(), priority, group: group.trim() || "General", dueDate: due }); setTitle(""); setDue(""); setOpen(false); }); };
+  const submit = () => {
+    if (!title.trim()) {
+      setTitleError("Enter a task title.");
+      requestAnimationFrame(() => titleRef.current?.focus());
+      return;
+    }
+    if (!sessionId) return;
+    setTitleError("");
+    run(async () => { await createTask(sessionId, { title: title.trim(), priority, group: group.trim() || "General", dueDate: due }); setTitle(""); setDue(""); setOpen(false); });
+  };
   const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") setOpen(false); };
   return (
     <div style={formCard} data-testid="add-task-form" onKeyDown={onKey}>
-      <Field label="Title" grow><input autoFocus aria-label="Task title" placeholder="e.g. Draft the Q3 plan" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="task-title-input" onChange={(e) => setTitle(e.target.value)} /></Field>
+      <Field label="Title" grow><input ref={titleRef} autoFocus aria-label="Task title" aria-invalid={!!titleError} aria-describedby={titleError ? "task-title-error" : undefined} placeholder="e.g. Draft the Q3 plan" value={title} style={{ ...inputStyle, width: "100%", minWidth: 200 }} data-testid="task-title-input" onChange={(e) => { setTitle(e.target.value); if (titleError) setTitleError(""); }} /></Field>
       <Field label="Priority"><select aria-label="Priority" value={priority} style={selectStyle} data-testid="task-priority-select" onChange={(e) => setPriority(e.target.value)}>{["Low", "Medium", "High"].map((p) => <option key={p}>{p}</option>)}</select></Field>
       <Field label="Group">
         <input aria-label="Group" list="task-group-options" placeholder="General" value={group} style={{ ...inputStyle, width: 130 }} onChange={(e) => setGroup(e.target.value)} />
@@ -701,9 +711,10 @@ function AddTaskBar({ sessionId, onRefresh, groups }: { sessionId: string | null
       </Field>
       <Field label="Due date" grow><input type="date" aria-label="Due date" value={due} style={{ ...inputStyle, width: "100%" }} data-testid="task-due-input" onChange={(e) => setDue(e.target.value)} /></Field>
       <span style={{ display: "inline-flex", gap: 6 }}>
-        <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy || !title.trim()} data-testid="task-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
+        <button type="button" style={title.trim() && !busy ? primaryBtn : primaryBtnOff} disabled={busy} data-testid="task-save-btn" onClick={submit}>{busy ? "Saving…" : "Save"}</button>
         <button type="button" style={docActionBtn} onClick={() => setOpen(false)}>Cancel</button>
       </span>
+      {titleError && <div id="task-title-error" role="alert" style={{ flexBasis: "100%", marginTop: 2, fontSize: 12, color: "#a21f35" }}><AlertTriangle size={13} strokeWidth={2.5} /> {titleError}</div>}
       <FormErr msg={err} />
     </div>
   );

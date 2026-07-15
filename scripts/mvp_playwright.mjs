@@ -65,6 +65,47 @@ async function raw(page, path, method, body) {
 async function noHorizontalOverflow(page) {
   return page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.body.scrollWidth <= window.innerWidth);
 }
+async function capture(page, path) {
+  await page.evaluate(async () => {
+    await document.fonts?.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  await page.screenshot({ path, fullPage: true, animations: "disabled", caret: "hide" });
+}
+async function wideLayout(page) {
+  return page.evaluate(() => {
+    const box = (testid) => {
+      const rect = document.querySelector(`[data-testid="${testid}"]`)?.getBoundingClientRect();
+      return rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    };
+    const host = document.querySelector('[data-testid="host-shell"]');
+    return host && {
+      scrollLeft: host.scrollLeft,
+      scrollWidth: host.scrollWidth,
+      clientWidth: host.clientWidth,
+      workbench: box("workbench-app"),
+      dock: box("copilot-dock"),
+    };
+  });
+}
+function stableWideLayout(current, baseline) {
+  const stableBox = (box, base) => !!box && !!base &&
+    Math.abs(box.x - base.x) <= 1 && Math.abs(box.y - base.y) <= 1 &&
+    Math.abs(box.width - base.width) <= 1 && Math.abs(box.height - base.height) <= 1;
+  return !!current && current.scrollLeft === 0 && current.scrollWidth <= current.clientWidth &&
+    stableBox(current.workbench, baseline.workbench) && stableBox(current.dock, baseline.dock);
+}
+async function signOutUnobstructed(page) {
+  return page.getByTestId("sign-out").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return target === element || element.contains(target);
+  });
+}
+function intersects(first, second) {
+  return !!first && !!second && first.x < second.x + second.width && first.x + first.width > second.x &&
+    first.y < second.y + second.height && first.y + first.height > second.y;
+}
 async function newPage(browser, viewport, user) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
@@ -90,10 +131,15 @@ try {
   const danIds = (danSeed.engagements ?? []).map((entry) => entry.id).sort();
   const avaIds = (avaSeed.engagements ?? []).map((entry) => entry.id).sort();
   check("MVP-P1-distinct-personal-portfolios", JSON.stringify(danIds) !== JSON.stringify(avaIds), `dan=${danIds.join(",")} ava=${avaIds.join(",")}`);
-  await dan.page.screenshot({ path: `${out}/wide-dan-portfolio.png`, fullPage: true });
+  await capture(dan.page, `${out}/wide-dan-portfolio.png`);
   check("MVP-P2-wide-no-horizontal-overflow", await noHorizontalOverflow(dan.page));
 
   await dan.page.getByTestId("add-engagement-btn").click();
+  await dan.page.getByTestId("engagement-save-btn").click();
+  const engagementNameError = dan.page.getByTestId("engagement-error");
+  await engagementNameError.waitFor({ state: "visible" });
+  const blankNameState = await state(dan.page);
+  check("MVP-P34-create-name-validation-accessible", await engagementNameError.isVisible() && await dan.page.getByTestId("engagement-name-input").evaluate((input) => input.getAttribute("aria-describedby") === "engagement-name-error" && document.activeElement === input) && (blankNameState.engagements ?? []).length === danIds.length);
   await dan.page.getByTestId("engagement-name-input").fill("MVP Browser Collaboration");
   await dan.page.getByTestId("engagement-customer-input").fill("Synthetic Evidence Co");
   await dan.page.getByTestId("engagement-save-btn").click();
@@ -102,13 +148,22 @@ try {
   check("MVP-P3-create-authoritative-owner", created.members.some((member) => member.userId === "dan" && member.role === "owner"), engagementId);
   check("MVP-P4-create-rendered", await eventually(() => dan.page.getByTestId("engagement-overview").count().then((count) => count === 1)));
 
+  const taskCountBeforeBlankSave = (await state(dan.page)).engagements.find((entry) => entry.id === engagementId)?.tasks.length;
+  await dan.page.getByTestId("engagement-tab-tasks").click();
+  await dan.page.getByTestId("engagement-add-task-btn").click();
+  await dan.page.getByTestId("engagement-task-save-btn").click();
+  const engagementTaskTitleError = dan.page.getByTestId("engagement-task-title-error");
+  await engagementTaskTitleError.waitFor({ state: "visible" });
+  const taskCountAfterBlankSave = (await state(dan.page)).engagements.find((entry) => entry.id === engagementId)?.tasks.length;
+  check("MVP-P35-engagement-task-title-validation-accessible", await engagementTaskTitleError.isVisible() && await dan.page.getByTestId("engagement-task-title-input").evaluate((input) => input.getAttribute("aria-describedby") === "engagement-task-title-error" && document.activeElement === input) && taskCountAfterBlankSave === taskCountBeforeBlankSave);
+
   await dan.page.getByTestId("engagement-tab-settings").click();
   await dan.page.getByTestId("member-user-select").selectOption("ava");
   await dan.page.getByTestId("member-role-select").selectOption("editor");
   await dan.page.getByTestId("member-add-btn").click();
   await eventually(async () => (await state(dan.page)).engagements.find((entry) => entry.id === engagementId)?.members.some((member) => member.userId === "ava" && member.role === "editor"));
   check("MVP-P5-owner-shares-editor", true);
-  await dan.page.screenshot({ path: `${out}/wide-owner-shared-engagement.png`, fullPage: true });
+  await capture(dan.page, `${out}/wide-owner-shared-engagement.png`);
 
   // Ava was mounted before the share. Reload to exercise a real state/session
   // refetch rather than treating an active navigation click as one.
@@ -139,10 +194,14 @@ try {
   await sam.page.getByTestId("nav-toggle").click();
   await sam.page.getByTestId("nav-drawer").waitFor({ state: "visible" });
   await sam.page.getByTestId("nav--engagements").click();
+  await sam.page.locator("#workbench-nav").waitFor({ state: "hidden" });
   await sam.page.getByTestId("engagement-row-eng-website-launch").click();
+  await sam.page.getByRole("heading", { name: "Website Launch", exact: true }).waitFor({ state: "visible" });
+  await sam.page.getByTestId("engagement-overview").waitFor({ state: "visible" });
+  await sam.page.getByTestId("viewer-note").waitFor({ state: "visible" });
   check("MVP-P13-viewer-has-no-editor-affordance", await sam.page.getByTestId("engagement-detail-editor").count() === 0);
-  check("MVP-P14-viewer-note-visible", await sam.page.getByTestId("viewer-note").count() === 1);
-  await sam.page.screenshot({ path: `${out}/compact-sam-viewer.png`, fullPage: true });
+  check("MVP-P14-viewer-note-visible", await sam.page.getByTestId("viewer-note").isVisible());
+  await capture(sam.page, `${out}/compact-sam-viewer.png`);
   check("MVP-P15-compact-no-horizontal-overflow", await noHorizontalOverflow(sam.page));
 
   // A manual validation path is visible and leaves the committed record unchanged.
@@ -163,9 +222,16 @@ try {
   });
   const turnMetaBefore = await dan.page.getByTestId("turn-meta").count();
   const agentBefore = await state(dan.page);
+  const layoutBefore = await wideLayout(dan.page);
+  check("MVP-P27-wide-layout-before-agent", !!layoutBefore && stableWideLayout(layoutBefore, layoutBefore));
   await dan.page.getByTestId("chat-input").fill(`Set Engagement ${engagementId} to Yellow with reason 'Agent structured evidence refresh'. Use the supported product tool.`);
   await dan.page.getByTestId("send-button").click();
-  await eventually(async () => (await dan.page.getByTestId("turn-meta").count()) > turnMetaBefore, 180_000);
+  const layoutsDuring = [await wideLayout(dan.page)];
+  await eventually(async () => {
+    layoutsDuring.push(await wideLayout(dan.page));
+    return (await dan.page.getByTestId("turn-meta").count()) > turnMetaBefore;
+  }, 180_000);
+  check("MVP-P28-wide-layout-during-agent", !!layoutBefore && layoutsDuring.length > 0 && layoutsDuring.every((layout) => stableWideLayout(layout, layoutBefore)));
   const events = await eventually(() => {
     for (const body of sseBodies) {
       const candidate = parseSse(body);
@@ -186,19 +252,32 @@ try {
   report.agentMutationOracle = agentOracle;
   check("MVP-P18-agent-e4-oracle", agentOracle.pass, JSON.stringify(agentOracle.checks));
   check("MVP-P20-agent-ui-refreshed", await dan.page.getByTestId("engagement-status-badge").innerText().then((value) => value.trim().toLowerCase() === "yellow"));
-  await dan.page.screenshot({ path: `${out}/wide-agent-updated-engagement.png`, fullPage: true });
+  const layoutAfter = await wideLayout(dan.page);
+  check("MVP-P29-wide-layout-after-agent", !!layoutBefore && stableWideLayout(layoutAfter, layoutBefore));
+  check("MVP-P30-wide-no-horizontal-overflow-after-agent", await noHorizontalOverflow(dan.page));
+  await capture(dan.page, `${out}/wide-agent-updated-engagement.png`);
 
   const narrow = await newPage(browser, { width: 390, height: 844 }, "dan");
   await narrow.page.getByTestId("nav-toggle").click();
   check("MVP-P21-narrow-drawer-opens", await narrow.page.getByTestId("nav-drawer").count() === 1);
   check("MVP-P22-narrow-drawer-focuses", await eventually(() => narrow.page.evaluate(() => document.activeElement?.closest("#workbench-nav") !== null)));
-  await narrow.page.screenshot({ path: `${out}/narrow-dan-drawer-open.png`, fullPage: true });
+  check("MVP-P31-narrow-drawer-hides-launcher", await eventually(() => narrow.page.getByTestId("dock-launcher").count().then((count) => count === 0)));
+  check("MVP-P32-narrow-drawer-sign-out-unobstructed", await signOutUnobstructed(narrow.page));
+  await capture(narrow.page, `${out}/narrow-dan-drawer-open.png`);
   await narrow.page.keyboard.press("Escape");
   check("MVP-P23-narrow-escape-restores-focus", await eventually(() => narrow.page.getByTestId("nav-toggle").evaluate((element) => document.activeElement === element)));
   check("MVP-P24-narrow-no-horizontal-overflow", await noHorizontalOverflow(narrow.page));
   const critical = await narrow.page.getByTestId("nav-toggle").boundingBox();
   check("MVP-P25-narrow-critical-control-not-clipped", !!critical && critical.x >= 0 && critical.y >= 0 && critical.x + critical.width <= 390 && critical.y + critical.height <= 844);
-  await narrow.page.screenshot({ path: `${out}/narrow-dan-workspace.png`, fullPage: true });
+  const narrowContent = narrow.page.getByTestId("workbench-content");
+  await narrowContent.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+  await eventually(() => narrowContent.evaluate((element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 1));
+  const lastEngagement = await narrow.page.locator("[data-testid^='engagement-row-']").last().boundingBox();
+  const launcher = await narrow.page.getByTestId("dock-launcher").boundingBox();
+  check("MVP-P33-narrow-final-engagement-clears-launcher", !!lastEngagement && !!launcher && !intersects(lastEngagement, launcher));
+  await narrowContent.evaluate((element) => element.scrollTo({ top: 0 }));
+  await eventually(() => narrowContent.evaluate((element) => element.scrollTop === 0));
+  await capture(narrow.page, `${out}/narrow-dan-workspace.png`);
 
   report.pageErrors = { dan: dan.errors, ava: ava.errors, sam: sam.errors, narrow: narrow.errors };
   check("MVP-P26-no-page-errors", Object.values(report.pageErrors).every((errors) => errors.length === 0), JSON.stringify(report.pageErrors));

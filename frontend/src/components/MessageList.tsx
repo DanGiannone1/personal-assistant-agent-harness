@@ -41,7 +41,6 @@ function SuggestionIcon({ icon }: { icon: string }) {
 }
 
 export default function MessageList({ messages, onSuggestion, quickNav, onQuickNav, attention }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
   const rafRef = useRef<number>(0);
@@ -59,7 +58,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
     if (shouldAutoScroll.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: "smooth" });
         setShowJumpToLatest(false);
       });
     }
@@ -69,7 +68,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 overflow-y-auto"
+      className="flex-1 overflow-x-hidden overflow-y-auto"
       role="log"
       aria-label="Chat messages"
       aria-live="polite"
@@ -158,7 +157,6 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
           </div>
         )}
 
-        <div ref={bottomRef} />
       </div>
 
       {showJumpToLatest && (
@@ -167,7 +165,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
           data-testid="jump-latest-button"
           onClick={() => {
             shouldAutoScroll.current = true;
-            bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+            containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: "smooth" });
             setShowJumpToLatest(false);
           }}
           className="interactive-control animate-fade-in fixed bottom-28 left-1/2 z-20 -translate-x-1/2 flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-2/95 px-3 py-2 text-xs text-text-primary shadow-[0_10px_30px_rgba(0,0,0,.12)] backdrop-blur md:bottom-32 md:left-auto md:right-8 md:translate-x-0"

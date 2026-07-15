@@ -23,6 +23,7 @@ export default function HostApp() {
   } = useSession();
   const [wideDockOpen, setWideDockOpen] = useState(true);
   const [compactDockOpen, setCompactDockOpen] = useState(false);
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const launcherRef = useRef<HTMLButtonElement>(null);
   const compactSheetRef = useRef<HTMLDivElement>(null);
 
@@ -69,11 +70,13 @@ export default function HostApp() {
   const agentWorking = state.isStreaming || isChatUploading;
 
   return (
-    <div className="relative flex h-screen w-full bg-app p-3 gap-3 text-text-primary font-sans overflow-hidden">
-      <div className="ambient-orb-1 animate-blob" />
-      <div className="ambient-orb-2 animate-blob" />
+    <div className="relative flex h-screen w-full bg-app p-3 gap-3 text-text-primary font-sans overflow-clip" data-testid="host-shell">
+      <div className="pointer-events-none absolute inset-0 overflow-clip" aria-hidden="true">
+        <div className="ambient-orb-1 animate-blob" />
+        <div className="ambient-orb-2 animate-blob" />
+      </div>
 
-      <div className="relative z-10 flex h-full w-full gap-3">
+      <div className="relative z-10 flex h-full w-full gap-3" data-testid="host-layout">
         <div className="flex-1 min-w-0 h-full">
           <WorkbenchApp
             appState={state.appState}
@@ -93,6 +96,7 @@ export default function HostApp() {
             workspaceStale={state.workspaceStale}
             sessionError={state.sessionError}
             onRetrySession={startSession}
+            onDrawerOpenChange={setNavDrawerOpen}
           />
         </div>
 
@@ -129,7 +133,7 @@ export default function HostApp() {
         </>
       )}
 
-      {!dockOpen && (
+      {!dockOpen && !navDrawerOpen && (
         <button
           type="button"
           data-testid="dock-launcher"

@@ -130,11 +130,13 @@ export function EngagementsList({
   const [name, setName] = useState("");
   const [customer, setCustomer] = useState("");
   const [description, setDescription] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
   const { busy, error, run, setError } = useBusy(onRefresh);
 
   const create = async () => {
     if (!name.trim()) {
       setError("Enter an engagement name.");
+      requestAnimationFrame(() => nameRef.current?.focus());
       return;
     }
 
@@ -210,12 +212,15 @@ export function EngagementsList({
           <label>
             Engagement name
             <input
+              ref={nameRef}
+              id="engagement-name-input"
               autoFocus
               className="tw-input"
               value={name}
               data-testid="engagement-name-input"
               onChange={(event) => setName(event.target.value)}
               aria-invalid={!!error && !name.trim()}
+              aria-describedby={error && !name.trim() ? "engagement-name-error" : undefined}
             />
           </label>
           <label>
@@ -256,7 +261,7 @@ export function EngagementsList({
         </div>
       )}
       {error && (
-        <p className="tw-error" data-testid="engagement-error" role="alert">
+        <p id="engagement-name-error" className="tw-error" data-testid="engagement-error" role="alert">
           {error}
         </p>
       )}
@@ -541,13 +546,12 @@ function EngagementHeader({
           its delivery record, team, tasks, conventions, or artifacts.
         </p>
       )}
-      <div className="tw-tabs" data-testid="engagement-tabs">
+      <nav className="tw-tabs" data-testid="engagement-tabs" aria-label="Engagement sections">
         {tabs.map(([tab, label]) => (
           <button
             key={tab}
             type="button"
-            role="tab"
-            aria-selected={sub === tab}
+            aria-current={sub === tab ? "page" : undefined}
             className={`tw-tab ${sub === tab ? "tw-tab-active" : ""}`}
             data-testid={`engagement-tab-${tab || "overview"}`}
             onClick={() => onNavigate(tab ? `${base}/${tab}` : base)}
@@ -555,7 +559,7 @@ function EngagementHeader({
             {label}
           </button>
         ))}
-      </div>
+      </nav>
     </>
   );
 }
@@ -792,14 +796,21 @@ function EngagementTasks({
 }) {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
+  const [titleError, setTitleError] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const { busy, error, run, setError } = useBusy(onRefresh);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const { busy, error, run } = useBusy(onRefresh);
   const create = async () => {
     if (!title.trim()) {
-      setError("Enter a task title.");
+      setTitleError("Enter a task title.");
+      requestAnimationFrame(() => titleRef.current?.focus());
       return;
     }
-    await createEngagementTask(engagement.id, { title: title.trim(), dueDate });
+    setTitleError("");
+    const saved = await run(() =>
+      createEngagementTask(engagement.id, { title: title.trim(), dueDate }),
+    );
+    if (!saved) return;
     setAdding(false);
     setTitle("");
     setDueDate("");
@@ -824,11 +835,17 @@ function EngagementTasks({
           <label>
             Task title
             <input
+              ref={titleRef}
               autoFocus
               className="tw-input"
               value={title}
               data-testid="engagement-task-title-input"
-              onChange={(event) => setTitle(event.target.value)}
+              aria-invalid={!!titleError}
+              aria-describedby={titleError ? "engagement-task-title-error" : undefined}
+              onChange={(event) => {
+                setTitle(event.target.value);
+                setTitleError("");
+              }}
             />
           </label>
           <label>
@@ -846,19 +863,27 @@ function EngagementTasks({
               className="tw-btn"
               data-testid="engagement-task-save-btn"
               disabled={busy}
-              onClick={() => void run(create)}
+              onClick={() => void create()}
             >
               Save
             </button>
             <button
               type="button"
               className="tw-btn-ghost"
-              onClick={() => setAdding(false)}
+              onClick={() => {
+                setAdding(false);
+                setTitleError("");
+              }}
             >
               Cancel
             </button>
           </div>
         </div>
+      )}
+      {titleError && (
+        <p id="engagement-task-title-error" className="tw-error" data-testid="engagement-task-title-error" role="alert">
+          {titleError}
+        </p>
       )}
       {error && (
         <p className="tw-error" role="alert">
