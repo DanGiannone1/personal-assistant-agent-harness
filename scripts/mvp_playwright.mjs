@@ -191,7 +191,7 @@ try {
   const narrow = await newPage(browser, { width: 390, height: 844 }, "dan");
   await narrow.page.getByTestId("nav-toggle").click();
   check("MVP-P21-narrow-drawer-opens", await narrow.page.getByTestId("nav-drawer").count() === 1);
-  check("MVP-P22-narrow-drawer-focuses", await narrow.page.evaluate(() => document.activeElement?.closest("#workbench-nav") !== null));
+  check("MVP-P22-narrow-drawer-focuses", await eventually(() => narrow.page.evaluate(() => document.activeElement?.closest("#workbench-nav") !== null)));
   await narrow.page.screenshot({ path: `${out}/narrow-dan-drawer-open.png`, fullPage: true });
   await narrow.page.keyboard.press("Escape");
   check("MVP-P23-narrow-escape-restores-focus", await narrow.page.getByTestId("nav-toggle").evaluate((element) => document.activeElement === element));
