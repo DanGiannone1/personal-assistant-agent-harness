@@ -53,7 +53,6 @@ interface State {
   workspaceStale: string | null;
 }
 
-const SESSION_TIMEOUT_MS = 12_000;
 const UPLOAD_TIMEOUT_MS = 180_000;
 
 function normalizeFiles(raw: AppFile[]): AppFile[] {
@@ -376,7 +375,7 @@ export function useAgentSession() {
     // Returns true if restored, false ONLY when the session is genuinely gone (404 → null).
     // Transient errors (500/timeout/network) THROW so the caller surfaces an error and
     // does NOT delete + recreate — wiping a valid session on a blip would lose the workspace.
-    const meta = await withTimeout(getSession(storedId), SESSION_TIMEOUT_MS, "Session check timed out");
+    const meta = await getSession(storedId);
     if (!meta) return false;
     dispatch({ type: "RESTORE_SESSION", sessionId: meta.session_id, messages: getStoredMessages() });
     // On reload, restore the pane to wherever the session last was (no human-click
@@ -395,7 +394,7 @@ export function useAgentSession() {
       if (storedId && (await restoreStoredSession(storedId))) return;
       // No stored session, or it's genuinely gone (404) — start fresh.
       await clearAndDeleteSession(storedId);
-      const meta = await withTimeout(createSession(), SESSION_TIMEOUT_MS, "Session creation timed out");
+      const meta = await createSession();
       storeSessionId(meta.session_id);
       dispatch({ type: "SET_SESSION_ID", sessionId: meta.session_id });
       await Promise.all([refreshAppState(meta.session_id, true), refreshFiles(meta.session_id)]);

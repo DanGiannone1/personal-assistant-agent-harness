@@ -2,6 +2,7 @@
 // built in lib/auth.ts; the selected mode never merges those credentials.
 
 import { buildAuthHeaders, identityMode } from "./auth";
+import { STARTUP_REQUEST_TIMEOUT_MS } from "./startupRequestPolicy";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "pa_auth_token";
@@ -70,7 +71,7 @@ export async function fetchMe(): Promise<AppUser | null> {
   if (identityMode() !== "entra") return null;
   try {
     const headers = await withAppAuth();
-    const res = await fetch(`${API_BASE}/auth/me`, { headers, signal: AbortSignal.timeout(15_000) });
+    const res = await fetch(`${API_BASE}/auth/me`, { headers, signal: AbortSignal.timeout(STARTUP_REQUEST_TIMEOUT_MS) });
     if (!res.ok) return null;
     const user = (await res.json()) as AppUser;
     localStorage.setItem(USER_KEY, JSON.stringify(user));

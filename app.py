@@ -20,6 +20,7 @@ if str(_SC) not in sys.path:
     sys.path.insert(0, str(_SC))
 import appdb  # noqa: E402
 import library  # noqa: E402
+import navsvc  # noqa: E402
 from workbench_core import EngagementService, Outcome  # noqa: E402
 from workbench_core.appdb_repository import AppdbEngagementRepository  # noqa: E402
 
@@ -1194,14 +1195,13 @@ async def record_visit(req: VisitCreate, uid: str = Depends(current_user)) -> di
 @app.get("/quicklinks")
 async def quick_links(uid: str = Depends(current_user)) -> list[dict]:
     """rank_destinations(context) — the no-utterance consumer: top destinations now."""
-    import navsvc
     personal = await asyncio.to_thread(appdb.load_state, uid)
     engagements = await asyncio.to_thread(appdb.list_engagements_for, uid)
     ctx = await asyncio.to_thread(appdb.load_context, uid)
     ranked = await asyncio.to_thread(
         navsvc.rank_destinations, personal, engagements, ctx["visits"], None, None, 5
     )
-    return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked]
+    return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked[:5]]
 
 
 

@@ -1,0 +1,1 @@
+export const STARTUP_REQUEST_TIMEOUT_MS = 60_000;
