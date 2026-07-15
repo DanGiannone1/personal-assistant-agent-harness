@@ -229,3 +229,8 @@ def test_scheduler_is_disabled_until_explicitly_enabled(monkeypatch: pytest.Monk
     assert orchestrator._scheduler_enabled()
     monkeypatch.setenv("SCHEDULER_ENABLED", "1")
     assert not orchestrator._scheduler_enabled()
+
+
+def test_runtime_image_packages_the_shared_tool_schemas() -> None:
+    dockerfile = (ROOT / "session-container" / "Dockerfile").read_text()
+    assert "session-container/mvp_tool_schemas.py" in dockerfile
