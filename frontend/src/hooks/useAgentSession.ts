@@ -417,7 +417,10 @@ export function useAgentSession() {
     dispatch({ type: "SET_VIEW_ROUTE", route });
     // Every route change — manual click included — feeds the visit log (fire-and-forget).
     void recordVisit(route, "");
-  }, []);
+    // A manual destination may expose changes another member made since this tab's
+    // last read. Keep navigation immediate while reconciling the owned session.
+    if (sessionIdRef.current) void refreshAppState(sessionIdRef.current).catch(() => undefined);
+  }, [refreshAppState]);
 
   const handleAGUIEvent = useCallback((event: AGUIEvent) => {
     // Once the user hit Stop, ignore buffered events from the cancelled turn so they

@@ -100,7 +100,7 @@ try {
   const created = await eventually(async () => (await state(dan.page)).engagements.find((entry) => entry.name === "MVP Browser Collaboration"));
   const engagementId = created.id;
   check("MVP-P3-create-authoritative-owner", created.members.some((member) => member.userId === "dan" && member.role === "owner"), engagementId);
-  check("MVP-P4-create-rendered", await dan.page.getByTestId("engagement-overview").count() === 1);
+  check("MVP-P4-create-rendered", await eventually(() => dan.page.getByTestId("engagement-overview").count().then((count) => count === 1)));
 
   await dan.page.getByTestId("engagement-tab-settings").click();
   await dan.page.getByTestId("member-user-select").selectOption("ava");
