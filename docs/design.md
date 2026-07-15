@@ -178,9 +178,13 @@ establishes identity, permission, trusted context, or success from prose.
 
 ### Authenticated orchestrator
 
-FastAPI is the public application boundary. It authenticates Entra or demo sessions, binds every
-session to an actor, exposes manual application APIs, validates UI hints, owns the SSE proxy, and
-persists conversation/turn records. It does not run harness-specific logic.
+FastAPI is the public application boundary. Each running instance selects exactly one identity mode:
+`demo` for local/CI synthetic testing or `entra` for the shared release. It accepts only that mode's
+credential, binds every session to an actor, exposes manual application APIs, validates UI hints,
+owns the SSE proxy, and persists conversation/turn records. It does not run harness-specific logic.
+Demo/CI and shared-release deployments use separately configured Cosmos databases/containers; this
+environment boundary replaces an in-application data-partitioning framework for the MVP.
+The deployed identity boundary is **UNVERIFIED** pending the separate real-Entra smoke.
 
 ### Turn coordinator and agent runtime
 
@@ -238,8 +242,9 @@ authoritative refetch and truthful UI
   required role receives a forbidden outcome.
 - Viewers are strictly read-only. Editors manage delivery work; owners alone manage Engagement name
   and membership. The last owner cannot be removed or demoted.
-- Entra identities use validated tenant and object IDs. Demo identities live in a separate synthetic
-  realm and can access only synthetic data. Production service access uses managed identity.
+- An Entra instance requires validated tenant and object IDs. A demo instance uses only secret-backed
+  synthetic credentials. The runtime never selects between competing credential paths. Production
+  service access uses managed identity.
 - Context may narrow or rank an authorized choice; it can never grant access or substitute for a
   live fact read.
 

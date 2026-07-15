@@ -12,6 +12,7 @@ services:
       - AZURE_ENDPOINT
       - AZURE_DEPLOYMENT
       - AZURE_OPENAI_TOKEN
+      - IDENTITY_MODE
       - WORKSPACE=/workspace
     volumes:
       - ./workspace:/workspace
@@ -29,6 +30,11 @@ services:
     environment:
       - POOL_MANAGEMENT_ENDPOINT=http://session-container:8080
       - FRONTEND_URL
+      - IDENTITY_MODE
+      - DEMO_PASSWORD
+      - ENTRA_TENANT_ID
+      - ENTRA_API_CLIENT_ID
+      - ENTRA_ALLOWED_AUDIENCES
     depends_on:
       session-container:
         condition: service_healthy
@@ -44,6 +50,7 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_IDENTITY_MODE: ${NEXT_PUBLIC_IDENTITY_MODE:-demo}
     ports:
       - "3000:3000"
     depends_on:

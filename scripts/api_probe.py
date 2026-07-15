@@ -11,6 +11,7 @@ against the Cosmos emulator. Usage:
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -31,10 +32,13 @@ def main() -> int:
     from fastapi.testclient import TestClient
 
     import app as app_module
+    password = os.environ.get("DEMO_PASSWORD", "")
+    if not password:
+        raise RuntimeError("DEMO_PASSWORD is required for the demo probe")
 
     with TestClient(app_module.app) as client:
         def login(user: str) -> dict:
-            res = client.post("/auth/login", json={"username": user, "password": "demo1234"})
+            res = client.post("/auth/login", json={"username": user, "password": password})
             assert res.status_code == 200, f"login {user} failed: {res.status_code}"
             return {"X-Auth-Token": res.json()["token"]}
 

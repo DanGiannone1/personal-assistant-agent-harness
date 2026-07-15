@@ -66,7 +66,10 @@ def cleanup(appdb) -> None:
 
 
 def main() -> int:
-    os.environ.pop("DEMO_LOGIN_ENABLED", None)
+    os.environ["IDENTITY_MODE"] = "demo"
+    password = os.environ.get("DEMO_PASSWORD", "")
+    if not password:
+        raise RuntimeError("DEMO_PASSWORD is required for the demo probe")
 
     from fastapi.testclient import TestClient
     from fastapi import HTTPException
@@ -77,25 +80,18 @@ def main() -> int:
 
     with TestClient(app_module.app) as client:
         # ── Demo path, flag on (default) ────────────────────────────────────
-        res = client.post("/auth/login", json={"username": "dan", "password": "demo1234"})
-        ok("demo login succeeds with flag unset", res.status_code == 200)
+        res = client.post("/auth/login", json={"username": "dan", "password": password})
+        ok("demo login succeeds", res.status_code == 200)
         token = res.json()["token"]
         res = client.get("/auth/me", headers={"X-Auth-Token": token})
         ok("demo token resolves via /auth/me", res.status_code == 200 and res.json()["id"] == "dan")
         ok("demo identity kind reported", res.json().get("identity") == "demo")
 
-        # ── Flag off: login blocked AND existing tokens stop resolving ──────
-        os.environ["DEMO_LOGIN_ENABLED"] = "false"
-        res = client.post("/auth/login", json={"username": "dan", "password": "demo1234"})
-        ok("login returns 403 when demo disabled", res.status_code == 403, str(res.status_code))
-        res = client.get("/auth/me", headers={"X-Auth-Token": token})
-        ok("previously issued demo token stops resolving", res.status_code == 401, str(res.status_code))
-        os.environ["DEMO_LOGIN_ENABLED"] = "true"
-        res = client.get("/auth/me", headers={"X-Auth-Token": token})
-        ok("token resolves again once re-enabled", res.status_code == 200)
-
-        # ── Entra path: provisioning at the validated-claims seam ────────────
+        # ── Entra path: validated claims require both tenant and object IDs ─
+        os.environ["IDENTITY_MODE"] = "entra"
+        os.environ["ENTRA_TENANT_ID"] = "00000000-0000-4000-8000-000000000001"
         claims = {
+            "tid": os.environ["ENTRA_TENANT_ID"],
             "oid": FAKE_OID,
             "preferred_username": "Probe.User@example.test",
             "name": "Probe User",
@@ -112,13 +108,13 @@ def main() -> int:
         all_matching = [u for u in appdb.list_users() if u["id"] == FAKE_UID]
         ok("second call reuses the record (no duplicate)", uid2 == FAKE_UID and len(all_matching) == 1)
 
-        # ── Precedence: demo token wins only while demo login is enabled ─────
+        # ── Mixed credentials are rejected, never selected by precedence ────
         both = make_request(headers={"X-Auth-Token": token}, claims=claims)
-        ok("demo token wins when both identities present", auth_users.current_user(both) == "dan")
-        os.environ["DEMO_LOGIN_ENABLED"] = "false"
-        both = make_request(headers={"X-Auth-Token": token}, claims=claims)
-        ok("entra wins once demo is disabled", auth_users.current_user(both) == FAKE_UID)
-        os.environ["DEMO_LOGIN_ENABLED"] = "true"
+        try:
+            auth_users.current_user(both)
+            ok("mixed credentials are rejected", False)
+        except HTTPException as exc:
+            ok("mixed credentials are rejected", exc.status_code == 401)
 
         # ── No credentials → 401 ─────────────────────────────────────────────
         try:

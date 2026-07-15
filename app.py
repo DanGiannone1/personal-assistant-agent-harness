@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 import auth_users
 from api_auth import APIAuthenticator, AuthConfig
 from auth_users import current_user
+from identity_config import IdentityConfig
 from session_manager import SessionManager
 from trace_logging import setup_trace_logging, trace_event
 
@@ -50,6 +51,7 @@ _engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.
 session_manager: SessionManager | None = None
 content_processor = None  # ContentProcessor | None
 api_authenticator: APIAuthenticator | None = None
+identity_config: IdentityConfig | None = None
 
 
 def _trace_dir() -> str | None:
@@ -157,7 +159,10 @@ def _seed_engagement_artifacts() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global session_manager, content_processor, api_authenticator
+    global session_manager, content_processor, api_authenticator, identity_config
+
+    identity_config = IdentityConfig.from_env()
+    identity_config.validate()
 
     # Content Processing (optional — ADLS + Content Understanding)
     from content_processing import ContentProcessor
@@ -178,30 +183,40 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager(content_processor)
     await session_manager.start()
 
-    # Seed the account registry + per-user personal spaces (idempotent).
+    # Only a demo instance creates deterministic actors, spaces, and fixtures.
     try:
-        await asyncio.to_thread(appdb.ensure_seeded)
-        logger.info("User accounts + personal spaces seeded")
+        if identity_config.is_demo:
+            await asyncio.to_thread(appdb.ensure_seeded, identity_config.demo_password)
+            logger.info("Demo actors, personal spaces, and engagements seeded")
+        else:
+            await asyncio.to_thread(appdb.validate_identity_registry, "entra", identity_config.tenant_id)
+            logger.info("Entra actor registry ready without demo fixtures")
+    except appdb.IdentityRegistryError:
+        logger.critical("Identity registry conflicts with the selected identity mode", exc_info=True)
+        raise
     except Exception:
-        logger.error("Could not seed users/spaces — sign-in will fail until Cosmos is reachable", exc_info=True)
+        logger.critical("Could not initialize the required actor registry", exc_info=True)
+        raise
 
     # Seed one real artifact per demo engagement (idempotent, best-effort) so the
     # Documents tab always has openable content. Bytes go through artifact_store,
     # so this works identically on the local dir and Azure Blob backends.
     try:
-        seeded_artifacts = await asyncio.to_thread(_seed_engagement_artifacts)
-        if seeded_artifacts:
-            logger.info("Seeded %d engagement artifact(s) via %s",
-                        seeded_artifacts, artifact_store.describe())
+        if identity_config.is_demo:
+            seeded_artifacts = await asyncio.to_thread(_seed_engagement_artifacts)
+            if seeded_artifacts:
+                logger.info("Seeded %d demo engagement artifact(s) via %s",
+                            seeded_artifacts, artifact_store.describe())
     except Exception:
         logger.warning("Could not seed engagement artifacts", exc_info=True)
 
     # Ensure the seeded Library reference docs are actually in the Search index, so the
     # library[] list can't point at content search can't find (idempotent, best-effort).
     try:
-        seeded = await asyncio.to_thread(library.ensure_seeded_indexed, str(_SC / "seed_docs"))
-        if seeded:
-            logger.info("Indexed %d seed Library doc(s)", seeded)
+        if identity_config.is_demo:
+            seeded = await asyncio.to_thread(library.ensure_seeded_indexed, str(_SC / "seed_docs"))
+            if seeded:
+                logger.info("Indexed %d demo Library doc(s)", seeded)
     except Exception:
         logger.warning("Could not index seed Library docs (search may be unconfigured)", exc_info=True)
 
@@ -304,6 +319,8 @@ class LoginRequest(BaseModel):
 # ---------------------------------------------------------------------------
 @app.post("/auth/login")
 async def auth_login(req: LoginRequest) -> dict:
+    if identity_config is None or not identity_config.is_demo:
+        raise HTTPException(status_code=404, detail="Not found")
     result = await asyncio.to_thread(auth_users.login, req.username, req.password)
     trace_event("orchestrator", "auth.login", user=result["user"]["id"])
     return result

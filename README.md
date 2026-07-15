@@ -66,6 +66,8 @@ account also works where network policy permits).
 cp .env.example .env
 # Set AZURE_ENDPOINT, AZURE_DEPLOYMENT, COSMOS_ENDPOINT,
 # COSMOS_DATABASE, and COSMOS_CONTAINER. Set COSMOS_KEY only for the emulator.
+# Keep IDENTITY_MODE=demo for local development and set DEMO_PASSWORD to a
+# local/test secret. Do not put that password in source control.
 
 az login
 uv sync

@@ -1,8 +1,7 @@
-// App-level accounts (username/password, demo-grade) — distinct from lib/auth.ts,
-// which is the deploy-time Entra gate. This layer answers "which app user is this?".
-// Token travels in X-Auth-Token; Authorization stays reserved for Entra.
+// Demo actor sessions use X-Auth-Token. Entra actor requests use only the bearer
+// built in lib/auth.ts; the selected mode never merges those credentials.
 
-import { buildAuthHeaders } from "./auth";
+import { buildAuthHeaders, identityMode } from "./auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "pa_auth_token";
@@ -45,11 +44,15 @@ function clear(): void {
   localStorage.removeItem(USER_KEY);
 }
 
-/** Attach the app token to a Headers object (after any Entra header). */
+/** Attach exactly the credential for this browser's selected identity mode. */
 export async function withAppAuth(headersInit?: HeadersInit): Promise<Headers> {
+  const mode = identityMode();
+  if (!mode) throw new Error("Identity mode is not configured.");
   const headers = await buildAuthHeaders(headersInit);
-  const token = getAppToken();
-  if (token) headers.set("X-Auth-Token", token);
+  if (mode === "demo") {
+    const token = getAppToken();
+    if (token) headers.set("X-Auth-Token", token);
+  }
   return headers;
 }
 
@@ -64,6 +67,7 @@ export function notifyAuthExpired(): void {
  *  app token exists — the bearer alone identifies the user. Stores the user for
  *  per-user storage namespacing (session keys), same as the demo path. */
 export async function fetchMe(): Promise<AppUser | null> {
+  if (identityMode() !== "entra") return null;
   try {
     const headers = await withAppAuth();
     const res = await fetch(`${API_BASE}/auth/me`, { headers, signal: AbortSignal.timeout(15_000) });
@@ -77,7 +81,8 @@ export async function fetchMe(): Promise<AppUser | null> {
 }
 
 export async function login(username: string, password: string): Promise<AppUser> {
-  const headers = await buildAuthHeaders({ "Content-Type": "application/json" });
+  if (identityMode() !== "demo") throw new Error("Demo sign-in is unavailable.");
+  const headers = new Headers({ "Content-Type": "application/json" });
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
     headers,
@@ -92,12 +97,12 @@ export async function login(username: string, password: string): Promise<AppUser
 }
 
 export async function logout(): Promise<void> {
+  const mode = identityMode();
   const token = getAppToken();
   clear();
-  if (!token) return;
+  if (mode !== "demo" || !token) return;
   try {
-    const headers = await buildAuthHeaders();
-    headers.set("X-Auth-Token", token);
+    const headers = new Headers({ "X-Auth-Token": token });
     await fetch(`${API_BASE}/auth/logout`, { method: "POST", headers, signal: AbortSignal.timeout(5_000) });
   } catch {
     // Token is already cleared locally; server-side entry expires on its own.

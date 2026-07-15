@@ -26,7 +26,9 @@ async function fresh() {
 async function signIn(p, user) {
   await p.goto(APP, { waitUntil: "networkidle" });
   await p.locator('[data-testid="signin-username"]').fill(user);
-  await p.locator('[data-testid="signin-password"]').fill("demo1234");
+  const demoPassword = process.env.DEMO_PASSWORD;
+  if (!demoPassword) throw new Error("DEMO_PASSWORD is required for the demo browser probe");
+  await p.locator('[data-testid="signin-password"]').fill(demoPassword);
   await p.locator('[data-testid="signin-submit"]').click();
   await p.waitForSelector('[data-testid="workbench-app"]', { timeout: 20000 });
   await p.waitForTimeout(2500); // session init + first state fetch

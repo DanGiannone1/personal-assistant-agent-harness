@@ -5,14 +5,11 @@ import { KeyRound, LogIn } from "lucide-react";
 
 import { AppUser, fetchMe, getAppToken, getStoredUser, login, logout } from "@/lib/appAuth";
 import {
-  isBrowserAuthEnabled,
+  identityMode,
   signIn as entraSignIn,
   signOut as entraSignOut,
 } from "@/lib/auth";
-
-// Demo accounts stay available for automated tests unless explicitly disabled
-// at build time (mirrors the orchestrator's DEMO_LOGIN_ENABLED runtime flag).
-const demoLoginEnabled = (process.env.NEXT_PUBLIC_DEMO_LOGIN || "true").toLowerCase() !== "false";
+import { clearSessionId } from "@/lib/session";
 
 interface AppAuthValue {
   user: AppUser;
@@ -28,24 +25,19 @@ export function useAppAuth(): AppAuthValue {
   return ctx;
 }
 
-// Gate the whole app behind sign-in. Children (including the SessionProvider
-// that auto-creates agent sessions) render ONLY once signed in, so no
-// unauthenticated requests ever fire. Two paths resolve a user: the demo
-// token (X-Auth-Token) and, when Entra auth is enabled, the MSAL bearer.
+// The one application gate renders only the credential path selected at build
+// time. Children render only after an actor is resolved.
 export default function AppAuthProvider({ children }: Readonly<{ children: React.ReactNode }>) {
-  // The server snapshot deliberately remains false. A saved demo token is only
-  // read after hydration, so server and first client render agree.
   const hydrated = useSyncExternalStore(subscribeHydration, () => true, () => false);
   const [resolvedUser, setResolvedUser] = useState<AppUser | null>(null);
   const [entraResolved, setEntraResolved] = useState(false);
-  const demoUser = hydrated && getAppToken() ? getStoredUser() : null;
+  const mode = identityMode();
+  const demoUser = mode === "demo" && hydrated && getAppToken() ? getStoredUser() : null;
   const user = resolvedUser ?? demoUser;
-  const waitingForEntra = hydrated && isBrowserAuthEnabled() && !getAppToken() && !entraResolved;
+  const waitingForEntra = hydrated && mode === "entra" && !entraResolved;
 
   useEffect(() => {
-    if (hydrated && isBrowserAuthEnabled() && !getAppToken()) {
-      // Entra path: this also completes a pending MSAL redirect. If a signed-in
-      // account exists, /auth/me resolves (auto-provisioning on first sight).
+    if (hydrated && mode === "entra") {
       fetchMe()
         .then((me) => setResolvedUser(me))
         .finally(() => setEntraResolved(true));
@@ -53,34 +45,31 @@ export default function AppAuthProvider({ children }: Readonly<{ children: React
     const onExpired = () => setResolvedUser(null);
     window.addEventListener("app-auth-expired", onExpired);
     return () => window.removeEventListener("app-auth-expired", onExpired);
-  }, [hydrated]);
+  }, [hydrated, mode]);
 
   const signOut = useCallback(async () => {
-    if (user?.identity === "entra") {
-      await logout(); // clears local storage; server call is a no-op without a demo token
-      await entraSignOut(); // MSAL redirect tears the SPA down and returns signed out
+    clearSessionId();
+    if (mode === "entra") {
+      await logout();
+      await entraSignOut();
       return;
     }
     await logout();
-    // Full reload: tears down the agent session, per-user storage reads, and any
-    // in-flight streams in one deterministic step.
     window.location.reload();
-  }, [user]);
+  }, [mode]);
 
-  if (!hydrated || waitingForEntra) return null;
-  if (!user) return <SignIn onSignedIn={setResolvedUser} />;
+  if (!hydrated || waitingForEntra) return <Loading />;
+  if (!mode) return <ConfigurationError />;
+  if (!user) return <SignIn mode={mode} onSignedIn={setResolvedUser} />;
 
   return <AppAuthContext.Provider value={{ user, signOut }}>{children}</AppAuthContext.Provider>;
 }
 
-function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
-  const entraEnabled = isBrowserAuthEnabled();
+function SignIn({ mode, onSignedIn }: { mode: "demo" | "entra"; onSignedIn: (u: AppUser) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // With Entra enabled the demo form is a secondary, collapsed option.
-  const [showDemo, setShowDemo] = useState(!entraEnabled);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +98,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
     }
   };
 
-  const demoForm = (
+  const demoForm = mode === "demo" && (
     <>
       <label className="mt-8 block text-[11px] font-bold uppercase tracking-[0.14em] text-text-muted">
         Username
@@ -117,7 +106,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
           data-testid="signin-username"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          autoFocus={!entraEnabled}
+          autoFocus
           autoComplete="username"
           className="mt-2 w-full rounded-xl border border-border-subtle bg-surface-2 px-4 py-3 text-[15px] font-medium normal-case tracking-normal text-text-primary outline-none focus:border-brand-primary"
         />
@@ -143,10 +132,6 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
         <LogIn size={14} strokeWidth={2.5} className="mr-2" />
         {busy ? "Signing in…" : "Sign in"}
       </button>
-
-      <p className="mt-6 text-center text-xs text-text-muted">
-        Demo accounts: <code>dan</code> · <code>ava</code> · <code>sam</code> (password <code>demo1234</code>)
-      </p>
     </>
   );
 
@@ -166,7 +151,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
             Your workspace is personal — sign in to load it.
           </p>
 
-          {entraEnabled && (
+          {mode === "entra" && (
             <button
               type="button"
               data-testid="signin-microsoft"
@@ -179,18 +164,7 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
             </button>
           )}
 
-          {entraEnabled && demoLoginEnabled && !showDemo && (
-            <button
-              type="button"
-              data-testid="signin-show-demo"
-              onClick={() => setShowDemo(true)}
-              className="mt-4 w-full text-center text-xs text-text-muted underline-offset-2 hover:underline"
-            >
-              Use a demo account
-            </button>
-          )}
-
-          {(!entraEnabled || (demoLoginEnabled && showDemo)) && demoForm}
+          {demoForm}
 
           {error && (
             <p data-testid="signin-error" className="mt-4 rounded-xl border border-red-400/40 bg-red-400/10 px-4 py-3 text-sm">
@@ -198,6 +172,20 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: AppUser) => void }) {
             </p>
           )}
         </form>
+      </div>
+    </div>
+  );
+}
+
+function Loading() {
+  return <div className="min-h-screen bg-app" aria-label="Checking sign-in" />;
+}
+
+function ConfigurationError() {
+  return (
+    <div className="min-h-screen bg-app px-6 py-10 text-text-primary">
+      <div className="mx-auto flex min-h-[70vh] max-w-lg items-center justify-center text-center text-sm text-text-muted">
+        Identity mode is not configured.
       </div>
     </div>
   );

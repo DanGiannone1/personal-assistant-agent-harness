@@ -87,22 +87,35 @@ _session_users: dict[str, str] = {}
 
 
 def _get_user(request: Request) -> str:
-    """The user this request acts as (X-User-Id, forwarded by the orchestrator).
-    Falls back to the session's recorded user; fails loud when neither exists."""
+    """Return the write-once actor binding for this session.
+
+    The forwarding header is only an assertion from the orchestrator. Once a
+    session exists it must match the first bound actor exactly; it never replaces
+    that actor and a restarted runtime fails closed for an unbound workspace.
+    """
     raw = (request.headers.get("X-User-Id") or "").strip().lower()
     if raw:
         if not _USER_ID_RE.fullmatch(raw):
             raise HTTPException(status_code=400, detail="Invalid user identifier")
-        return raw
     sid = request.query_params.get("identifier") or ""
     known = _session_users.get(sid)
+    if known and raw and raw != known:
+        raise HTTPException(status_code=404, detail="Session not found")
     if known:
         return known
+    if _session_exists(sid):
+        # A runtime restart loses the in-memory binding. An old workspace must
+        # never become claimable by the next forwarded actor.
+        raise HTTPException(status_code=404, detail="Session not found")
+    if raw:
+        return raw
     raise HTTPException(status_code=400, detail="Missing user identifier")
 
 
 def _workspace_for_request(request: Request) -> str:
-    return _session_workspace(_get_identifier(request))
+    session_id = _get_identifier(request)
+    _get_user(request)
+    return _session_workspace(session_id)
 
 
 def _session_lock(session_id: str) -> asyncio.Lock:
@@ -135,7 +148,11 @@ async def _get_or_create_session(token: str | None, session_id: str, user_id: st
             user_id,
             session.raw_sdk_log_path,
         )
-    elif (token and session.token != token) or session.user_id != user_id:
+    elif session.user_id != user_id:
+        # A binding mismatch is never a renewal signal. Keep the original
+        # session intact and reveal neither its owner nor its existence.
+        raise HTTPException(status_code=404, detail="Session not found")
+    elif token and session.token != token:
         await _destroy_session_locked(session_id)
         session = AgentSession(workspace, token=token, session_id=session_id, user_id=user_id)
         await session.__aenter__()
@@ -188,10 +205,14 @@ class ChatRequest(BaseModel):
 @app.post("/session", status_code=201)
 async def create_session(request: Request) -> dict:
     session_id = _get_identifier(request)
-    user_id = _get_user(request)
+    raw_user_id = (request.headers.get("X-User-Id") or "").strip().lower()
+    if not _USER_ID_RE.fullmatch(raw_user_id):
+        raise HTTPException(status_code=400, detail="Invalid user identifier")
+    if _session_exists(session_id) or session_id in _session_users:
+        raise HTTPException(status_code=409, detail="Session already exists")
+    user_id = raw_user_id
     workspace = Path(_session_workspace(session_id))
     workspace.mkdir(parents=True, exist_ok=True)
-    appdb.ensure_seeded()
     _session_users[session_id] = user_id
     _ensure_documents_seeded(str(workspace))
     trace_event("session", "session.created", session_id=session_id, user=user_id, workspace=str(workspace))
@@ -218,6 +239,7 @@ async def app_state(request: Request) -> dict:
 async def get_session(request: Request) -> dict:
     session_id = _get_identifier(request)
     _require_existing_session(session_id)
+    _get_user(request)
     workspace = Path(_session_workspace(session_id))
     files = sorted(p.name for p in workspace.iterdir() if p.is_file()) if workspace.exists() else []
     return {
@@ -233,6 +255,7 @@ async def get_session(request: Request) -> dict:
 async def delete_session(request: Request) -> None:
     session_id = _get_identifier(request)
     _require_existing_session(session_id)
+    _get_user(request)
     await _reset_session_state(session_id)
     trace_event("session", "session.deleted", session_id=session_id)
 
@@ -242,6 +265,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     """Run a full agent turn, streaming SSE events as they happen."""
     session_id = _get_identifier(request)
     _require_existing_session(session_id)
+    # Verify actor ownership before taking the process-local turn lock. A rejected
+    # caller must never be able to leave the owner's session artificially busy.
+    user_id = _get_user(request)
     lock = _session_lock(session_id)
 
     # Reject immediately if another turn is already in progress.
@@ -252,10 +278,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     # the locked() check above and the generator starting to iterate.
     await lock.acquire()
 
-    # Token + acting user forwarded from the orchestrator via headers (never in the body).
+    # Token forwarded from the orchestrator via a header (never in the body).
     token = request.headers.get("X-Cogservices-Token") or None
-    user_id = _get_user(request)
-    _session_users[session_id] = user_id
 
     try:
         chat_timeout = int(os.getenv("CHAT_TIMEOUT_SECONDS", "300"))
@@ -476,6 +500,8 @@ async def reset(request: Request) -> dict:
     In local dev, the single shared container uses this to simulate isolation.
     """
     session_id = _get_identifier(request)
+    _require_existing_session(session_id)
+    _get_user(request)
     await _reset_session_state(session_id)
     Path(_session_workspace(session_id)).mkdir(parents=True, exist_ok=True)
     trace_event("session", "session.reset", session_id=session_id)

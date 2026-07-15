@@ -24,6 +24,8 @@ the code or this page.
 
 ```bash
 cp .env.example .env
+# Keep IDENTITY_MODE=demo locally and set DEMO_PASSWORD to a local/test secret.
+# Do not commit the secret or put it in browser-facing configuration.
 az login
 uv sync
 (cd session-container && uv sync)
@@ -31,10 +33,11 @@ uv sync
 uv run dev.py
 ```
 
-Set `AZURE_ENDPOINT`, `AZURE_DEPLOYMENT`, `COSMOS_ENDPOINT`, and the appropriate
-Cosmos settings in `.env` first. `az login` supplies the developer identity used by
-Azure OpenAI and any AAD-authenticated service. `dev.py` requires `.env`, points the orchestrator
-to the local runtime, clears `workspace/` and local traces, then starts:
+Set `AZURE_ENDPOINT`, `AZURE_DEPLOYMENT`, `COSMOS_ENDPOINT`, the appropriate Cosmos settings,
+and a local/test `DEMO_PASSWORD` in `.env` first. Leave `IDENTITY_MODE=demo` for this local launcher.
+`az login` supplies the developer identity used by Azure OpenAI and any AAD-authenticated service.
+`dev.py` requires `.env`, points the orchestrator to the local runtime, clears `workspace/` and local
+traces, then starts:
 
 | Service | Address |
 |---|---|

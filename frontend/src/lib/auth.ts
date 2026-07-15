@@ -7,7 +7,9 @@ import {
   type Configuration,
 } from "@azure/msal-browser";
 
-const authEnabled = (process.env.NEXT_PUBLIC_AUTH_ENABLED || "").toLowerCase() === "true";
+export type IdentityMode = "demo" | "entra";
+
+const configuredIdentityMode = (process.env.NEXT_PUBLIC_IDENTITY_MODE || "").toLowerCase();
 const tenantId = process.env.NEXT_PUBLIC_ENTRA_TENANT_ID || "";
 const clientId = process.env.NEXT_PUBLIC_ENTRA_CLIENT_ID || "";
 const apiClientId =
@@ -56,7 +58,7 @@ function getMsalConfig(): Configuration {
 }
 
 function ensureConfigured(): void {
-  if (!authEnabled) return;
+  if (configuredIdentityMode !== "entra") return;
   if (!tenantId || !clientId || authScopes.length === 0) {
     throw new Error(
       "Authentication is enabled but Entra frontend configuration is incomplete.",
@@ -65,7 +67,7 @@ function ensureConfigured(): void {
 }
 
 async function getMsalInstance(): Promise<PublicClientApplication | null> {
-  if (!authEnabled) return null;
+  if (configuredIdentityMode !== "entra") return null;
   ensureConfigured();
 
   if (!msalInstancePromise) {
@@ -112,7 +114,13 @@ async function getActiveAccount(): Promise<AccountInfo | null> {
 }
 
 export function isBrowserAuthEnabled(): boolean {
-  return authEnabled;
+  return configuredIdentityMode === "entra";
+}
+
+export function identityMode(): IdentityMode | null {
+  return configuredIdentityMode === "demo" || configuredIdentityMode === "entra"
+    ? configuredIdentityMode
+    : null;
 }
 
 export async function getSignedInUserLabel(): Promise<string | null> {
@@ -135,7 +143,7 @@ export async function signOut(): Promise<void> {
 }
 
 export async function getAccessToken(): Promise<string> {
-  if (!authEnabled) return "";
+  if (configuredIdentityMode !== "entra") return "";
 
   const instance = await getMsalInstance();
   if (!instance) return "";
@@ -166,7 +174,7 @@ export async function getAccessToken(): Promise<string> {
 
 export async function buildAuthHeaders(headersInit?: HeadersInit): Promise<Headers> {
   const headers = new Headers(headersInit);
-  if (!authEnabled) return headers;
+  if (configuredIdentityMode !== "entra") return headers;
 
   const accessToken = await getAccessToken();
   if (!accessToken) {

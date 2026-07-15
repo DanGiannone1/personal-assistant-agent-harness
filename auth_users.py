@@ -1,15 +1,4 @@
-"""App-level user authentication for the orchestrator (demo-grade by design).
-
-Seeded username/password accounts live in Cosmos (see appdb users doc). This module
-issues opaque bearer tokens held in memory: an orchestrator restart signs everyone out
-(mirroring the existing in-memory session set — the frontend already recovers by
-re-creating). No refresh, lockout, or MFA; the seam to a real identity provider is
-exactly this module.
-
-Distinct from `api_auth.py` (deploy-time caller gate: IP allow-list / Entra). That
-answers "may this caller reach the API at all"; this answers "which app user is it".
-Header: X-Auth-Token (Authorization stays reserved for the deploy-time Entra flow).
-"""
+"""Application actor resolution for the one selected identity mode."""
 
 from __future__ import annotations
 
@@ -26,6 +15,7 @@ _SC = Path(__file__).resolve().parent / "session-container"
 if str(_SC) not in sys.path:
     sys.path.insert(0, str(_SC))
 import appdb  # noqa: E402
+from identity_config import IdentityConfig
 
 _LOCK = threading.Lock()
 _TOKENS: dict[str, dict] = {}  # token -> {"userId": str, "issuedAt": float}
@@ -37,21 +27,18 @@ AUTH_HEADER = "X-Auth-Token"
 _TOKEN_TTL_SECONDS = 12 * 3600
 
 
-def demo_login_enabled() -> bool:
-    """Seeded demo accounts (R2): on by default so local stacks and the deployed
-    Playwright path work; flip DEMO_LOGIN_ENABLED=false to turn the path off
-    without a code change. Read per-call so probes and env updates take effect
-    immediately."""
-    return (os.getenv("DEMO_LOGIN_ENABLED") or "true").strip().lower() not in {"0", "false", "no", "off"}
+def _config() -> IdentityConfig:
+    return IdentityConfig.from_env()
 
 
 def login(username: str, password: str) -> dict:
     """Verify credentials → {token, user}. Raises 401 on failure (no reason leakage)."""
-    if not demo_login_enabled():
-        raise HTTPException(status_code=403, detail="Demo sign-in is disabled on this deployment")
+    config = _config()
+    if not config.is_demo or not config.demo_password:
+        raise HTTPException(status_code=401, detail="Unauthorized")
     user = appdb.verify_login(username, password)
     if user is None:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        raise HTTPException(status_code=401, detail="Unauthorized")
     token = secrets.token_urlsafe(32)
     with _LOCK:
         _TOKENS[token] = {"userId": user["id"], "issuedAt": time.time()}
@@ -78,17 +65,25 @@ def _resolve(token: str | None) -> str | None:
         return entry["userId"]
 
 
-def _entra_user(claims: dict) -> str:
+def _entra_user(claims: dict, config: IdentityConfig) -> str:
     """Map a VALIDATED Entra token (api_auth already checked signature, audience,
     tenant, issuer) to an app user, provisioning it on first sight."""
-    oid = (claims.get("oid") or "").strip().lower()
-    if not oid:
-        raise HTTPException(status_code=401, detail="Token carries no object id")
+    raw_oid = claims.get("oid")
+    raw_tid = claims.get("tid")
+    if not isinstance(raw_tid, str) or not isinstance(raw_oid, str):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    oid = raw_oid.strip().lower()
+    tid = raw_tid.strip().lower()
+    if not tid or not oid or tid != (config.tenant_id or "").lower():
+        raise HTTPException(status_code=401, detail="Unauthorized")
     uid = f"u-{oid}"
     if uid not in _ENTRA_SEEN:
         username = claims.get("preferred_username") or claims.get("upn") or claims.get("email") or uid
         display = claims.get("name") or username
-        appdb.ensure_entra_user(oid, username, display)
+        try:
+            appdb.ensure_entra_user(tid, oid, username, display)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="Unauthorized") from exc
         with _LOCK:
             _ENTRA_SEEN.add(uid)
     return uid
@@ -97,17 +92,19 @@ def _entra_user(claims: dict) -> str:
 def current_user(request: Request) -> str:
     """FastAPI dependency: the signed-in user id, or 401. Every /sessions* route uses it.
 
-    Two identities can arrive on one request (Entra bearer + demo X-Auth-Token,
-    because the frontend always merges both headers). The demo token wins while
-    demo login is enabled — that keeps Playwright runs deterministic on deployments
-    where Easy Auth or MSAL also injects a bearer. With demo login disabled, demo
-    tokens stop resolving entirely and only the Entra path remains.
+    A request may carry only the credential appropriate for the configured mode.
     """
-    if demo_login_enabled():
-        uid = _resolve(request.headers.get(AUTH_HEADER))
+    config = _config()
+    demo_token = request.headers.get(AUTH_HEADER)
+    claims = getattr(request.state, "auth_claims", None)
+    if demo_token and isinstance(claims, dict):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if config.is_demo:
+        if isinstance(claims, dict):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        uid = _resolve(demo_token)
         if uid is not None:
             return uid
-    claims = getattr(request.state, "auth_claims", None)
-    if isinstance(claims, dict):
-        return _entra_user(claims)
-    raise HTTPException(status_code=401, detail="Sign in required")
+    elif config.is_entra and isinstance(claims, dict) and not demo_token:
+        return _entra_user(claims, config)
+    raise HTTPException(status_code=401, detail="Unauthorized")
