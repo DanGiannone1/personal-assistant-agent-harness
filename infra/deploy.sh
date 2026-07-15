@@ -125,7 +125,7 @@ ENVIRONMENT_DOMAIN="$(az deployment sub show --name "$FOUNDATION_DEPLOYMENT_NAME
 [[ -n "$ENVIRONMENT_DOMAIN" ]] || fail "foundation deployment did not return the Container Apps default domain"
 FRONTEND_URL="https://${FRONTEND_APP_NAME}.${ENVIRONMENT_DOMAIN}"
 API_URL="https://${API_APP_NAME}.${ENVIRONMENT_DOMAIN}"
-RUNTIME_FQDN="${RUNTIME_APP_NAME}.${ENVIRONMENT_DOMAIN}"
+RUNTIME_FQDN="${RUNTIME_APP_NAME}.internal.${ENVIRONMENT_DOMAIN}"
 
 ENTRA_JSON="$(python3 infra/entra.py --tenant-id "$TENANT_ID" --frontend-redirect-uri "$FRONTEND_URL" --api-uami-principal-id "$(az identity show -g "$RESOURCE_GROUP" -n csa-workbench-api-identity --query principalId -o tsv)")"
 API_CLIENT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["api_client_id"])' <<<"$ENTRA_JSON")"
