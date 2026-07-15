@@ -36,6 +36,7 @@ import {
   updateEngagementTask,
   uploadEngagementArtifact,
 } from "@/lib/api";
+import { parseEngagementRoute } from "@/lib/engagementRoute";
 import { friendlyError } from "@/lib/utils";
 
 const statusLabel: Record<EngagementStatus, string> = {
@@ -359,7 +360,15 @@ export function EngagementScreen({
   onNavigate: (route: string) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const [, id, sub = "", recordId = ""] = viewRoute.split("/");
+  const route = parseEngagementRoute(viewRoute);
+  if (!route)
+    return (
+      <div className="tw-empty">
+        Engagement not found (or you are not a member).
+      </div>
+    );
+
+  const { id, sub, recordId } = route;
   const engagement = (appState.engagements ?? []).find(
     (candidate) => candidate.id === id,
   );
