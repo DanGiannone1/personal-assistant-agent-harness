@@ -211,6 +211,7 @@ __marimo__/
 test-results/
 playwright-report/
 evidence/mvp/local-synthetic/
+/.mvp-artifacts/
 
 # RFP agent workspace
 workspace/
