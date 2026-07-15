@@ -70,8 +70,15 @@ export default function WorkbenchNav({
       }
     };
     document.addEventListener("keydown", onKeyDown);
-    requestAnimationFrame(() => focusable()[0]?.focus());
-    return () => document.removeEventListener("keydown", onKeyDown);
+    let focusFrame: number | undefined;
+    const visibilityFrame = requestAnimationFrame(() => {
+      focusFrame = requestAnimationFrame(() => focusable()[0]?.focus());
+    });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      cancelAnimationFrame(visibilityFrame);
+      if (focusFrame !== undefined) cancelAnimationFrame(focusFrame);
+    };
   }, [drawerOpen]);
 
   const navItem = (route: string, label: string, Icon: typeof Home) => {
