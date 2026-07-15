@@ -95,6 +95,26 @@ def test_entra_helper_is_idempotent_without_duplicate_graph_posts() -> None:
     assert any(path.endswith("/appRoleAssignedTo") for path, _ in graph.posts)
 
 
+def test_entra_helper_tolerates_server_app_role_metadata_but_rejects_role_drift_or_extra_items() -> None:
+    graph = FakeGraph()
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    runtime = next(app for app in graph.apps if app["displayName"] == entra.RUNTIME_NAME)
+    runtime["appRoles"][0]["origin"] = "Application"
+    post_count, patch_count = len(graph.posts), len(graph.patches)
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    assert len(graph.posts) == post_count and len(graph.patches) == patch_count
+    runtime["appRoles"][0]["value"] = "wrong-role"
+    with pytest.raises(entra.GraphError, match="conflicting appRoles"):
+        entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+
+    graph = FakeGraph()
+    entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+    runtime = next(app for app in graph.apps if app["displayName"] == entra.RUNTIME_NAME)
+    runtime["appRoles"].append(deepcopy(runtime["appRoles"][0]))
+    with pytest.raises(entra.GraphError, match="conflicting appRoles"):
+        entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
+
+
 def test_entra_helper_accepts_reordered_preauthorization_entries_without_patching() -> None:
     graph = FakeGraph()
     entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")

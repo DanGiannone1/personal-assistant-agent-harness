@@ -130,6 +130,18 @@ def _assert_shape(actual: dict[str, Any], desired: dict[str, Any]) -> None:
             except GraphError as exc:
                 raise GraphError(f"{actual.get('displayName', 'application')} has conflicting {key}; refusing to mutate it") from exc
             continue
+        if isinstance(expected, list) and isinstance(observed, list):
+            if len(observed) != len(expected):
+                raise GraphError(f"{actual.get('displayName', 'application')} has conflicting {key}; refusing to mutate it")
+            for observed_item, expected_item in zip(observed, expected):
+                if isinstance(expected_item, dict) and isinstance(observed_item, dict):
+                    try:
+                        _assert_shape(observed_item, expected_item)
+                    except GraphError as exc:
+                        raise GraphError(f"{actual.get('displayName', 'application')} has conflicting {key}; refusing to mutate it") from exc
+                elif observed_item != expected_item:
+                    raise GraphError(f"{actual.get('displayName', 'application')} has conflicting {key}; refusing to mutate it")
+            continue
         if observed != expected:
             raise GraphError(f"{actual.get('displayName', 'application')} has conflicting {key}; refusing to mutate it")
 
