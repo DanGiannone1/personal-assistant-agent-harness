@@ -8,7 +8,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 APPLY="${APPLY:-false}"
-LOCATION="${LOCATION:-eastus}"
+# Shared ACR/OpenAI stay in East US; compute and state use East US 2 because
+# live East US provisioning is currently unavailable under regional demand.
+LOCATION="${LOCATION:-eastus2}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-csa-workbench-rg}"
 ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-csa-workbench-env}"
 FRONTEND_APP_NAME="${FRONTEND_APP_NAME:-csa-workbench-frontend}"

@@ -142,8 +142,8 @@ def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> N
     assert "{ name: 'workload_entra_audience', value: runtimeclientid }" in apps.lower()
     assert "properties['template']['scale'] !=" not in deploy
     assert "container['resources'] !=" not in deploy
-    assert "${LOCATION:-eastus}" in deploy
-    assert "param location string = 'eastus'" in (ROOT / "infra" / "foundation.bicep").read_text()
+    assert "${LOCATION:-eastus2}" in deploy
+    assert "param location string = 'eastus2'" in (ROOT / "infra" / "foundation.bicep").read_text()
 
 
 def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded_resources() -> None:

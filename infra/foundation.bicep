@@ -2,7 +2,7 @@ targetScope = 'subscription'
 
 @description('The new, isolated MVP resource group.')
 param resourceGroupName string = 'csa-workbench-rg'
-param location string = 'eastus'
+param location string = 'eastus2'
 param environmentName string = 'csa-workbench-env'
 param cosmosAccountName string = 'csaworkbench9fc05183'
 param storageAccountName string = 'csaworkbench9fc05183'
