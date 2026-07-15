@@ -136,6 +136,8 @@ try {
   check("MVP-P11-outsider-forged-write-neutral-404", samWrite.status === 404, String(samWrite.status));
   check("MVP-P12-outsider-write-unchanged-state", JSON.stringify(beforeForged.engagements.find((entry) => entry.id === engagementId)) === JSON.stringify(afterForged.engagements.find((entry) => entry.id === engagementId)));
 
+  await sam.page.getByTestId("nav-toggle").click();
+  await sam.page.getByTestId("nav-drawer").waitFor({ state: "visible" });
   await sam.page.getByTestId("nav--engagements").click();
   await sam.page.getByTestId("engagement-row-eng-website-launch").click();
   check("MVP-P13-viewer-has-no-editor-affordance", await sam.page.getByTestId("engagement-detail-editor").count() === 0);
