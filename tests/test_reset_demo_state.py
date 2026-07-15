@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,14 @@ def valid_env() -> dict[str, str]:
 def test_reset_guard_accepts_explicit_local_demo_target() -> None:
     target = reset_demo_state.reset_guard(valid_env())
     assert target["database"] == "csa_workbench_demo"
+
+
+def test_configure_import_paths_makes_root_orchestrator_discoverable(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(sys, "path", [str(root / "scripts")])
+    reset_demo_state.configure_import_paths()
+    spec = importlib.util.find_spec("app")
+    assert spec is not None and spec.origin == str(root / "app.py")
 
 
 def test_reset_guard_allows_only_the_dedicated_artifact_subtree() -> None:

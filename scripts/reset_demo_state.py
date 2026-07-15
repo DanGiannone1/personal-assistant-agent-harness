@@ -48,6 +48,14 @@ def load_local_env(path: Path) -> None:
             os.environ[key] = value.strip().strip('"').strip("'")
 
 
+def configure_import_paths() -> None:
+    """Make root and session modules importable when Python executes scripts/ directly."""
+    for path in (ROOT, ROOT / "session-container"):
+        value = str(path)
+        if value not in sys.path:
+            sys.path.insert(0, value)
+
+
 def _endpoint_host(endpoint: str) -> str:
     parsed = urlparse(endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -147,7 +155,7 @@ def fixture_summary(appdb) -> dict:
 def reset() -> dict:
     load_local_env(ROOT / ".env")
     target = reset_guard(dict(os.environ))
-    sys.path.insert(0, str(ROOT / "session-container"))
+    configure_import_paths()
     import appdb  # noqa: PLC0415
 
     # The target is already guarded above.  Delete all documents from exactly this
