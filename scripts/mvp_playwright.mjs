@@ -138,8 +138,9 @@ try {
   await dan.page.getByTestId("engagement-save-btn").click();
   const engagementNameError = dan.page.getByTestId("engagement-error");
   await engagementNameError.waitFor({ state: "visible" });
+  const blankNameUiValid = await eventually(() => dan.page.getByTestId("engagement-name-input").evaluate((input) => input.getAttribute("aria-describedby") === "engagement-name-error" && document.activeElement === input));
   const blankNameState = await state(dan.page);
-  check("MVP-P34-create-name-validation-accessible", await engagementNameError.isVisible() && await dan.page.getByTestId("engagement-name-input").evaluate((input) => input.getAttribute("aria-describedby") === "engagement-name-error" && document.activeElement === input) && (blankNameState.engagements ?? []).length === danIds.length);
+  check("MVP-P34-create-name-validation-accessible", await engagementNameError.isVisible() && blankNameUiValid && (blankNameState.engagements ?? []).length === danIds.length);
   await dan.page.getByTestId("engagement-name-input").fill("MVP Browser Collaboration");
   await dan.page.getByTestId("engagement-customer-input").fill("Synthetic Evidence Co");
   await dan.page.getByTestId("engagement-save-btn").click();
@@ -154,8 +155,9 @@ try {
   await dan.page.getByTestId("engagement-task-save-btn").click();
   const engagementTaskTitleError = dan.page.getByTestId("engagement-task-title-error");
   await engagementTaskTitleError.waitFor({ state: "visible" });
+  const blankTaskTitleUiValid = await eventually(() => dan.page.getByTestId("engagement-task-title-input").evaluate((input) => input.getAttribute("aria-describedby") === "engagement-task-title-error" && document.activeElement === input));
   const taskCountAfterBlankSave = (await state(dan.page)).engagements.find((entry) => entry.id === engagementId)?.tasks.length;
-  check("MVP-P35-engagement-task-title-validation-accessible", await engagementTaskTitleError.isVisible() && await dan.page.getByTestId("engagement-task-title-input").evaluate((input) => input.getAttribute("aria-describedby") === "engagement-task-title-error" && document.activeElement === input) && taskCountAfterBlankSave === taskCountBeforeBlankSave);
+  check("MVP-P35-engagement-task-title-validation-accessible", await engagementTaskTitleError.isVisible() && blankTaskTitleUiValid && taskCountAfterBlankSave === taskCountBeforeBlankSave);
 
   await dan.page.getByTestId("engagement-tab-settings").click();
   await dan.page.getByTestId("member-user-select").selectOption("ava");
