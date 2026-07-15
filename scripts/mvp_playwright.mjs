@@ -106,6 +106,51 @@ function intersects(first, second) {
   return !!first && !!second && first.x < second.x + second.width && first.x + first.width > second.x &&
     first.y < second.y + second.height && first.y + first.height > second.y;
 }
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .sort(([first], [second]) => first.localeCompare(second))
+      .map(([key, item]) => [key, canonicalize(item)]));
+  }
+  return value;
+}
+function sameCanonical(first, second) {
+  return JSON.stringify(canonicalize(first)) === JSON.stringify(canonicalize(second));
+}
+function engagementFrom(state, engagementId) {
+  return (state.engagements ?? []).find((entry) => entry.id === engagementId) ?? null;
+}
+async function finalCardHitPoints(page) {
+  return page.evaluate(() => {
+    const finalCard = Array.from(document.querySelectorAll("[data-testid^='engagement-row-']")).at(-1);
+    const finalCardTitle = finalCard?.querySelector(".tw-td-title");
+    const bounds = (element) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    };
+    const atCenter = (name, element, intendedAncestor = null) => {
+      const rect = bounds(element);
+      if (!rect || rect.width <= 0 || rect.height <= 0) return { name, bounds: rect, resolves: false };
+      const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      const hit = document.elementFromPoint(point.x, point.y);
+      const resolves = !!hit && (hit === element || element.contains(hit) || hit === intendedAncestor);
+      return {
+        name,
+        bounds: rect,
+        point,
+        resolves,
+        hit: hit && { tag: hit.tagName, testId: hit.getAttribute("data-testid") },
+      };
+    };
+    return {
+      card: bounds(finalCard),
+      action: atCenter("final-card-action", finalCard),
+      title: atCenter("final-card-title", finalCardTitle, finalCard),
+    };
+  });
+}
 async function newPage(browser, viewport, user) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
@@ -128,9 +173,19 @@ try {
   const sam = await newPage(browser, { width: 1024, height: 768 }, "sam");
   const danSeed = await state(dan.page);
   const avaSeed = await state(ava.page);
+  const fixturePortfolios = {
+    dan: ["eng-product-launch", "eng-website-launch"],
+    ava: ["eng-product-launch", "eng-q3-budget"],
+  };
   const danIds = (danSeed.engagements ?? []).map((entry) => entry.id).sort();
   const avaIds = (avaSeed.engagements ?? []).map((entry) => entry.id).sort();
-  check("MVP-P1-distinct-personal-portfolios", JSON.stringify(danIds) !== JSON.stringify(avaIds), `dan=${danIds.join(",")} ava=${avaIds.join(",")}`);
+  check(
+    "MVP-P1-deterministic-personal-portfolios",
+    report.fixture?.fixtureVersion === "mvp-demo-v1" &&
+      sameCanonical(danIds, fixturePortfolios.dan) &&
+      sameCanonical(avaIds, fixturePortfolios.ava),
+    `fixture=${report.fixture?.fixtureVersion ?? "missing"} expectedDan=${fixturePortfolios.dan.join(",")} dan=${danIds.join(",")} expectedAva=${fixturePortfolios.ava.join(",")} ava=${avaIds.join(",")}`,
+  );
   await capture(dan.page, `${out}/wide-dan-portfolio.png`);
   check("MVP-P2-wide-no-horizontal-overflow", await noHorizontalOverflow(dan.page));
 
@@ -207,11 +262,14 @@ try {
   check("MVP-P15-compact-no-horizontal-overflow", await noHorizontalOverflow(sam.page));
 
   // A manual validation path is visible and leaves the committed record unchanged.
-  await ava.page.getByTestId("status-select").selectOption("red");
+  const beforeRejectedYellow = canonicalize(engagementFrom(await state(ava.page), engagementId));
+  await ava.page.getByTestId("status-select").selectOption("yellow");
   await ava.page.getByTestId("status-note-input").fill("");
   await ava.page.getByRole("button", { name: "Save delivery record" }).click();
   check("MVP-P16-validation-visible", await ava.page.getByRole("alert").count() > 0);
-  check("MVP-P17-validation-no-state-change", (await state(ava.page)).engagements.find((entry) => entry.id === engagementId)?.status === "green");
+  const afterRejectedYellow = canonicalize(engagementFrom(await state(ava.page), engagementId));
+  report.rejectedYellowValidation = { engagementId, before: beforeRejectedYellow, after: afterRejectedYellow };
+  check("MVP-P17-validation-no-state-change", !!beforeRejectedYellow && sameCanonical(beforeRejectedYellow, afterRejectedYellow));
 
   // Capture the real SSE payload from the browser turn, then require a structured
   // committed result and the corresponding authoritative state.  The rendered label
@@ -276,7 +334,14 @@ try {
   await eventually(() => narrowContent.evaluate((element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 1));
   const lastEngagement = await narrow.page.locator("[data-testid^='engagement-row-']").last().boundingBox();
   const launcher = await narrow.page.getByTestId("dock-launcher").boundingBox();
-  check("MVP-P33-narrow-final-engagement-clears-launcher", !!lastEngagement && !!launcher && !intersects(lastEngagement, launcher));
+  const finalCardHits = await finalCardHitPoints(narrow.page);
+  report.narrowFinalCardHitPoints = finalCardHits;
+  check(
+    "MVP-P33-narrow-final-engagement-clears-launcher",
+    !!lastEngagement && !!launcher && !intersects(lastEngagement, launcher) &&
+      finalCardHits.action.resolves && finalCardHits.title.resolves,
+    JSON.stringify(finalCardHits),
+  );
   await narrowContent.evaluate((element) => element.scrollTo({ top: 0 }));
   await eventually(() => narrowContent.evaluate((element) => element.scrollTop === 0));
   await capture(narrow.page, `${out}/narrow-dan-workspace.png`);
