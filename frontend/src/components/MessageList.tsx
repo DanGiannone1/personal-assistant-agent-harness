@@ -14,12 +14,12 @@ interface MessageListProps {
   attention?: { label: string; sublabel: string; route: string }[];
 }
 
-// Showcase the assistant's substantive capabilities (nav + overdue are already one-click above).
+// Showcase the assistant's active Engagement capabilities (quick navigation is one-click above).
 const SUGGESTIONS = [
-  { icon: "gauge", label: "What's overdue?", description: "Review tasks past their due date", prompt: "Which tasks are overdue right now?" },
-  { icon: "strategy", label: "Add a task", description: "Create a high-priority task", prompt: "Add a high-priority task 'Draft Q3 plan' due Friday in Work." },
-  { icon: "checklist", label: "Schedule a meeting", description: "Put it on the calendar", prompt: "Schedule a 3pm team sync tomorrow." },
-  { icon: "doc", label: "Draft a doc", description: "Generate and save a draft", prompt: "Draft an engagement kickoff doc and save it as kickoff.md." },
+  { icon: "gauge", label: "Review engagements", description: "See the Engagements available to you", prompt: "List my engagements." },
+  { icon: "strategy", label: "Open an Engagement", description: "Navigate to an Engagement you can access", prompt: "Open an Engagement for me. If you need to know which one, ask me to choose." },
+  { icon: "checklist", label: "Create an Engagement", description: "Start a new Engagement workspace", prompt: "Create a new Engagement. Ask me for any details you need." },
+  { icon: "shield", label: "Update engagement status", description: "Set a status and explain why", prompt: "Update an Engagement's status. Ask me which Engagement, the new status, and the reason." },
 ];
 
 function SuggestionIcon({ icon }: { icon: string }) {
@@ -77,7 +77,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
         {messages.length === 0 ? (
           <div className="mx-auto flex min-h-[68vh] flex-col justify-center">
             <h2 className="text-3xl font-extrabold tracking-tight text-text-primary md:text-4xl">How can I help?</h2>
-            <p className="mt-4 text-lg text-text-secondary">Ask me to navigate, manage your tasks and calendar, or draft a document.</p>
+            <p className="mt-4 text-lg text-text-secondary">Ask me to review, navigate, create, or update your Engagements.</p>
 
             {onQuickNav && attention && attention.length > 0 && (
               <div className="mt-7 rounded-2xl border border-brand-warning/30 bg-brand-warning/5 p-3">
