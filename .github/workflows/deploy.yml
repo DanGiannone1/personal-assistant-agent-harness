@@ -1,113 +1,29 @@
-name: Build and Deploy
+name: Validate Azure deployment definitions
 
 on:
   push:
-    branches: [main]
+  pull_request:
   workflow_dispatch:
 
-env:
-  ACR: taxagentacr.azurecr.io
-  RESOURCE_GROUP: taxagent-rg
-  SESSION_READY_SESSIONS: "0"
-  ORCHESTRATOR_MIN_REPLICAS: "0"
-  FRONTEND_MIN_REPLICAS: "0"
-  SESSION_POOL_API_VERSION: "2024-10-02-preview"
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: Build container images
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Azure login
-        uses: azure/login@v2
+      - uses: actions/setup-python@v5
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Build session container
-        run: |
-          az acr build \
-            --registry taxagentacr \
-            --image tax-session:${{ github.sha }} \
-            --image tax-session:latest \
-            --file session-container/Dockerfile \
-            .
-
-      - name: Build orchestrator
-        run: |
-          az acr build \
-            --registry taxagentacr \
-            --image tax-orchestrator:${{ github.sha }} \
-            --image tax-orchestrator:latest \
-            --file Dockerfile \
-            .
-
-      - name: Build frontend
-        run: |
-          az acr build \
-            --registry taxagentacr \
-            --image tax-frontend:${{ github.sha }} \
-            --image tax-frontend:latest \
-            --file frontend/Dockerfile \
-            --build-arg "NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}" \
-            frontend/
-
-  deploy:
-    name: Deploy to Azure Container Apps
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Azure login
-        uses: azure/login@v2
+          python-version: '3.12'
+      - name: Install focused test runner
+        run: python -m pip install pytest
+      - name: Run Entra and infrastructure contracts
+        run: python -m pytest -q tests/test_infra_entra_contract.py
+      - name: Build Bicep
+        uses: azure/cli@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Update session pool
-        run: |
-          az containerapp sessionpool update \
-            --name taxagent-sessions \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.ACR }}/tax-session:${{ github.sha }} \
-            --cooldown-period 300 \
-            --max-sessions 20 \
-            --ready-sessions ${{ env.SESSION_READY_SESSIONS }}
-
-          POOL_ID=$(az containerapp sessionpool show \
-            --name taxagent-sessions \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query id -o tsv)
-
-          az resource update \
-            --ids "$POOL_ID" \
-            --api-version ${{ env.SESSION_POOL_API_VERSION }} \
-            --set properties.scaleConfiguration.readySessionInstances=${{ env.SESSION_READY_SESSIONS }} \
-            -o none
-
-          ACTUAL_READY_SESSIONS=$(az containerapp sessionpool show \
-            --name taxagent-sessions \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "properties.scaleConfiguration.readySessionInstances" -o tsv)
-
-          if [ "$ACTUAL_READY_SESSIONS" != "${{ env.SESSION_READY_SESSIONS }}" ]; then
-            echo "Session pool ready sessions is $ACTUAL_READY_SESSIONS; expected ${{ env.SESSION_READY_SESSIONS }}"
-            exit 1
-          fi
-
-      - name: Update orchestrator
-        run: |
-          az containerapp update \
-            --name taxagent-app \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.ACR }}/tax-orchestrator:${{ github.sha }} \
-            --min-replicas ${{ env.ORCHESTRATOR_MIN_REPLICAS }} \
-            --max-replicas 3
-
-      - name: Update frontend
-        run: |
-          az containerapp update \
-            --name taxagent-frontend \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.ACR }}/tax-frontend:${{ github.sha }} \
-            --min-replicas ${{ env.FRONTEND_MIN_REPLICAS }} \
-            --max-replicas 3
+          inlineScript: |
+            az bicep install
+            az bicep build --file infra/foundation.bicep
+            az bicep build --file infra/apps.bicep
