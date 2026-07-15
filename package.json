@@ -1,10 +1,14 @@
 {
+  "name": "csa-workbench",
   "private": true,
   "devDependencies": {
     "@playwright/test": "^1.52.0"
   },
   "scripts": {
     "test": "node scripts/test_all.mjs",
-    "test:smoke": "node scripts/test_all.mjs smoke"
+    "test:smoke": "node scripts/test_all.mjs smoke",
+    "test:mvp-evidence": "node --test tests/mvp_evidence.test.mjs",
+    "eval:mvp": "node scripts/mvp_agent_eval.mjs",
+    "playwright:mvp": "node scripts/mvp_playwright.mjs"
   }
 }

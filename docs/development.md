@@ -71,26 +71,26 @@ ADLS/Content Understanding configuration is also optional in the current code;
 without it, conversion is disabled. Authentication and deployment-only settings are
 annotated in [`.env.example`](../.env.example).
 
-## What you can check
+## Verify the current checkout
 
-With the stack running and an independently supplied configured Cosmos emulator,
-the historical browser driver can be invoked as follows:
-
-```bash
-node scripts/deepagents_poc.mjs
-```
-
-It is legacy coverage, not proof of the target CSA Workbench acceptance matrix. Inspect its
-screenshots and the `logs/trace.jsonl`/`logs/sdk-events/` outputs alongside the
-authoritative state; a green process exit alone is not behavioral proof.
-
-These supporting static checks do not start the stack:
+The full evidence contract and result interpretation live in [Testing and
+evals](capabilities/testing-evals.md). With an independently configured local
+Cosmos emulator and `uv run dev.py` already running, use its guarded commands:
 
 ```bash
-(cd frontend && npm run lint)
-(cd frontend && npm run build)
+PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py tests/test_engagement_core.py tests/test_structured_control.py
+npm run test:mvp-evidence
+(cd frontend && npm run lint && npm run build)
+
+# The reset also requires a demo/local Cosmos database+container and this dedicated
+# artifact directory (see Testing and evals for the complete local export block).
+ARTIFACTS_DIR=.mvp-artifacts CONFIRM_DEMO_RESET=YES uv run python scripts/reset_demo_state.py
+MVP_RESET_BEFORE_RUN=1 npm run eval:mvp
+MVP_RESET_BEFORE_RUN=1 npm run playwright:mvp
 ```
 
-No current command in this checkout proves the required emulator topology,
-multi-user authorization, durable rehydration, receipts, or deployment behavior.
-Those remain **UNVERIFIED**.
+The reset and live runners require explicit demo/local-emulator guards; see the
+testing document before using them. They do not start or stop user services.
+Review the generated `evidence/mvp/local-synthetic/` bundle alongside the
+authoritative state and structured events. Until a current bundle is reviewed,
+live browser, model, Entra, and deployed behavior remains **UNVERIFIED**.
