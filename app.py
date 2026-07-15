@@ -163,6 +163,7 @@ async def lifespan(app: FastAPI):
 
     identity_config = IdentityConfig.from_env()
     identity_config.validate()
+    artifact_store.assert_durable_configuration(identity_config.mode)
 
     # Content Processing (optional — ADLS + Content Understanding)
     from content_processing import ContentProcessor
@@ -220,24 +221,32 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Could not index seed Library docs (search may be unconfigured)", exc_info=True)
 
-    # Background reminder scheduler — runs due reminders and emails their output.
-    import scheduler
-    scheduler_task = asyncio.create_task(scheduler.scheduler_loop(session_manager))
+    # Schedulers keep a process warm and are excluded from the release profile.
+    scheduler_task: asyncio.Task | None = None
+    if _scheduler_enabled():
+        import scheduler
+        scheduler_task = asyncio.create_task(scheduler.scheduler_loop(session_manager))
+        logger.info("Background reminder scheduler enabled")
     logger.info("Application started")
 
     yield
 
-    scheduler_task.cancel()
-    try:
-        await scheduler_task
-    except asyncio.CancelledError:
-        pass
+    if scheduler_task is not None:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
     await session_manager.stop()
     await content_processor.close()
     logger.info("Application shut down")
 
 
 app = FastAPI(title="CSA Workbench", lifespan=lifespan)
+
+
+def _scheduler_enabled() -> bool:
+    return os.getenv("SCHEDULER_ENABLED", "").lower() == "true"
 
 # CORS: allow localhost only in dev, plus configurable FRONTEND_URL for production
 cors_origins = []

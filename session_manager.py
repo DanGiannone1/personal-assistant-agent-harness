@@ -166,11 +166,21 @@ class _SessionPoolAuth(httpx.Auth):
         self._expires_on: float = 0
 
     def _needs_token(self) -> bool:
-        # POOL_AUTH=off: the session runtime is a plain container app (internal
-        # ingress), not a Dynamic Sessions pool — no bearer to attach.
-        if os.getenv("POOL_AUTH", "").lower() == "off":
-            return False
+        # Plain HTTP is the explicit local profile. HTTPS calls are deployment
+        # workload calls and must always carry an identity token; POOL_AUTH=off
+        # is intentionally not a production bypass.
         return POOL_MANAGEMENT_ENDPOINT.startswith("https://")
+
+    @staticmethod
+    def _token_scope() -> str:
+        audience = os.getenv("POOL_AUTH_AUDIENCE", "").strip().rstrip("/")
+        if not audience:
+            return "https://dynamicsessions.io/.default"
+        if audience.endswith("/.default"):
+            audience = audience[:-len("/.default")]
+        if not audience:
+            raise ValueError("POOL_AUTH_AUDIENCE must not be empty or only '/.default'")
+        return f"{audience}/.default"
 
     async def _refresh(self) -> None:
         import time
@@ -184,7 +194,7 @@ class _SessionPoolAuth(httpx.Auth):
                 managed_identity_client_id=os.getenv("AZURE_CLIENT_ID") or None,
             )
         tok = await asyncio.wait_for(
-            self._credential.get_token("https://dynamicsessions.io/.default"),
+            self._credential.get_token(self._token_scope()),
             timeout=30,
         )
         self._token = tok.token
@@ -225,6 +235,9 @@ class SessionManager:
         Returns None for local dev (http endpoints) — session containers
         handle their own auth via AZURE_OPENAI_TOKEN env var.
         """
+        if os.getenv("FORWARD_AZURE_OPENAI_TOKEN", "").lower() != "true":
+            return None
+
         import time
 
         if not POOL_MANAGEMENT_ENDPOINT.startswith("https://"):

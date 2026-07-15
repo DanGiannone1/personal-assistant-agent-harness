@@ -18,6 +18,7 @@ import mimetypes
 import os
 import re
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from ag_ui.core.events import RunErrorEvent
@@ -44,6 +45,7 @@ else:
 from trace_logging import setup_trace_logging, trace_event
 from tracing import setup_tracing
 from upload_policy import ALLOWED_UPLOAD_EXTENSIONS
+from workload_auth import WorkloadAuthenticator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,8 +57,26 @@ _default_ws = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wor
 WORKSPACE = os.getenv("WORKSPACE", _default_ws)
 UPLOAD_MANIFEST = ".uploaded_files.json"
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{16}$")
-app = FastAPI(title="CSA Workbench Session")
+workload_authenticator = WorkloadAuthenticator.from_env()
+
+
+@asynccontextmanager
+async def runtime_lifespan(app: FastAPI):
+    """Fail before serving an Entra runtime with incomplete trust configuration."""
+    workload_authenticator.config.validate()
+    yield
+
+
+app = FastAPI(title="CSA Workbench Session", lifespan=runtime_lifespan)
 setup_tracing(app)
+
+
+@app.middleware("http")
+async def enforce_workload_auth(request: Request, call_next):
+    rejection = await workload_authenticator.authenticate(request)
+    if rejection is not None:
+        return rejection
+    return await call_next(request)
 
 def _normalize_session_id(raw_session_id: str | None) -> str:
     if raw_session_id and _SESSION_ID_RE.fullmatch(raw_session_id):
@@ -93,6 +113,9 @@ def _get_user(request: Request) -> str:
     session exists it must match the first bound actor exactly; it never replaces
     that actor and a restarted runtime fails closed for an unbound workspace.
     """
+    if (workload_authenticator.config.is_entra
+            and not getattr(request.state, "workload_authenticated", False)):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     raw = (request.headers.get("X-User-Id") or "").strip().lower()
     if raw:
         if not _USER_ID_RE.fullmatch(raw):
