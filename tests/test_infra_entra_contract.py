@@ -306,6 +306,7 @@ def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> N
     assert "param location string = 'eastus2'" in (ROOT / "infra" / "foundation.bicep").read_text()
     assert "remove_incompatible_environment" in deploy
     assert "if ! truthy \"$APPLY\"; then" in deploy
+    assert "event-subscription list -g \"$RESOURCE_GROUP\" --system-topic-name \"$event_topic_name\"" in deploy
 
 
 def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded_resources() -> None:

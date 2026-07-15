@@ -182,7 +182,7 @@ verify_inventory() {
   event_topics="$(az eventgrid system-topic list -g "$RESOURCE_GROUP" -o json)"
   event_topic_name="$(python3 -c 'import json,sys; topics=json.load(sys.stdin); print(topics[0]["name"] if isinstance(topics,list) and len(topics)==1 and isinstance(topics[0],dict) and isinstance(topics[0].get("name"),str) else "")' <<<"$event_topics")"
   if [[ -n "$event_topic_name" ]]; then
-    event_subscriptions="$(az eventgrid system-topic event-subscription list -g "$RESOURCE_GROUP" -n "$event_topic_name" -o json)"
+    event_subscriptions="$(az eventgrid system-topic event-subscription list -g "$RESOURCE_GROUP" --system-topic-name "$event_topic_name" -o json)"
   else
     event_subscriptions='[]'
   fi
