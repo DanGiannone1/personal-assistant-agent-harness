@@ -336,10 +336,11 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
         }}}
 
     apps = [app("csa-workbench-frontend", True, "csa-workbench-frontend", .25, "0.5Gi"), app("csa-workbench-api", True, "csa-workbench-api", .5, "1Gi"), app("csa-workbench-runtime", False, "csa-workbench-runtime", 1.0, "2Gi")]
+    assignment_scope = lambda scope: scope.replace("/resourceGroups/", "/resourcegroups/")
     assignments = [
-        [{"scope": acr_scope, "roleDefinitionName": "AcrPull", "principalId": "frontend"}],
-        [{"scope": acr_scope, "roleDefinitionName": "AcrPull", "principalId": "api"}, {"scope": storage_scope, "roleDefinitionName": "Storage Blob Data Contributor", "principalId": "api"}],
-        [{"scope": acr_scope, "roleDefinitionName": "AcrPull", "principalId": "runtime"}, {"scope": aoai_scope, "roleDefinitionName": "Cognitive Services OpenAI User", "principalId": "runtime"}],
+        [{"scope": assignment_scope(acr_scope), "roleDefinitionName": "AcrPull", "principalId": "frontend"}],
+        [{"scope": assignment_scope(acr_scope), "roleDefinitionName": "AcrPull", "principalId": "api"}, {"scope": assignment_scope(storage_scope), "roleDefinitionName": "Storage Blob Data Contributor", "principalId": "api"}],
+        [{"scope": assignment_scope(acr_scope), "roleDefinitionName": "AcrPull", "principalId": "runtime"}, {"scope": assignment_scope(aoai_scope), "roleDefinitionName": "Cognitive Services OpenAI User", "principalId": "runtime"}],
     ]
     sql_role = f"{cosmos_scope}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"
     vnet = {"name": vnet_name, "provisioningState": "Succeeded", "addressSpace": {"addressPrefixes": ["10.42.0.0/24"]}, "subnets": [

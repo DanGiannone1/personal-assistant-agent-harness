@@ -389,7 +389,8 @@ expected_roles = {
     (f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.Storage/storageAccounts/{os.environ["STORAGE_ACCOUNT_NAME"]}', 'Storage Blob Data Contributor', os.environ['API_PRINCIPAL']),
     (f'/subscriptions/{subscription}/resourceGroups/{os.environ["AOAI_RESOURCE_GROUP"]}/providers/Microsoft.CognitiveServices/accounts/{os.environ["AOAI_NAME"]}', 'Cognitive Services OpenAI User', os.environ['RUNTIME_PRINCIPAL']),
 }
-actual_roles = {(item.get('scope', ''), item.get('roleDefinitionName', ''), item.get('principalId', '')) for item in assignments}
+expected_roles = {(scope.lower(), role.lower(), principal.lower()) for scope, role, principal in expected_roles}
+actual_roles = {(item.get('scope', '').lower(), item.get('roleDefinitionName', '').lower(), item.get('principalId', '').lower()) for item in assignments}
 if not expected_roles <= actual_roles:
     raise SystemExit('required resource-scoped managed-identity roles are missing')
 cosmos_scope = f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.DocumentDB/databaseAccounts/{os.environ["COSMOS_ACCOUNT_NAME"]}'
