@@ -88,27 +88,72 @@ export function onlyExpectedEngagementUpdate(before, after, { id, actor, detail 
 
 function validEventSequence(events) {
   if (!Array.isArray(events) || events.length < 2 || events[0]?.type !== "RUN_STARTED") return false;
-  const starts = events.filter((event) => event?.type === "RUN_STARTED");
   const terminals = terminalEvents(events);
   const runId = events[0]?.run_id;
   const threadId = events[0]?.thread_id;
-  if (starts.length !== 1 || typeof runId !== "string" || !runId || typeof threadId !== "string" || !threadId) return false;
+  if (typeof runId !== "string" || !runId || typeof threadId !== "string" || !threadId) return false;
   if (terminals.length !== 1 || events.at(-1) !== terminals[0]) return false;
   if (terminals[0].type === "RUN_FINISHED" && (terminals[0].run_id !== runId || terminals[0].thread_id !== threadId)) return false;
   if (terminals[0].type === "RUN_ERROR" && (typeof terminals[0].message !== "string" || !terminals[0].message)) return false;
+  const expectedOperations = {
+    list_engagements: "list",
+    create_engagement: "create",
+    get_engagement: "get",
+    update_engagement: "update",
+    set_engagement_status: "update",
+    share_engagement: "share",
+    navigate: "navigate",
+  };
+  const knownTypes = new Set([
+    "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
+    "REASONING_START", "REASONING_DELTA", "REASONING_END",
+    "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_RESULT", "TOOL_CALL_END",
+    "NAVIGATION_RESOLVED", "RUN_FINISHED", "RUN_ERROR",
+  ]);
   const tools = new Map();
-  for (const event of events) {
-    if (!event || typeof event.type !== "string") return false;
-    if (event.type === "TOOL_CALL_START") {
-      if (typeof event.tool_call_id !== "string" || !event.tool_call_id || typeof event.tool_call_name !== "string" || !event.tool_call_name || tools.has(event.tool_call_id)) return false;
-      tools.set(event.tool_call_id, { phase: "started", navigationBound: false });
+  const closedToolIds = new Set();
+  const seenMessageIds = new Set();
+  let openMessageId = null;
+  let reasoningOpen = false;
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (!event || typeof event.type !== "string" || !knownTypes.has(event.type)) return false;
+    if (index === 0) continue;
+    if (event.type === "RUN_STARTED" || index === events.length - 1 && !["RUN_FINISHED", "RUN_ERROR"].includes(event.type)) return false;
+    if (event.type === "TEXT_MESSAGE_START") {
+      if (openMessageId !== null || typeof event.message_id !== "string" || !event.message_id
+        || seenMessageIds.has(event.message_id) || typeof event.role !== "string" || !event.role) return false;
+      openMessageId = event.message_id;
+      seenMessageIds.add(event.message_id);
+    } else if (event.type === "TEXT_MESSAGE_CONTENT") {
+      if (event.message_id !== openMessageId || typeof event.delta !== "string") return false;
+    } else if (event.type === "TEXT_MESSAGE_END") {
+      if (event.message_id !== openMessageId) return false;
+      openMessageId = null;
+    } else if (event.type === "REASONING_START") {
+      if (reasoningOpen) return false;
+      reasoningOpen = true;
+    } else if (event.type === "REASONING_DELTA") {
+      if (!reasoningOpen || typeof event.delta !== "string") return false;
+    } else if (event.type === "REASONING_END") {
+      if (!reasoningOpen) return false;
+      reasoningOpen = false;
+    } else if (event.type === "TOOL_CALL_START") {
+      if (typeof event.tool_call_id !== "string" || !event.tool_call_id || typeof event.tool_call_name !== "string" || !event.tool_call_name
+        || !Object.hasOwn(expectedOperations, event.tool_call_name)
+        || tools.has(event.tool_call_id) || closedToolIds.has(event.tool_call_id)) return false;
+      tools.set(event.tool_call_id, { phase: "started", navigationBound: false, expectedOperation: expectedOperations[event.tool_call_name] });
+    } else if (event.type === "TOOL_CALL_ARGS") {
+      const tool = tools.get(event.tool_call_id);
+      if (!tool || tool.phase !== "started" || typeof event.delta !== "string") return false;
     } else if (event.type === "TOOL_CALL_RESULT") {
       const tool = tools.get(event.tool_call_id);
       const result = event.result;
       if (!tool || tool.phase !== "started" || !result || typeof result !== "object"
         || typeof result.status !== "string" || !result.status
         || typeof result.code !== "string" || !result.code
-        || typeof result.operation !== "string" || !result.operation) return false;
+        || typeof result.operation !== "string" || !result.operation
+        || !tool.expectedOperation || result.operation !== tool.expectedOperation) return false;
       tool.phase = "result"; tool.result = result;
     } else if (event.type === "NAVIGATION_RESOLVED") {
       if (event.runId !== runId || !Number.isInteger(event.requestedAtNavigationVersion) || !event.destination || typeof event.destination !== "object") return false;
@@ -120,10 +165,47 @@ function validEventSequence(events) {
     } else if (event.type === "TOOL_CALL_END") {
       const tool = tools.get(event.tool_call_id);
       if (!tool || tool.phase !== "result") return false;
-      tool.phase = "ended";
+      tools.delete(event.tool_call_id);
+      closedToolIds.add(event.tool_call_id);
+    } else if (event.type === "RUN_FINISHED") {
+      if (event.run_id !== runId || event.thread_id !== threadId || openMessageId !== null || reasoningOpen || tools.size) return false;
+    } else if (event.type === "RUN_ERROR") {
+      if (openMessageId !== null || reasoningOpen || tools.size) return false;
     }
   }
-  return [...tools.values()].every((tool) => tool.phase === "ended");
+  return true;
+}
+
+function sameResultMultiset(results, allowedResults) {
+  if (!Array.isArray(allowedResults)) return false;
+  const normalize = (result) => {
+    if (!result || typeof result !== "object" || typeof result.operation !== "string" || !result.operation
+      || typeof result.status !== "string" || !result.status
+      || Object.keys(result).some((key) => key !== "operation" && key !== "status")) return null;
+    return { operation: result.operation, status: result.status };
+  };
+  const actual = results.map((result) => normalize({ operation: result?.operation, status: result?.status }));
+  const allowed = allowedResults.map(normalize);
+  return !actual.includes(null) && !allowed.includes(null)
+    && JSON.stringify(actual.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))
+      === JSON.stringify(allowed.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+}
+
+function safeNonExecutionChecks(safeNonExecution, { before, after, events, results, validEventSequence, terminalExpected }) {
+  if (!safeNonExecution || typeof safeNonExecution !== "object") return null;
+  const targetId = safeNonExecution.targetId;
+  const beforeTarget = (before.engagements ?? []).find((entry) => entry.id === targetId);
+  const afterTarget = (after.engagements ?? []).find((entry) => entry.id === targetId);
+  return {
+    validEventSequence,
+    terminalExpected,
+    exactNormalizedState: stateFingerprint(before) === stateFingerprint(after),
+    targetUnchanged: !!beforeTarget && !!afterTarget
+      && JSON.stringify(normalizedState(beforeTarget)) === JSON.stringify(normalizedState(afterTarget)),
+    noCommittedOrResolved: !results.some((result) => ["committed", "resolved"].includes(result?.status)),
+    noNavigation: !events.some((event) => event.type === "NAVIGATION_RESOLVED"),
+    exactAllowedResultMultiset: sameResultMultiset(results, safeNonExecution.allowedResults),
+  };
 }
 
 export function evaluateCase({ expectation, before, after, events }) {
@@ -161,8 +243,16 @@ export function evaluateCase({ expectation, before, after, events }) {
     })(),
     noNavigation: !expectation.noNavigation || !events.some((event) => event.type === "NAVIGATION_RESOLVED"),
   };
+  const primaryPass = Object.values(checks).every(Boolean);
+  const safeChecks = safeNonExecutionChecks(expectation.safeNonExecution, {
+    before, after, events, results,
+    validEventSequence: checks.validEventSequence,
+    terminalExpected: checks.terminalExpected,
+  });
+  const safeNonExecutionPass = safeChecks !== null && Object.values(safeChecks).every(Boolean);
   return {
-    pass: Object.values(checks).every(Boolean), checks,
+    pass: primaryPass || safeNonExecutionPass, checks,
+    safeNonExecution: safeChecks === null ? null : { pass: safeNonExecutionPass, checks: safeChecks },
     results: results.map((result) => ({ operation: result?.operation, status: result?.status })),
     terminal: terminals[0]?.type ?? null,
   };

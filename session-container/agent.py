@@ -59,7 +59,7 @@ from copilot.session_events import (
 import appdb
 import library
 import navsvc
-from workbench_core import EngagementService, Outcome, ProductToolResult
+from workbench_core import EngagementService, ProductToolResult, engagement_product_result
 from workbench_core.appdb_repository import AppdbEngagementRepository
 from mvp_tool_schemas import (
     CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
@@ -411,24 +411,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         if outcome.status == "invalid":
             return None, "NAME_REQUIRED: which engagement?"
         return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
-
-    def _engagement_outcome_text(outcome: Outcome) -> str:
-        if outcome.status == "not_found":
-            return "ENGAGEMENT_NOT_FOUND: no visible engagement matches that reference."
-        if outcome.status == "forbidden":
-            return "FORBIDDEN: your engagement role does not allow that action."
-        if outcome.status == "invalid":
-            return "INVALID: " + "; ".join(outcome.errors.values())
-        if outcome.status == "noop":
-            return "NO_CHANGES: the engagement already has that state."
-        return f"FAILED: engagement operation returned {outcome.status}."
-
-    def _product_result(outcome: Outcome, operation: str, message: str = "") -> ProductToolResult:
-        code = outcome.code or f"engagement.{outcome.status}"
-        resource = None
-        if outcome.record and outcome.record.get("id"):
-            resource = {"kind": "engagement", "id": outcome.record["id"]}
-        return ProductToolResult(outcome.status, code, operation, message, resource=resource)
 
     def _tool_result(result: ProductToolResult, text: str) -> ToolResult:
         return ToolResult(text_result_for_llm=text, tool_telemetry={"product_result": result.to_dict()})
@@ -825,14 +807,14 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     def create_engagement(params: CreateEngagementParams) -> ToolResult:
         outcome = engagement_service.create(user_id, {"name": params.name, "description": params.description,
                                                        "customer": params.customer, "targetDate": params.target_date})
-        result = _product_result(outcome, "create", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         text = f"Engagement [{outcome.record['id']}] is available." if outcome.record else result.message
         return _tool_result(result, text)
 
     @define_tool(name="get_engagement", description="Read one visible engagement by stable ID.")
     def get_engagement(params: GetEngagementParams) -> ToolResult:
         outcome = engagement_service.get(user_id, params.engagement_id)
-        result = _product_result(outcome, "get", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         text = f"Engagement [{outcome.record['id']}] {outcome.record['name']}" if outcome.record else result.message
         return _tool_result(result, text)
 
@@ -841,19 +823,19 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         values = {key: value for key, value in (("name", params.name), ("description", params.description),
                   ("customer", params.customer), ("startDate", params.start_date), ("targetDate", params.target_date)) if value is not None}
         outcome = engagement_service.update(user_id, params.engagement_id, values)
-        result = _product_result(outcome, "update", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement update processed." if outcome.status == "committed" else result.message)
 
     @define_tool(name="set_engagement_status", description="Set an engagement's status (green/yellow/red). Yellow and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
     def set_engagement_status(params: SetEngagementStatusParams) -> ToolResult:
         outcome = engagement_service.update(user_id, params.engagement_id, {"status": params.status, "statusNote": params.note})
-        result = _product_result(outcome, "update", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement status processed." if outcome.status == "committed" else result.message)
 
     @define_tool(name="share_engagement", description="Share a engagement with another user (grant viewer, editor, or owner access). Only a engagement owner can share.")
     def share_engagement(params: ShareEngagementParams) -> ToolResult:
         outcome = engagement_service.share(user_id, params.engagement_id, params.user, params.role)
-        result = _product_result(outcome, "share", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement sharing processed." if outcome.status == "committed" else result.message)
 
     @define_tool(name="search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 import sys
 from pathlib import Path
 
@@ -9,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "session-container"))
 
-from workbench_core import ProductToolResult
+from workbench_core import Outcome, ProductToolResult, engagement_product_result
 import navsvc
 
 
@@ -31,6 +33,29 @@ def test_product_tool_result_round_trip_and_rejects_untyped_extensions() -> None
     assert ProductToolResult.from_dict(payload) == ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "workbench", "path": "/home"})
     with pytest.raises(ValueError, match="unsupported tool result fields"):
         ProductToolResult.from_dict({**payload, "card": {}})
+
+
+def test_engagement_outcome_mapper_preserves_typed_messages_and_fails_closed() -> None:
+    successful = [
+        engagement_product_result(Outcome(status, "get", record={"id": "eng-1"}))
+        for status in ("succeeded", "resolved", "committed")
+    ]
+    assert [(result.status, result.operation, result.resource, result.message) for result in successful] == [
+        (status, "get", {"kind": "engagement", "id": "eng-1"}, "")
+        for status in ("succeeded", "resolved", "committed")
+    ]
+    invalid = engagement_product_result(Outcome("invalid", "update", errors={"statusNote": "reason required"}))
+    missing = engagement_product_result(Outcome("not_found", "get", code="engagement.not_found"))
+    assert invalid.status == "invalid" and invalid.message == "INVALID: reason required"
+    assert missing.status == "not_found" and missing.message.startswith("ENGAGEMENT_NOT_FOUND:")
+    for status, prefix in {
+        "forbidden": "FORBIDDEN:", "noop": "NO_CHANGES:", "ambiguous": "AMBIGUOUS:", "conflict": "CONFLICT:",
+    }.items():
+        assert engagement_product_result(Outcome(status, "update")).message.startswith(prefix)
+    assert all("FAILED" not in result.message for result in successful)
+    assert engagement_product_result(Outcome("failed", "update")).message.startswith("FAILED:")
+    with pytest.raises(ValueError, match="unsupported engagement outcome status"):
+        engagement_product_result(Outcome("needs_confirmation", "update"))
 
 
 def test_navigation_is_catalog_only_and_checks_live_membership(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,6 +89,81 @@ def test_deep_artifact_is_native_and_validated() -> None:
     assert agent_deepagents._artifact_result(message) == ProductToolResult.from_dict(payload)
     assert agent_deepagents._artifact_result(ToolMessage(content="NAVIGATE: /engagements", tool_call_id="call-2")) is None
     assert agent_deepagents._artifact_result(ToolMessage(content="x", tool_call_id="call-3", artifact={"product_result": {**payload, "status": []}})) is None
+
+
+def test_built_engagement_adapters_emit_semantically_equal_native_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    from copilot.tools import ToolInvocation
+    import agent
+    import agent_deepagents
+
+    records = {
+        "eng-1": {
+            "id": "eng-1", "name": "Northstar", "description": "Initial", "status": "green", "statusNote": "",
+            "members": [{"userId": "dan", "role": "owner"}], "activity": [],
+        },
+    }
+
+    def load(engagement_id: str):
+        record = records.get(engagement_id)
+        return deepcopy(record) if record else None
+
+    def list_for(actor_id: str):
+        return [deepcopy(record) for record in records.values()
+                if any(member["userId"] == actor_id for member in record["members"])]
+
+    def update(engagement_id: str, mutator):
+        try:
+            return mutator(records[engagement_id])
+        except agent.appdb.AbortWrite as error:
+            return error.result
+
+    def log_activity(record: dict, actor_id: str, action: str, detail: str):
+        record["activity"].append({"userId": actor_id, "action": action, "detail": detail})
+
+    for module in (agent.appdb, agent_deepagents.appdb):
+        monkeypatch.setattr(module, "load_engagement", load)
+        monkeypatch.setattr(module, "list_engagements_for", list_for)
+        monkeypatch.setattr(module, "update_engagement", update)
+        monkeypatch.setattr(module, "log_activity", log_activity)
+        monkeypatch.setattr(module, "find_user", lambda _: {"id": "dan"})
+
+    copilot_tools = {tool.name: tool for tool in agent._build_flow_tools("/tmp", "dan")}
+    deep_tools = {tool.name: tool for tool in agent_deepagents._build_langchain_tools("/tmp", "dan")}
+
+    async def copilot_result(name: str, arguments: dict):
+        native = await copilot_tools[name].handler(ToolInvocation(arguments=arguments))
+        result = agent._telemetry_result(native)
+        assert result is not None
+        return result
+
+    def deep_result(name: str, **arguments):
+        result = agent_deepagents._artifact_result(deep_tools[name].func(**arguments))
+        assert result is not None
+        return result
+
+    copilot_get = asyncio.run(copilot_result("get_engagement", {"engagement_id": "eng-1"}))
+    deep_get = deep_result("get_engagement", engagement_id="eng-1")
+    assert copilot_get == deep_get
+    assert (copilot_get.status, copilot_get.resource, copilot_get.message) == (
+        "succeeded", {"kind": "engagement", "id": "eng-1"}, "")
+
+    copilot_update = asyncio.run(copilot_result("update_engagement", {"engagement_id": "eng-1", "description": "Copilot"}))
+    deep_update = deep_result("update_engagement", engagement_id="eng-1", description="Deep Agents")
+    assert copilot_update == deep_update
+    assert (copilot_update.status, copilot_update.resource, copilot_update.message) == (
+        "committed", {"kind": "engagement", "id": "eng-1"}, "")
+
+    before_denials = deepcopy(records)
+    copilot_invalid = asyncio.run(copilot_result("set_engagement_status", {"engagement_id": "eng-1", "status": "red", "note": ""}))
+    deep_invalid = deep_result("set_engagement_status", engagement_id="eng-1", status="red", note="")
+    copilot_missing = asyncio.run(copilot_result("get_engagement", {"engagement_id": "eng-missing"}))
+    deep_missing = deep_result("get_engagement", engagement_id="eng-missing")
+    assert (copilot_invalid.status, deep_invalid.status) == ("invalid", "invalid")
+    assert (copilot_missing.status, deep_missing.status) == ("not_found", "not_found")
+    assert records == before_denials
+    assert all("FAILED" not in result.message for result in (
+        copilot_get, deep_get, copilot_update, deep_update,
+    ))
 
 
 def test_exact_tool_schema_parity() -> None:

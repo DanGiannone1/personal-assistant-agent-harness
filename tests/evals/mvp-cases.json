@@ -37,7 +37,11 @@
       "prompt": "Set Engagement eng-product-launch to Red. Do not provide a reason.",
       "expectation": {
         "operation": "update", "status": "invalid", "stateChanged": false, "noCommitted": true,
-        "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" }
+        "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },
+        "safeNonExecution": {
+          "targetId": "eng-product-launch",
+          "allowedResults": []
+        }
       }
     },
     {
@@ -47,7 +51,11 @@
       "prompt": "Set Engagement eng-product-launch to Red with reason 'unauthorized probe'.", 
       "expectation": {
         "operation": "update", "status": "not_found", "stateChanged": false, "noCommitted": true,
-        "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" }
+        "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },
+        "safeNonExecution": {
+          "targetId": "eng-product-launch",
+          "allowedResults": [{ "operation": "list", "status": "succeeded" }]
+        }
       }
     },
     {

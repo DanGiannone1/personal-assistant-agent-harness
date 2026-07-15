@@ -4,10 +4,19 @@ import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChang
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
+const toolNames = {
+  list: "list_engagements", create: "create_engagement", get: "get_engagement",
+  update: "update_engagement", share: "share_engagement", navigate: "navigate",
+};
 const toolEvents = (operation, status, resource, id = "call-1") => [
-  { type: "TOOL_CALL_START", tool_call_id: id, tool_call_name: operation },
+  { type: "TOOL_CALL_START", tool_call_id: id, tool_call_name: toolNames[operation] },
   { type: "TOOL_CALL_RESULT", tool_call_id: id, result: { operation, status, code: `engagement.${status}`, ...(resource ? { resource } : {}) } },
   { type: "TOOL_CALL_END", tool_call_id: id },
+];
+const assistantText = (delta, messageId = "message-1") => [
+  { type: "TEXT_MESSAGE_START", message_id: messageId, role: "assistant" },
+  { type: "TEXT_MESSAGE_CONTENT", message_id: messageId, delta },
+  { type: "TEXT_MESSAGE_END", message_id: messageId },
 ];
 
 test("parses only one JSON event per SSE frame", () => {
@@ -32,13 +41,14 @@ test("the evaluation oracle requires structured evidence, one terminal, and stat
   assert.equal(missingResource.pass, false);
 });
 
-test("success-like prose or a bare terminal cannot make an eval case pass", () => {
+test("valid assistant prose or a bare terminal cannot make an eval case pass", () => {
   const state = { engagements: [{ id: "eng-a", status: "green" }] };
   const prose = evaluateCase({
     expectation: { operation: "update", status: "committed", stateChanged: true }, before: state, after: state,
-    events: [start, { type: "TEXT_MESSAGE_CONTENT", delta: "TOOL_CALL_RESULT committed" }, finish],
+    events: [start, ...assistantText("TOOL_CALL_RESULT committed"), finish],
   });
   assert.equal(prose.pass, false);
+  assert.equal(prose.checks.validEventSequence, true);
   const bare = evaluateCase({ expectation: {}, before: state, after: state, events: [start, finish] });
   assert.equal(bare.pass, false);
 });
@@ -64,6 +74,125 @@ test("marker cases require zero tool results and no structured navigation", () =
   assert.equal(inert.pass, true);
   const toolLeak = evaluateCase({ expectation: { zeroToolResults: true, noNavigation: true, stateChanged: false }, before: state, after: state, events: [start, ...toolEvents("list", "succeeded"), finish] });
   assert.equal(toolLeak.pass, false);
+});
+
+test("case-specific safe non-execution alternatives are exact and never inspect prose", () => {
+  const before = { engagements: [{ id: "eng-a", status: "yellow", statusNote: "review", activity: [] }], currentRoute: "/engagements" };
+  const e5 = {
+    operation: "update", status: "invalid", stateChanged: false, noCommitted: true,
+    safeNonExecution: { targetId: "eng-a", allowedResults: [] },
+  };
+  const e6 = {
+    operation: "update", status: "not_found", stateChanged: false, noCommitted: true,
+    safeNonExecution: { targetId: "eng-a", allowedResults: [{ operation: "list", status: "succeeded" }] },
+  };
+  const noExecution = evaluateCase({ expectation: e5, before, after: before, events: [start, ...assistantText("declined"), finish] });
+  assert.equal(noExecution.pass, true);
+  assert.equal(noExecution.safeNonExecution.pass, true);
+  const listOnly = evaluateCase({ expectation: e6, before, after: before, events: [start, ...toolEvents("list", "succeeded"), finish] });
+  assert.equal(listOnly.pass, true);
+  assert.equal(listOnly.safeNonExecution.pass, true);
+});
+
+test("safe non-execution rejects state changes, commits, navigation, and unlisted results", () => {
+  const before = { engagements: [{ id: "eng-a", status: "yellow", statusNote: "review", activity: [] }], currentRoute: "/engagements" };
+  const safeEmpty = {
+    operation: "update", status: "invalid", stateChanged: false, noCommitted: true,
+    safeNonExecution: { targetId: "eng-a", allowedResults: [] },
+  };
+  const stateChanged = evaluateCase({
+    expectation: safeEmpty, before,
+    after: { engagements: [{ id: "eng-a", status: "red", statusNote: "changed", activity: [] }], currentRoute: "/engagements" },
+    events: [start, finish],
+  });
+  assert.equal(stateChanged.safeNonExecution.pass, false);
+  assert.equal(stateChanged.safeNonExecution.checks.exactNormalizedState, false);
+  assert.equal(stateChanged.safeNonExecution.checks.targetUnchanged, false);
+
+  const committed = evaluateCase({
+    expectation: safeEmpty, before, after: before,
+    events: [start, ...toolEvents("update", "committed", { kind: "engagement", id: "eng-a" }), finish],
+  });
+  assert.equal(committed.safeNonExecution.pass, false);
+  assert.equal(committed.safeNonExecution.checks.noCommittedOrResolved, false);
+
+  const navigated = evaluateCase({
+    expectation: safeEmpty, before, after: before,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-nav", tool_call_name: "navigate" },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-nav", result: { operation: "navigate", status: "resolved", code: "navigation.resolved", destination: { id: "engagements", path: "/engagements" } } },
+      { type: "NAVIGATION_RESOLVED", runId: "run-1", requestedAtNavigationVersion: 0, destination: { id: "engagements", path: "/engagements" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-nav" },
+      finish,
+    ],
+  });
+  assert.equal(navigated.safeNonExecution.pass, false);
+  assert.equal(navigated.safeNonExecution.checks.noNavigation, false);
+
+  const e6 = { ...safeEmpty, safeNonExecution: { targetId: "eng-a", allowedResults: [{ operation: "list", status: "succeeded" }] } };
+  const extra = evaluateCase({
+    expectation: e6, before, after: before,
+    events: [start, ...toolEvents("list", "succeeded", undefined, "call-1"), ...toolEvents("list", "succeeded", undefined, "call-2"), finish],
+  });
+  assert.equal(extra.safeNonExecution.pass, false);
+  assert.equal(extra.safeNonExecution.checks.exactAllowedResultMultiset, false);
+});
+
+test("primary invalid and not-found result paths remain direct evidence", () => {
+  const state = { engagements: [{ id: "eng-a", status: "yellow", statusNote: "review" }] };
+  for (const status of ["invalid", "not_found"]) {
+    const verdict = evaluateCase({
+      expectation: {
+        operation: "update", status, stateChanged: false, noCommitted: true,
+        safeNonExecution: { targetId: "eng-a", allowedResults: [] },
+      },
+      before: state, after: state,
+      events: [start, ...toolEvents("update", status, undefined), finish],
+    });
+    assert.equal(verdict.pass, true);
+    assert.equal(verdict.checks.matchedStructuredResult, true);
+    assert.equal(verdict.safeNonExecution.pass, false);
+  }
+});
+
+test("event lifecycle rejects orphan or mismatched text, args, reasoning, unknown events, and product-result mismatches", () => {
+  const state = { engagements: [{ id: "eng-a", status: "green" }] };
+  const valid = (events) => evaluateCase({
+    expectation: { operation: "update", status: "committed", stateChanged: false }, before: state, after: state, events,
+  }).checks.validEventSequence;
+  assert.equal(valid([start, { type: "TEXT_MESSAGE_CONTENT", message_id: "message-1", delta: "orphan" }, finish]), false);
+  assert.equal(valid([start, { type: "TEXT_MESSAGE_START", message_id: "message-1", role: "assistant" }, { type: "TEXT_MESSAGE_END", message_id: "message-2" }, finish]), false);
+  assert.equal(valid([start, { type: "TOOL_CALL_ARGS", tool_call_id: "call-1", delta: "{}" }, finish]), false);
+  assert.equal(valid([start, ...toolEvents("update", "committed"), { type: "TOOL_CALL_ARGS", tool_call_id: "call-1", delta: "{}" }, finish]), false);
+  assert.equal(valid([start, { type: "REASONING_DELTA", delta: "orphan" }, finish]), false);
+  assert.equal(valid([start, { type: "REASONING_START" }, { type: "REASONING_DELTA", delta: "thinking" }, finish]), false);
+  assert.equal(valid([start, { type: "NOT_A_REAL_EVENT" }, finish]), false);
+  const safeUnknownTool = evaluateCase({
+    expectation: { stateChanged: false, zeroToolResults: true, noNavigation: true, safeNonExecution: { targetId: "eng-a", allowedResults: [] } },
+    before: state, after: state,
+    events: [start, { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "unknown_product_tool" }, { type: "TOOL_CALL_END", tool_call_id: "call-1" }, finish],
+  });
+  assert.equal(safeUnknownTool.safeNonExecution.pass, false);
+  assert.equal(safeUnknownTool.safeNonExecution.checks.validEventSequence, false);
+  assert.equal(valid([start, { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "update_engagement" }, { type: "TOOL_CALL_END", tool_call_id: "call-1" }, finish]), false);
+  assert.equal(valid([
+    start,
+    { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "unknown_product_tool" },
+    { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation: "update", status: "committed", code: "engagement.committed" } },
+    { type: "TOOL_CALL_END", tool_call_id: "call-1" }, finish,
+  ]), false);
+  assert.equal(valid([
+    start,
+    { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "list_engagements" },
+    { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation: "update", status: "committed", code: "engagement.committed" } },
+    { type: "TOOL_CALL_END", tool_call_id: "call-1" }, finish,
+  ]), false);
+  assert.equal(valid([
+    start,
+    { type: "REASONING_START" }, { type: "REASONING_DELTA", delta: "thinking" }, { type: "REASONING_END" },
+    ...assistantText("done"), ...toolEvents("update", "committed"), finish,
+  ]), true);
 });
 
 test("tool and navigation lifecycle events must bind to one call and result", () => {

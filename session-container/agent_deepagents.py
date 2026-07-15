@@ -67,7 +67,7 @@ from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 import appdb
 import library
 import navsvc
-from workbench_core import EngagementService, Outcome, ProductToolResult
+from workbench_core import EngagementService, ProductToolResult, engagement_product_result
 from workbench_core.appdb_repository import AppdbEngagementRepository
 from mvp_tool_schemas import (
     CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
@@ -253,21 +253,6 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
             return None, "NAME_REQUIRED: which engagement?"
         return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
 
-    def _engagement_outcome_text(outcome: Outcome) -> str:
-        if outcome.status == "not_found":
-            return "ENGAGEMENT_NOT_FOUND: no visible engagement matches that reference."
-        if outcome.status == "forbidden":
-            return "FORBIDDEN: your engagement role does not allow that action."
-        if outcome.status == "invalid":
-            return "INVALID: " + "; ".join(outcome.errors.values())
-        if outcome.status == "noop":
-            return "NO_CHANGES: the engagement already has that state."
-        return f"FAILED: engagement operation returned {outcome.status}."
-
-    def _product_result(outcome: Outcome, operation: str, message: str = "") -> ProductToolResult:
-        resource = {"kind": "engagement", "id": outcome.record["id"]} if outcome.record and outcome.record.get("id") else None
-        return ProductToolResult(outcome.status, outcome.code or f"engagement.{outcome.status}", operation, message, resource=resource)
-
     def _tool_result(result: ProductToolResult, text: str) -> tuple[str, dict]:
         return text, {"product_result": result.to_dict()}
 
@@ -323,13 +308,13 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
     def create_engagement(name: str, description: str = "", customer: str = "", target_date: str = "") -> tuple[str, dict]:
         outcome = engagement_service.create(user_id, {"name": name, "description": description,
                                                        "customer": customer, "targetDate": target_date})
-        result = _product_result(outcome, "create", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement creation processed." if outcome.record else result.message)
 
     @tool("get_engagement", description="Read one visible engagement by stable ID.", args_schema=GetEngagementCommand, response_format="content_and_artifact")
     def get_engagement(engagement_id: str) -> tuple[str, dict]:
         outcome = engagement_service.get(user_id, engagement_id)
-        result = _product_result(outcome, "get", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement read processed." if outcome.record else result.message)
 
     @tool("update_engagement", description="Update an engagement by stable ID.", args_schema=UpdateEngagementCommand, response_format="content_and_artifact")
@@ -338,19 +323,19 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         values = {key: value for key, value in (("name", name), ("description", description),
                   ("customer", customer), ("startDate", start_date), ("targetDate", target_date)) if value is not None}
         outcome = engagement_service.update(user_id, engagement_id, values)
-        result = _product_result(outcome, "update", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement update processed." if outcome.status == "committed" else result.message)
 
     @tool("set_engagement_status", description="Set an engagement status by stable ID.", args_schema=SetEngagementStatusCommand, response_format="content_and_artifact")
     def set_engagement_status(engagement_id: str, status: str, note: str = "") -> tuple[str, dict]:
         outcome = engagement_service.update(user_id, engagement_id, {"status": status, "statusNote": note})
-        result = _product_result(outcome, "update", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement status processed." if outcome.status == "committed" else result.message)
 
     @tool("share_engagement", description="Share an engagement by stable ID.", args_schema=ShareEngagementCommand, response_format="content_and_artifact")
     def share_engagement(engagement_id: str, user: str, role: str = "viewer") -> tuple[str, dict]:
         outcome = engagement_service.share(user_id, engagement_id, user, role)
-        result = _product_result(outcome, "share", _engagement_outcome_text(outcome))
+        result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement sharing processed." if outcome.status == "committed" else result.message)
 
     @tool("list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")

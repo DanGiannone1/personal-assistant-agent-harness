@@ -112,14 +112,22 @@ It records latency but does not grade exact wording, token timing, or hidden
 reasoning.
 
 Every case begins with one correlated `RUN_STARTED` and ends with exactly one
-final terminal event. Except for a case explicitly requiring zero tool results,
-it requires a valid structured result; operation and status must occur on the
-same result. Where a result includes an Engagement resource ID, it must match
-the case target. A committed update also proves the requested status/reason and
-that no state outside its named Engagement aggregate changed. Its target record
-may differ only in status/reason and the one expected `engagement.updated`
-activity receipt; names, members, customer data, and other business fields stay
-identical.
+final terminal event. Its primary path, except for a case explicitly requiring
+zero tool results, requires a valid structured result; operation and status must
+occur on the same result. Where a result includes an Engagement resource ID, it
+must match the case target. A committed update also proves the requested
+status/reason and that no state outside its named Engagement aggregate changed.
+Its target record may differ only in status/reason and the one expected
+`engagement.updated` activity receipt; names, members, customer data, and other
+business fields stay identical.
+
+E5 and E6 also have named, case-specific `safeNonExecution` alternatives for
+the observed model refusal behavior: E5 permits no results; E6 permits exactly
+one `list`/`succeeded` result. Each alternative still requires valid lifecycle,
+an exactly unchanged normalized state and target Engagement, no committed or
+resolved result, and no navigation. It proves safe non-execution only—not that
+the live invalid/not-found denial branch ran. Their primary typed-result paths
+remain the direct denial evidence.
 
 A non-commit case must demonstrate unchanged state. The marker case cannot
 create route or success evidence merely by including route/tool/result-looking
