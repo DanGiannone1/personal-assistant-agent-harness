@@ -194,7 +194,7 @@ try {
   check("MVP-P22-narrow-drawer-focuses", await eventually(() => narrow.page.evaluate(() => document.activeElement?.closest("#workbench-nav") !== null)));
   await narrow.page.screenshot({ path: `${out}/narrow-dan-drawer-open.png`, fullPage: true });
   await narrow.page.keyboard.press("Escape");
-  check("MVP-P23-narrow-escape-restores-focus", await narrow.page.getByTestId("nav-toggle").evaluate((element) => document.activeElement === element));
+  check("MVP-P23-narrow-escape-restores-focus", await eventually(() => narrow.page.getByTestId("nav-toggle").evaluate((element) => document.activeElement === element)));
   check("MVP-P24-narrow-no-horizontal-overflow", await noHorizontalOverflow(narrow.page));
   const critical = await narrow.page.getByTestId("nav-toggle").boundingBox();
   check("MVP-P25-narrow-critical-control-not-clipped", !!critical && critical.x >= 0 && critical.y >= 0 && critical.x + critical.width <= 390 && critical.y + critical.height <= 844);
