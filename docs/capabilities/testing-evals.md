@@ -3,7 +3,7 @@
 > **Authority:** Behavioral-evidence detail subordinate to the [authoritative design](../design.md)
 > and [MVP requirements](../requirements.md)
 >
-> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
@@ -110,15 +110,15 @@ timing, and hidden reasoning are deliberately ungraded.
 
 ### Final deployed release observation
 
-The authoritative design records application revision `c544f6c` passing health, the corrected
-deployed suggestion-bundle check, real-Entra `/auth/me`, session creation, authoritative Engagement
-state readback, and a Deep Agents turn. The turn
+The authoritative design records application revision `807a0d6` passing frontend root and
+`/assistant` responses, API health, real-Entra `/auth/me`, Engagement and quick-link reads, session
+creation, authoritative Engagement state readback, and a Deep Agents turn. The turn
 `List my engagements.` emitted typed `list_engagements` and successful `engagement.listed` evidence
 before describing the same Cosmos-backed record. It also records a Blob-backed API round trip at the
-final private topology: upload, list, byte-for-byte/hash-equal download, and delete. The live
-post-deployment topology verifier passed for the three SHA-pinned, scale-to-zero apps, private
-Cosmos/Blob access, DNS, inventory, managed-identity role contract, and exact optional
-tenant-governance NSG pair.
+final private topology: upload, list, byte-for-byte download, and delete. The live post-deployment
+topology verifier passed for the three SHA-pinned, scale-to-zero apps, private Cosmos/Blob access,
+DNS, exact inventory, managed-identity role containment within `csa-workbench-rg`, the moved Basic
+registry, and the exact optional tenant-governance NSG pair.
 
 These are authoritative release observations, but the repository has no checked-in deployment
 transcript, per-event turn transcript, Blob request/response and hash record, inventory JSON, or
@@ -187,7 +187,7 @@ services and must never be pointed at Entra or a remote store.
 
 ## Open evidence gaps
 
-- No clean-worktree browser/eval bundle is stamped with final application SHA `c544f6c`.
+- No clean-worktree browser/eval bundle is stamped with final application SHA `807a0d6`.
 - No second real tenant actor proves deployed collaboration or isolation.
 - No interactive Entra browser record proves redirect/return, rendered portfolio, collaboration, and
   sign-out.

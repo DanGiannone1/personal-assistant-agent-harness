@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical CRUD detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
 > **Applies to:** Implemented Engagement reads and changes through the manual application and assistant tools
 >
@@ -222,7 +222,7 @@ bundle reports 34 passing checks at source revision `9142b2a`, including two-use
 read/write rejection, viewer affordances, validation with unchanged state, structured agent mutation,
 and authoritative UI refresh. The available live agent bundle reports seven passing cases at revision
 `7bca264`. Both precede the deployed application revision; the focused contracts run against the current checkout,
-but a fresh clean-worktree browser/eval bundle for `c544f6c` is not present. The browser bundle checks
+but a fresh clean-worktree browser/eval bundle for `807a0d6` is not present. The browser bundle checks
 that a blank Engagement task is rejected without changing state; it does not exercise a complete task
 mutation or artifact lifecycle at that revision.
 

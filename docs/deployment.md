@@ -3,9 +3,9 @@
 > **Purpose:** Operate the current guarded deployment; architecture authority remains in
 > [Infrastructure](capabilities/infrastructure.md).
 >
-> **Verified application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Verified application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
-> **Last verified:** 2026-07-15 in `csa-workbench-rg`, East US 2
+> **Last verified:** 2026-07-16 in `csa-workbench-rg`, East US 2
 
 ## What this runbook deploys
 
@@ -111,20 +111,22 @@ and responsive evidence.
 
 ## Verified release observation
 
-For `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`:
+For `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`:
 
 - all three apps were healthy and pinned to that SHA;
 - the frontend and API were public, the runtime was internal, and all apps were `0–1`;
-- the deployed frontend bundle contained only the supported Engagement-oriented assistant
-  suggestions;
-- real-Entra `/auth/me`, session creation, Cosmos-backed Engagement readback, and a typed
-  `list_engagements` Deep Agents turn succeeded;
-- Blob upload/list/exact-hash download/delete succeeded with Storage public access disabled;
-- the exact topology verifier passed, including the optional tenant-governance NSG pair; and
-- cold frontend/API starts were roughly 24 seconds, an accepted scale-to-zero tradeoff.
+- the frontend root and `/assistant` route returned `200`, and the API health endpoint returned
+  `200`;
+- real-Entra `/auth/me`, Engagement and quick-link reads, session creation, Cosmos-backed
+  Engagement state readback, and a typed `list_engagements` Deep Agents turn succeeded;
+- Blob upload/list/byte-for-byte download/delete succeeded with Storage public access disabled;
+- the exact topology verifier passed, including the optional tenant-governance NSG pair;
+- the Basic registry and all application-managed RBAC scopes were consolidated into
+  `csa-workbench-rg`; and
+- `shared-services-rg` retained only its unrelated Fabric capacity.
 
 The application images remain stamped with the application revision above. The later verifier-only
-commit `1411c0a` changed `infra/deploy.sh` and its tests, not the application image contents; that
+commit `56d1fdd` changed `infra/deploy.sh` and its tests, not the application image contents; that
 checked-in verifier was then run read-only against the deployed SHA.
 
 The running URLs for that environment are:

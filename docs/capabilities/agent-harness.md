@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical harness detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
 > **Applies to:** Harness selection, the `AgentSession` seam, product-tool adaptation, AG-UI/SSE events, turn coordination, cancellation, and traces
 >
@@ -291,7 +291,7 @@ covered workload-authenticated runtime invocation and authoritative Engagement r
 ### Remaining evidence and implementation gaps
 
 - The local eval and browser bundles predate the deployed application revision. A fresh clean-worktree
-  local Deep Agents bundle at `c544f6c` is absent.
+  local Deep Agents bundle at `807a0d6` is absent.
 - The deployed typed `list_engagements` turn is recorded in the authoritative design, but there is no
   durable turn receipt or checked-in per-event deployed transcript to inspect independently.
 - Copilot has focused schema/result contract evidence, not a current full live local parity bundle.

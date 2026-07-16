@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical UI/UX detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
 > **Applies to:** Information architecture, interaction, responsive behavior, accessibility intent, and presentation
 >

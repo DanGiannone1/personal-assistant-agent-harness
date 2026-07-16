@@ -3,9 +3,9 @@
 > **Authority:** Capability detail subordinate to the
 > [authoritative design](../design.md) and [v1 requirements](../requirements.md)
 >
-> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
-> **Deployment recorded by the design:** 2026-07-15, `csa-workbench-rg`
+> **Deployment recorded by the design:** 2026-07-16, `csa-workbench-rg`
 >
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
@@ -263,7 +263,7 @@ Repository-verifiable contracts are separate from observations of the live relea
 | Evidence kind | What is available |
 |---|---|
 | Repository contract | Bicep resource declarations, guarded deployment/recovery/verifier logic, Entra desired-shape helper, validation-only workflow, and focused contract tests |
-| Live release evidence recorded by the authoritative design | East US 2 deployment in `csa-workbench-rg`; health, corrected deployed suggestion bundle, real-Entra `/auth/me`, session creation, authoritative Engagement readback, a typed Deep Agents turn, private Cosmos/Blob topology, exact tenant-governance NSG pair, and roughly 24-second cold start |
+| Live release evidence recorded by the authoritative design | East US 2 deployment in `csa-workbench-rg`; frontend/API health, real-Entra identity, Engagement and quick-link reads, session creation, authoritative Engagement readback, a typed Deep Agents turn, private Blob round trip, exact topology and RBAC containment, the registry consolidation, exact tenant-governance NSG pair, and the earlier roughly 24-second cold-start observation |
 | Not checked in | Azure CLI inventory or NSG JSON, what-if output, deployment transcript, private-DNS probe output, replica metrics, timing log, billing export, or cost estimate |
 | Remaining live evidence named by the design | A second real tenant actor and an interactive real-Entra browser journey |
 

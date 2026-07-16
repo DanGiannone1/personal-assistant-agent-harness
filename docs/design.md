@@ -1,9 +1,9 @@
 # CSA Workbench — Authoritative Product and System Design
 
 > **Authority:** Canonical high-level product and system design  
-> **Deployed application revision:** `c544f6ca7d70a80d9aa5708d22c590f8f13c88d6`
+> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
 >
-> **Deployment verified:** 2026-07-15 in `csa-workbench-rg`
+> **Deployment verified:** 2026-07-16 in `csa-workbench-rg`
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## Executive summary
@@ -262,14 +262,13 @@ Evidence is behavioral and identifies its environment:
 | Deployed real Entra | Tenant sign-in, internal workload identity, private Cosmos/Blob paths, Azure OpenAI turn |
 | Visual review | Six representative screenshots and responsive hit-testing |
 
-The deployed application revision has passed health, real-Entra `/auth/me`, session creation,
-authoritative Engagement readback, and a typed Deep Agents turn. Its served JavaScript contains the
-corrected, supported Engagement suggestions. A Blob artifact was uploaded through the API,
-listed, downloaded with the exact source SHA-256, deleted, and confirmed absent while Storage public
-network access was disabled. The live topology verifier also passed the exact app, network, DNS,
-identity, role, and immutable-image contract; private DNS A records were inside the endpoint subnet
-at `10.42.0.36–38`. The exact tenant-governance NSG pair was present and passed its fail-closed
-policy-artifact contract.
+The deployed application revision has passed frontend root and `/assistant` responses, API health,
+real-Entra `/auth/me`, Engagement and quick-link reads, session creation, authoritative Engagement
+readback, and a typed Deep Agents turn. A Blob artifact was uploaded through the API, listed,
+downloaded byte-for-byte, deleted, and confirmed absent while Storage public network access was
+disabled. The live topology verifier also passed the exact app, network, DNS, identity, role,
+resource-group containment, and immutable-image contract. The exact tenant-governance NSG pair was
+present and passed its fail-closed policy-artifact contract.
 
 A second real tenant actor and an interactive real-Entra browser journey remain evidence to capture;
 deterministic multi-user browser evidence is already present. The final UI copy was verified in the
