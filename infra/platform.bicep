@@ -4,10 +4,10 @@ param location string = resourceGroup().location
 param environmentName string
 param cosmosAccountName string
 param storageAccountName string
-param sharedAcrName string
-param sharedAcrResourceGroup string
+param acrName string
+param acrLocation string
 param azureOpenAiName string
-param azureOpenAiResourceGroup string
+param azureOpenAiDeploymentName string
 
 var databaseName = 'csa-workbench-entra'
 var containerName = 'appstate'
@@ -25,6 +25,8 @@ var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
 // This is the Azure public-cloud Private Link suffix required by the approved Storage endpoint.
 #disable-next-line no-hardcoded-env-urls
 var storagePrivateDnsZoneName = 'privatelink.blob.core.windows.net'
+var azureOpenAiModelName = 'gpt-4.1'
+var azureOpenAiModelVersion = '2025-04-14'
 
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: virtualNetworkName
@@ -104,6 +106,49 @@ resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-3
 resource runtimeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: runtimeIdentityName
   location: location
+}
+
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: acrName
+  location: acrLocation
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: false
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource azureOpenAi 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: azureOpenAiName
+  location: location
+  kind: 'OpenAI'
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: azureOpenAiName
+    disableLocalAuth: true
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource azureOpenAiDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: azureOpenAi
+  name: azureOpenAiDeploymentName
+  sku: {
+    name: 'Standard'
+    capacity: 10
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: azureOpenAiModelName
+      version: azureOpenAiModelVersion
+    }
+    versionUpgradeOption: 'OnceCurrentVersionExpired'
+  }
 }
 
 resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
@@ -295,22 +340,26 @@ resource storagePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateD
 
 module acrRoles 'acr-roles.bicep' = {
   name: 'acr-roles'
-  scope: resourceGroup(sharedAcrResourceGroup)
   params: {
-    acrName: sharedAcrName
+    acrName: acrName
     frontendPrincipalId: frontendIdentity.properties.principalId
     apiPrincipalId: apiIdentity.properties.principalId
     runtimePrincipalId: runtimeIdentity.properties.principalId
   }
+  dependsOn: [
+    acr
+  ]
 }
 
 module openAiRole 'openai-role.bicep' = {
   name: 'openai-role'
-  scope: resourceGroup(azureOpenAiResourceGroup)
   params: {
     accountName: azureOpenAiName
     runtimePrincipalId: runtimeIdentity.properties.principalId
   }
+  dependsOn: [
+    azureOpenAi
+  ]
 }
 
 resource apiCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
@@ -349,6 +398,9 @@ output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = 'https://${cosmos.name}.documents.azure.com:443/'
 output storageAccountName string = storage.name
 output storageBlobEndpoint string = storage.properties.primaryEndpoints.blob
+output acrLoginServer string = acr.properties.loginServer
+output azureOpenAiEndpoint string = azureOpenAi.properties.endpoint
+output azureOpenAiDeploymentName string = azureOpenAiDeployment.name
 output frontendIdentityId string = frontendIdentity.id
 output frontendIdentityClientId string = frontendIdentity.properties.clientId
 output frontendIdentityPrincipalId string = frontendIdentity.properties.principalId

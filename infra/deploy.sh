@@ -8,8 +8,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 APPLY="${APPLY:-false}"
-# Shared ACR/OpenAI stay in East US; compute and state use East US 2 because
-# live East US provisioning is currently unavailable under regional demand.
 LOCATION="${LOCATION:-eastus2}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-csa-workbench-rg}"
 ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-csa-workbench-env}"
@@ -19,9 +17,8 @@ RUNTIME_APP_NAME="${RUNTIME_APP_NAME:-csa-workbench-runtime}"
 COSMOS_ACCOUNT_NAME="${COSMOS_ACCOUNT_NAME:-csaworkbench9fc05183}"
 STORAGE_ACCOUNT_NAME="${STORAGE_ACCOUNT_NAME:-csaworkbench9fc05183}"
 ACR_NAME="${ACR_NAME:-djgsharedacr}"
-ACR_RESOURCE_GROUP="${ACR_RESOURCE_GROUP:-shared-services-rg}"
-AOAI_NAME="${AOAI_NAME:-rfpagent-ai}"
-AOAI_RESOURCE_GROUP="${AOAI_RESOURCE_GROUP:-flow-dev-rg}"
+ACR_LOCATION="${ACR_LOCATION:-eastus}"
+AOAI_NAME="${AOAI_NAME:-csa-workbench-ai}"
 AZURE_DEPLOYMENT="${AZURE_DEPLOYMENT:-gpt-4.1}"
 VNET_NAME='csa-workbench-vnet'
 ACA_INFRASTRUCTURE_SUBNET_NAME='aca-infrastructure'
@@ -50,6 +47,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 [[ "$COSMOS_ACCOUNT_NAME" =~ ^[a-z0-9]{3,44}$ ]] || fail "invalid Cosmos account name: $COSMOS_ACCOUNT_NAME"
 [[ "$STORAGE_ACCOUNT_NAME" =~ ^[a-z0-9]{3,24}$ ]] || fail "invalid Storage account name: $STORAGE_ACCOUNT_NAME"
+[[ "$ACR_NAME" =~ ^[a-zA-Z0-9]{5,50}$ ]] || fail "invalid Container Registry name: $ACR_NAME"
+[[ "$AOAI_NAME" =~ ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ ]] || fail "invalid Azure OpenAI account name: $AOAI_NAME"
 
 echo "CSA Workbench Azure MVP ($SHA)"
 echo "Target: $RESOURCE_GROUP in $LOCATION; APPLY=$APPLY"
@@ -62,8 +61,8 @@ FOUNDATION=(az deployment sub create --name "$FOUNDATION_DEPLOYMENT_NAME" --loca
   --template-file infra/foundation.bicep
   --parameters location="$LOCATION" resourceGroupName="$RESOURCE_GROUP" environmentName="$ENVIRONMENT_NAME"
   cosmosAccountName="$COSMOS_ACCOUNT_NAME" storageAccountName="$STORAGE_ACCOUNT_NAME"
-  sharedAcrName="$ACR_NAME" sharedAcrResourceGroup="$ACR_RESOURCE_GROUP"
-  azureOpenAiName="$AOAI_NAME" azureOpenAiResourceGroup="$AOAI_RESOURCE_GROUP")
+  acrName="$ACR_NAME" acrLocation="$ACR_LOCATION"
+  azureOpenAiName="$AOAI_NAME" azureOpenAiDeploymentName="$AZURE_DEPLOYMENT")
 
 RECOVERY_STATE=''
 RECOVERY_ENVIRONMENT_ID=''
@@ -123,6 +122,10 @@ fi
 "${FOUNDATION[@]}" --only-show-errors >/dev/null
 ENVIRONMENT_DOMAIN="$(az deployment sub show --name "$FOUNDATION_DEPLOYMENT_NAME" --query properties.outputs.environmentDefaultDomain.value -o tsv)"
 [[ -n "$ENVIRONMENT_DOMAIN" ]] || fail "foundation deployment did not return the Container Apps default domain"
+ACR_SERVER="$(az deployment sub show --name "$FOUNDATION_DEPLOYMENT_NAME" --query properties.outputs.acrLoginServer.value -o tsv)"
+[[ -n "$ACR_SERVER" ]] || fail "foundation deployment did not return the Container Registry login server"
+AOAI_ENDPOINT="$(az deployment sub show --name "$FOUNDATION_DEPLOYMENT_NAME" --query properties.outputs.azureOpenAiEndpoint.value -o tsv)"
+[[ -n "$AOAI_ENDPOINT" ]] || fail "foundation deployment did not return the Azure OpenAI endpoint"
 FRONTEND_URL="https://${FRONTEND_APP_NAME}.${ENVIRONMENT_DOMAIN}"
 API_URL="https://${API_APP_NAME}.${ENVIRONMENT_DOMAIN}"
 RUNTIME_FQDN="${RUNTIME_APP_NAME}.internal.${ENVIRONMENT_DOMAIN}"
@@ -132,13 +135,10 @@ API_CLIENT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["api_cl
 WEB_CLIENT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["web_client_id"])' <<<"$ENTRA_JSON")"
 RUNTIME_CLIENT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["runtime_client_id"])' <<<"$ENTRA_JSON")"
 
-ACR_SERVER="${ACR_NAME}.azurecr.io"
-AOAI_ENDPOINT="$(az cognitiveservices account show -g "$AOAI_RESOURCE_GROUP" -n "$AOAI_NAME" --query properties.endpoint -o tsv)"
-[[ -n "$AOAI_ENDPOINT" ]] || fail "Azure OpenAI account endpoint was not found"
 AOAI_ENDPOINT="${AOAI_ENDPOINT%/}/openai/v1/"
-az acr build -r "$ACR_NAME" -g "$ACR_RESOURCE_GROUP" -t "csa-workbench-api:$SHA" -f Dockerfile . --only-show-errors
-az acr build -r "$ACR_NAME" -g "$ACR_RESOURCE_GROUP" -t "csa-workbench-runtime:$SHA" -f session-container/Dockerfile . --only-show-errors
-az acr build -r "$ACR_NAME" -g "$ACR_RESOURCE_GROUP" -t "csa-workbench-frontend:$SHA" -f frontend/Dockerfile frontend \
+az acr build -r "$ACR_NAME" -g "$RESOURCE_GROUP" -t "csa-workbench-api:$SHA" -f Dockerfile . --only-show-errors
+az acr build -r "$ACR_NAME" -g "$RESOURCE_GROUP" -t "csa-workbench-runtime:$SHA" -f session-container/Dockerfile . --only-show-errors
+az acr build -r "$ACR_NAME" -g "$RESOURCE_GROUP" -t "csa-workbench-frontend:$SHA" -f frontend/Dockerfile frontend \
   --build-arg "NEXT_PUBLIC_API_URL=$API_URL" \
   --build-arg NEXT_PUBLIC_IDENTITY_MODE=entra \
   --build-arg "NEXT_PUBLIC_ENTRA_TENANT_ID=$TENANT_ID" \
@@ -158,7 +158,7 @@ echo "Running resource-group what-if before app deployment..."
 "${APPS[@]}" --only-show-errors >/dev/null
 
 verify_inventory() {
-  local apps resources network_security_groups assignments cosmos cosmos_sql_assignments storage managed_environment vnet private_endpoints private_dns_zones cosmos_dns_links storage_dns_links cosmos_dns_groups storage_dns_groups cosmos_dns_records storage_dns_records event_topics event_topic_name event_subscriptions frontend_principal api_principal runtime_principal subscription_id
+  local apps resources network_security_groups assignments acr azure_open_ai azure_open_ai_deployments cosmos cosmos_sql_assignments storage managed_environment vnet private_endpoints private_dns_zones cosmos_dns_links storage_dns_links cosmos_dns_groups storage_dns_groups cosmos_dns_records storage_dns_records event_topics event_topic_name event_subscriptions frontend_principal api_principal runtime_principal subscription_id
   apps="$(az containerapp list -g "$RESOURCE_GROUP" -o json)"
   resources="$(az resource list -g "$RESOURCE_GROUP" -o json)"
   network_security_groups="$(az network nsg list -g "$RESOURCE_GROUP" -o json)"
@@ -166,6 +166,9 @@ verify_inventory() {
   api_principal="$(az identity show -g "$RESOURCE_GROUP" -n csa-workbench-api-identity --query principalId -o tsv)"
   runtime_principal="$(az identity show -g "$RESOURCE_GROUP" -n csa-workbench-runtime-identity --query principalId -o tsv)"
   assignments="[$(az role assignment list --assignee "$frontend_principal" --all -o json),$(az role assignment list --assignee "$api_principal" --all -o json),$(az role assignment list --assignee "$runtime_principal" --all -o json)]"
+  acr="$(az acr show -g "$RESOURCE_GROUP" -n "$ACR_NAME" -o json)"
+  azure_open_ai="$(az cognitiveservices account show -g "$RESOURCE_GROUP" -n "$AOAI_NAME" -o json)"
+  azure_open_ai_deployments="$(az cognitiveservices account deployment list -g "$RESOURCE_GROUP" -n "$AOAI_NAME" -o json)"
   cosmos="$(az cosmosdb show -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT_NAME" -o json)"
   cosmos_sql_assignments="$(az cosmosdb sql role assignment list -g "$RESOURCE_GROUP" -a "$COSMOS_ACCOUNT_NAME" -o json)"
   storage="$(az storage account show -g "$RESOURCE_GROUP" -n "$STORAGE_ACCOUNT_NAME" -o json)"
@@ -187,9 +190,8 @@ verify_inventory() {
   else
     event_subscriptions='[]'
   fi
-  APPS="$apps" RESOURCES="$resources" NETWORK_SECURITY_GROUPS="$network_security_groups" ASSIGNMENTS="$assignments" COSMOS="$cosmos" COSMOS_SQL_ASSIGNMENTS="$cosmos_sql_assignments" STORAGE="$storage" MANAGED_ENVIRONMENT="$managed_environment" VNET="$vnet" PRIVATE_ENDPOINTS="$private_endpoints" PRIVATE_DNS_ZONES="$private_dns_zones" COSMOS_DNS_LINKS="$cosmos_dns_links" STORAGE_DNS_LINKS="$storage_dns_links" COSMOS_DNS_GROUPS="$cosmos_dns_groups" STORAGE_DNS_GROUPS="$storage_dns_groups" COSMOS_DNS_RECORDS="$cosmos_dns_records" STORAGE_DNS_RECORDS="$storage_dns_records" EVENT_TOPICS="$event_topics" EVENT_SUBSCRIPTIONS="$event_subscriptions" \
-  RESOURCE_GROUP="$RESOURCE_GROUP" ACR_RESOURCE_GROUP="$ACR_RESOURCE_GROUP" AOAI_RESOURCE_GROUP="$AOAI_RESOURCE_GROUP" \
-  ACR_NAME="$ACR_NAME" AOAI_NAME="$AOAI_NAME" COSMOS_ACCOUNT_NAME="$COSMOS_ACCOUNT_NAME" STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
+  APPS="$apps" RESOURCES="$resources" NETWORK_SECURITY_GROUPS="$network_security_groups" ASSIGNMENTS="$assignments" ACR="$acr" AZURE_OPEN_AI="$azure_open_ai" AZURE_OPEN_AI_DEPLOYMENTS="$azure_open_ai_deployments" COSMOS="$cosmos" COSMOS_SQL_ASSIGNMENTS="$cosmos_sql_assignments" STORAGE="$storage" MANAGED_ENVIRONMENT="$managed_environment" VNET="$vnet" PRIVATE_ENDPOINTS="$private_endpoints" PRIVATE_DNS_ZONES="$private_dns_zones" COSMOS_DNS_LINKS="$cosmos_dns_links" STORAGE_DNS_LINKS="$storage_dns_links" COSMOS_DNS_GROUPS="$cosmos_dns_groups" STORAGE_DNS_GROUPS="$storage_dns_groups" COSMOS_DNS_RECORDS="$cosmos_dns_records" STORAGE_DNS_RECORDS="$storage_dns_records" EVENT_TOPICS="$event_topics" EVENT_SUBSCRIPTIONS="$event_subscriptions" \
+  RESOURCE_GROUP="$RESOURCE_GROUP" ACR_NAME="$ACR_NAME" ACR_LOCATION="$ACR_LOCATION" AOAI_NAME="$AOAI_NAME" AZURE_DEPLOYMENT="$AZURE_DEPLOYMENT" COSMOS_ACCOUNT_NAME="$COSMOS_ACCOUNT_NAME" STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
   FRONTEND_APP_NAME="$FRONTEND_APP_NAME" API_APP_NAME="$API_APP_NAME" RUNTIME_APP_NAME="$RUNTIME_APP_NAME" SHA="$SHA" SUBSCRIPTION_ID="$subscription_id" \
   FRONTEND_PRINCIPAL="$frontend_principal" API_PRINCIPAL="$api_principal" RUNTIME_PRINCIPAL="$runtime_principal" LOCATION="$LOCATION" ENVIRONMENT_NAME="$ENVIRONMENT_NAME" VNET_NAME="$VNET_NAME" ACA_INFRASTRUCTURE_SUBNET_NAME="$ACA_INFRASTRUCTURE_SUBNET_NAME" PRIVATE_ENDPOINT_SUBNET_NAME="$PRIVATE_ENDPOINT_SUBNET_NAME" COSMOS_PRIVATE_ENDPOINT_NAME="$COSMOS_PRIVATE_ENDPOINT_NAME" STORAGE_PRIVATE_ENDPOINT_NAME="$STORAGE_PRIVATE_ENDPOINT_NAME" COSMOS_PRIVATE_DNS_ZONE="$COSMOS_PRIVATE_DNS_ZONE" STORAGE_PRIVATE_DNS_ZONE="$STORAGE_PRIVATE_DNS_ZONE" python3 - <<'PY'
 import json
@@ -200,6 +202,9 @@ apps = json.loads(os.environ['APPS'])
 resources = json.loads(os.environ['RESOURCES'])
 network_security_groups = json.loads(os.environ['NETWORK_SECURITY_GROUPS'])
 assignments = [assignment for principal_assignments in json.loads(os.environ['ASSIGNMENTS']) for assignment in principal_assignments]
+acr = json.loads(os.environ['ACR'])
+azure_open_ai = json.loads(os.environ['AZURE_OPEN_AI'])
+azure_open_ai_deployments = json.loads(os.environ['AZURE_OPEN_AI_DEPLOYMENTS'])
 cosmos = json.loads(os.environ['COSMOS'])
 cosmos_sql_assignments = json.loads(os.environ['COSMOS_SQL_ASSIGNMENTS'])
 storage = json.loads(os.environ['STORAGE'])
@@ -234,12 +239,30 @@ for app in apps:
     container_resources = container['resources']
     if container['image'] != f"{os.environ['ACR_NAME']}.azurecr.io/{image_name}:{os.environ['SHA']}" or container_resources.get('cpu') != cpu or container_resources.get('memory') != memory:
         raise SystemExit(f"invalid immutable image or resource size: {app['name']}")
+    registries = properties.get('configuration', {}).get('registries')
+    if not isinstance(registries, list) or len(registries) != 1 or registries[0].get('server') != f"{os.environ['ACR_NAME']}.azurecr.io":
+        raise SystemExit(f"invalid Container Registry binding: {app['name']}")
+    if app['name'] == os.environ['RUNTIME_APP_NAME']:
+        runtime_env = {item.get('name'): item.get('value') for item in container.get('env', []) if isinstance(item, dict)}
+        expected_endpoint = f"https://{os.environ['AOAI_NAME']}.cognitiveservices.azure.com/openai/v1/"
+        if runtime_env.get('AZURE_ENDPOINT') != expected_endpoint or runtime_env.get('AZURE_DEPLOYMENT') != os.environ['AZURE_DEPLOYMENT']:
+            raise SystemExit('runtime Azure OpenAI binding drifted')
 excluded = ('Microsoft.Search/', 'Microsoft.App/sessionPools', 'Microsoft.CognitiveServices/accounts/projects', 'Microsoft.Communication/', 'Microsoft.ApiManagement/', 'Microsoft.Cdn/', 'Microsoft.Network/natGateways', 'Microsoft.Insights/', 'Microsoft.OperationalInsights/')
 if any(resource['type'].startswith(excluded) for resource in resources):
     raise SystemExit('excluded resource present in MVP resource group')
 forbidden_network_types = ('Microsoft.Network/azureFirewalls', 'Microsoft.Network/virtualNetworkGateways', 'Microsoft.Network/routeTables', 'Microsoft.Network/natGateways')
 if any(resource.get('type') in forbidden_network_types for resource in resources):
     raise SystemExit('forbidden network resource present in MVP resource group')
+if acr.get('name') != os.environ['ACR_NAME'] or acr.get('location', '').lower() != os.environ['ACR_LOCATION'].lower() or acr.get('provisioningState') != 'Succeeded' or acr.get('sku', {}).get('name') != 'Basic' or acr.get('adminUserEnabled') is not False or acr.get('publicNetworkAccess') != 'Enabled':
+    raise SystemExit('Container Registry profile drifted')
+if azure_open_ai.get('name') != os.environ['AOAI_NAME'] or azure_open_ai.get('location', '').lower() != os.environ['LOCATION'].lower() or azure_open_ai.get('kind') != 'OpenAI' or azure_open_ai.get('sku', {}).get('name') != 'S0' or azure_open_ai.get('properties', {}).get('provisioningState') != 'Succeeded' or azure_open_ai.get('properties', {}).get('disableLocalAuth') is not True or azure_open_ai.get('properties', {}).get('publicNetworkAccess') != 'Enabled' or azure_open_ai.get('properties', {}).get('customSubDomainName') != os.environ['AOAI_NAME']:
+    raise SystemExit('Azure OpenAI account profile drifted')
+if not isinstance(azure_open_ai_deployments, list) or len(azure_open_ai_deployments) != 1:
+    raise SystemExit('Azure OpenAI deployment inventory drifted')
+azure_open_ai_deployment = azure_open_ai_deployments[0]
+azure_open_ai_model = azure_open_ai_deployment.get('properties', {}).get('model', {})
+if azure_open_ai_deployment.get('name') != os.environ['AZURE_DEPLOYMENT'] or azure_open_ai_deployment.get('properties', {}).get('provisioningState') != 'Succeeded' or azure_open_ai_model.get('format') != 'OpenAI' or azure_open_ai_model.get('name') != 'gpt-4.1' or azure_open_ai_model.get('version') != '2025-04-14' or azure_open_ai_deployment.get('sku', {}).get('name') != 'Standard' or azure_open_ai_deployment.get('sku', {}).get('capacity') != 10:
+    raise SystemExit('Azure OpenAI deployment profile drifted')
 if cosmos.get('disableLocalAuth') is not True or cosmos.get('publicNetworkAccess') != 'Disabled':
     raise SystemExit('Cosmos authentication/network profile drifted')
 if storage.get('publicNetworkAccess') != 'Disabled' or storage.get('allowSharedKeyAccess') is not False or storage.get('allowBlobPublicAccess') is not False:
@@ -396,6 +419,8 @@ expected_direct_resources = {
     ('microsoft.app/containerapps', os.environ['FRONTEND_APP_NAME'].lower()),
     ('microsoft.app/containerapps', os.environ['API_APP_NAME'].lower()),
     ('microsoft.app/containerapps', os.environ['RUNTIME_APP_NAME'].lower()),
+    ('microsoft.containerregistry/registries', os.environ['ACR_NAME'].lower()),
+    ('microsoft.cognitiveservices/accounts', os.environ['AOAI_NAME'].lower()),
     ('microsoft.documentdb/databaseaccounts', os.environ['COSMOS_ACCOUNT_NAME'].lower()),
     ('microsoft.storage/storageaccounts', os.environ['STORAGE_ACCOUNT_NAME'].lower()),
     ('microsoft.network/virtualnetworks', os.environ['VNET_NAME'].lower()),
@@ -420,6 +445,7 @@ allowed_child_resources = {
     ('microsoft.documentdb/databaseaccounts/sqldatabases/containers', f'{os.environ["COSMOS_ACCOUNT_NAME"]}/csa-workbench-entra/appstate'.lower()),
     ('microsoft.storage/storageaccounts/blobservices', f'{os.environ["STORAGE_ACCOUNT_NAME"]}/default'.lower()),
     ('microsoft.storage/storageaccounts/blobservices/containers', f'{os.environ["STORAGE_ACCOUNT_NAME"]}/default/engagement-artifacts'.lower()),
+    ('microsoft.cognitiveservices/accounts/deployments', f'{os.environ["AOAI_NAME"]}/{os.environ["AZURE_DEPLOYMENT"]}'.lower()),
 }
 if event_topics:
     allowed_child_resources.add(('microsoft.eventgrid/systemtopics/eventsubscriptions', f'{event_topics[0]["name"]}/storageantimalwaresubscription'.lower()))
@@ -429,13 +455,16 @@ if not expected_direct_resources <= actual_resources or any(resource not in expe
 subscription_scope = f"/subscriptions/{os.environ['SUBSCRIPTION_ID']}".lower()
 if any(item.get('scope', '').lower() == subscription_scope for item in assignments):
     raise SystemExit('subscription-scoped role assignment found')
+resource_group_scope = f"/subscriptions/{os.environ['SUBSCRIPTION_ID']}/resourceGroups/{os.environ['RESOURCE_GROUP']}/".lower()
+if any(not item.get('scope', '').lower().startswith(resource_group_scope) for item in assignments):
+    raise SystemExit('managed identity role assignment escapes the CSA resource group')
 subscription = os.environ['SUBSCRIPTION_ID']
 expected_roles = {
-    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["ACR_RESOURCE_GROUP"]}/providers/Microsoft.ContainerRegistry/registries/{os.environ["ACR_NAME"]}', 'AcrPull', os.environ['FRONTEND_PRINCIPAL']),
-    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["ACR_RESOURCE_GROUP"]}/providers/Microsoft.ContainerRegistry/registries/{os.environ["ACR_NAME"]}', 'AcrPull', os.environ['API_PRINCIPAL']),
-    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["ACR_RESOURCE_GROUP"]}/providers/Microsoft.ContainerRegistry/registries/{os.environ["ACR_NAME"]}', 'AcrPull', os.environ['RUNTIME_PRINCIPAL']),
+    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.ContainerRegistry/registries/{os.environ["ACR_NAME"]}', 'AcrPull', os.environ['FRONTEND_PRINCIPAL']),
+    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.ContainerRegistry/registries/{os.environ["ACR_NAME"]}', 'AcrPull', os.environ['API_PRINCIPAL']),
+    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.ContainerRegistry/registries/{os.environ["ACR_NAME"]}', 'AcrPull', os.environ['RUNTIME_PRINCIPAL']),
     (f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.Storage/storageAccounts/{os.environ["STORAGE_ACCOUNT_NAME"]}', 'Storage Blob Data Contributor', os.environ['API_PRINCIPAL']),
-    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["AOAI_RESOURCE_GROUP"]}/providers/Microsoft.CognitiveServices/accounts/{os.environ["AOAI_NAME"]}', 'Cognitive Services OpenAI User', os.environ['RUNTIME_PRINCIPAL']),
+    (f'/subscriptions/{subscription}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.CognitiveServices/accounts/{os.environ["AOAI_NAME"]}', 'Cognitive Services OpenAI User', os.environ['RUNTIME_PRINCIPAL']),
 }
 expected_roles = {(scope.lower(), role.lower(), principal.lower()) for scope, role, principal in expected_roles}
 actual_roles = {(item.get('scope', '').lower(), item.get('roleDefinitionName', '').lower(), item.get('principalId', '').lower()) for item in assignments}

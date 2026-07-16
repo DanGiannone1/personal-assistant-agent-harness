@@ -233,13 +233,19 @@ pull, Cosmos data access, Blob data access, Azure OpenAI, and API-to-runtime aut
 OpenAI remains on identity-authenticated public TLS. The baseline does not add NAT Gateway, Azure
 Firewall, Front Door, APIM, VPN, private ACA ingress, Search, or a warm session pool.
 
-The resource group is `csa-workbench-rg` in East US 2. A shared ACR and Azure OpenAI account remain
-explicit external dependencies to avoid duplicate cost. Tenant policy also creates a Defender for
-Storage Event Grid topic and subscription; the verifier tolerates their absence but validates their
-exact form when present because they are not application-owned topology. Tenant governance may also
-create either no network security groups or one exact East US 2 pair for the ACA and private-endpoint
-subnets. Application Bicep declares no NSGs; the verifier rejects partial, extra, associated-NIC,
-custom-rule, wrong-subnet, and other mismatched policy state.
+Every application-managed Azure resource is owned by `csa-workbench-rg`: the Container Apps
+environment and apps, identities, VNet and private data paths, Cosmos, Blob, the Basic registry, and
+the Azure OpenAI account/deployment. The registry preserves its East US location while the resource
+group and remaining application resources use East US 2. Azure Container Apps necessarily creates
+a separate `ME_...` resource group for platform-managed load-balancer infrastructure; Microsoft
+owns that group and the application does not configure or depend on its individual resources.
+
+Tenant policy also creates a Defender for Storage Event Grid topic and subscription; the verifier
+tolerates their absence but validates their exact form when present because they are not
+application-owned topology. Tenant governance may also create either no network security groups or
+one exact East US 2 pair for the ACA and private-endpoint subnets. Application Bicep declares no
+NSGs; the verifier rejects partial, extra, associated-NIC, custom-rule, wrong-subnet, and other
+mismatched policy state.
 
 Scale-to-zero cold starts of roughly 24 seconds were observed and accepted for this cost-minimized
 MVP. All three images are pinned to the same full Git SHA.

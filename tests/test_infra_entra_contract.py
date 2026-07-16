@@ -287,6 +287,17 @@ def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> N
     assert "privatelink.blob.core.windows.net" in foundation.lower()
     assert "microsoft.network/privateendpoints" in foundation.lower()
     assert "microsoft.network/privatednszones" in foundation.lower()
+    assert "microsoft.containerregistry/registries" in foundation.lower()
+    assert "adminuserenabled: false" in foundation.lower()
+    assert "name: 'basic'" in foundation.lower()
+    assert "microsoft.cognitiveservices/accounts@2024-10-01" in foundation.lower()
+    assert "microsoft.cognitiveservices/accounts/deployments@2024-10-01" in foundation.lower()
+    assert "disablelocalauth: true" in foundation.lower()
+    assert "name: 'standard'" in foundation.lower() and "capacity: 10" in foundation.lower()
+    assert "azureopenaimodelname = 'gpt-4.1'" in foundation.lower()
+    assert "azureopenaimodelversion = '2025-04-14'" in foundation.lower()
+    assert "shared-services-rg" not in "\n".join((foundation, deploy)).lower()
+    assert "flow-dev-rg" not in "\n".join((foundation, deploy)).lower()
     assert "networksecuritygroups" not in "\n".join((foundation, apps)).lower()
     assert "minreplicas: 0" in apps.lower() and "maxreplicas: 1" in apps.lower()
     assert apps.lower().count("workloadprofilename: 'consumption'") == 3
@@ -309,20 +320,21 @@ def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> N
     assert "if ! truthy \"$APPLY\"; then" in deploy
     assert "event-subscription list -g \"$RESOURCE_GROUP\" --system-topic-name \"$event_topic_name\"" in deploy
     assert 'RUNTIME_FQDN="${RUNTIME_APP_NAME}.internal.${ENVIRONMENT_DOMAIN}"' in deploy
+    assert "managed identity role assignment escapes the CSA resource group" in deploy
 
 
 def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded_resources() -> None:
     script = (ROOT / "infra" / "deploy.sh").read_text()
     start = script.index("python3 - <<'PY'\n") + len("python3 - <<'PY'\n")
     verifier = script[start:script.index("\nPY\n}", start)]
-    subscription, resource_group, acr_group, aoai_group = "sub", "csa-workbench-rg", "shared-services-rg", "flow-dev-rg"
-    acr, cosmos, storage, aoai = "djgsharedacr", "csaworkbench9fc05183", "csaworkbench9fc05183", "rfpagent-ai"
+    subscription, resource_group = "sub", "csa-workbench-rg"
+    acr, cosmos, storage, aoai = "djgsharedacr", "csaworkbench9fc05183", "csaworkbench9fc05183", "csa-workbench-ai"
     principals = {"FRONTEND_PRINCIPAL": "frontend", "API_PRINCIPAL": "api", "RUNTIME_PRINCIPAL": "runtime"}
     prefix = f"/subscriptions/{subscription}/resourceGroups"
-    acr_scope = f"{prefix}/{acr_group}/providers/Microsoft.ContainerRegistry/registries/{acr}"
+    acr_scope = f"{prefix}/{resource_group}/providers/Microsoft.ContainerRegistry/registries/{acr}"
     cosmos_scope = f"{prefix}/{resource_group}/providers/Microsoft.DocumentDB/databaseAccounts/{cosmos}"
     storage_scope = f"{prefix}/{resource_group}/providers/Microsoft.Storage/storageAccounts/{storage}"
-    aoai_scope = f"{prefix}/{aoai_group}/providers/Microsoft.CognitiveServices/accounts/{aoai}"
+    aoai_scope = f"{prefix}/{resource_group}/providers/Microsoft.CognitiveServices/accounts/{aoai}"
 
     environment_name, vnet_name = "csa-workbench-env", "csa-workbench-vnet"
     aca_subnet, pe_subnet = "aca-infrastructure", "private-endpoints"
@@ -332,9 +344,15 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
     environment_id = f"{prefix}/{resource_group}/providers/Microsoft.App/managedEnvironments/{environment_name}"
 
     def app(name: str, external: bool, image: str, cpu: float, memory: str) -> dict[str, Any]:
-        return {"name": name, "properties": {"provisioningState": "Succeeded", "managedEnvironmentId": environment_id, "workloadProfileName": "Consumption", "configuration": {"ingress": {"external": external, "targetPort": {"csa-workbench-frontend": 3000, "csa-workbench-api": 8000, "csa-workbench-runtime": 8080}[name], "transport": "auto"}}, "template": {
+        env = []
+        if name == "csa-workbench-runtime":
+            env = [
+                {"name": "AZURE_ENDPOINT", "value": f"https://{aoai}.cognitiveservices.azure.com/openai/v1/"},
+                {"name": "AZURE_DEPLOYMENT", "value": "gpt-4.1"},
+            ]
+        return {"name": name, "properties": {"provisioningState": "Succeeded", "managedEnvironmentId": environment_id, "workloadProfileName": "Consumption", "configuration": {"ingress": {"external": external, "targetPort": {"csa-workbench-frontend": 3000, "csa-workbench-api": 8000, "csa-workbench-runtime": 8080}[name], "transport": "auto"}, "registries": [{"server": f"{acr}.azurecr.io", "identity": f"{name}-identity"}]}, "template": {
             "scale": {"minReplicas": 0, "maxReplicas": 1, "cooldownPeriod": 300, "pollingInterval": 30, "rules": []},
-            "containers": [{"image": f"{acr}.azurecr.io/{image}:{'a' * 40}", "resources": {"cpu": cpu, "memory": memory, "ephemeralStorage": "1Gi"}}],
+            "containers": [{"image": f"{acr}.azurecr.io/{image}:{'a' * 40}", "resources": {"cpu": cpu, "memory": memory, "ephemeralStorage": "1Gi"}, "env": env}],
         }}}
 
     apps = [app("csa-workbench-frontend", True, "csa-workbench-frontend", .25, "0.5Gi"), app("csa-workbench-api", True, "csa-workbench-api", .5, "1Gi"), app("csa-workbench-runtime", False, "csa-workbench-runtime", 1.0, "2Gi")]
@@ -365,14 +383,24 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
         return [{"name": "default", "provisioningState": "Succeeded", "privateDnsZoneConfigs": [{"name": "config", "privateDnsZoneId": f"{prefix}/{resource_group}/providers/Microsoft.Network/privateDnsZones/{zone}", "recordSets": [{"recordSetName": record_name, "provisioningState": "Succeeded", "ipAddresses": ["10.42.0.36"]} for record_name in record_names]}]}]
 
     managed_environment = {"name": environment_name, "properties": {"provisioningState": "Succeeded", "vnetConfiguration": {"infrastructureSubnetId": f"{vnet_id}/subnets/{aca_subnet}"}, "workloadProfiles": [{"name": "Consumption", "workloadProfileType": "Consumption", "enableFips": False}]}}
+    acr_resource = {"name": acr, "location": "eastus", "provisioningState": "Succeeded", "sku": {"name": "Basic"}, "adminUserEnabled": False, "publicNetworkAccess": "Enabled"}
+    azure_open_ai = {"name": aoai, "location": "eastus2", "kind": "OpenAI", "sku": {"name": "S0"}, "properties": {"provisioningState": "Succeeded", "disableLocalAuth": True, "publicNetworkAccess": "Enabled", "customSubDomainName": aoai}}
+    azure_open_ai_deployments = [{"name": "gpt-4.1", "sku": {"name": "Standard", "capacity": 10}, "properties": {"provisioningState": "Succeeded", "model": {"format": "OpenAI", "name": "gpt-4.1", "version": "2025-04-14"}}}]
     records = lambda name: [{"name": name, "provisioningState": "Succeeded", "aRecords": [{"ipv4Address": "10.42.0.36"}]}]
     event_topics = [{"name": "storage-antimalware", "source": storage_scope, "topicType": "microsoft.storage.storageaccounts", "provisioningState": "Succeeded"}]
     resource_entries = [("Microsoft.ManagedIdentity/userAssignedIdentities", name) for name in ("csa-workbench-frontend-identity", "csa-workbench-api-identity", "csa-workbench-runtime-identity")]
     resource_entries += [("Microsoft.App/managedEnvironments", environment_name)] + [("Microsoft.App/containerApps", name) for name in ("csa-workbench-frontend", "csa-workbench-api", "csa-workbench-runtime")]
-    resource_entries += [("Microsoft.DocumentDB/databaseAccounts", cosmos), ("Microsoft.Storage/storageAccounts", storage), ("Microsoft.Network/virtualNetworks", vnet_name), ("Microsoft.Network/privateEndpoints", cosmos_pe), ("Microsoft.Network/privateEndpoints", storage_pe), ("Microsoft.Network/privateDnsZones", cosmos_zone), ("Microsoft.Network/privateDnsZones", storage_zone), ("Microsoft.Network/networkInterfaces", f"{cosmos_pe}-nic"), ("Microsoft.Network/networkInterfaces", f"{storage_pe}-nic"), ("Microsoft.EventGrid/systemTopics", "storage-antimalware"), ("Microsoft.Network/privateDnsZones/virtualNetworkLinks", f"{cosmos_zone}/csa-workbench-vnet-link"), ("Microsoft.Network/privateDnsZones/virtualNetworkLinks", f"{storage_zone}/csa-workbench-vnet-link")]
+    resource_entries += [("Microsoft.ContainerRegistry/registries", acr), ("Microsoft.CognitiveServices/accounts", aoai), ("Microsoft.CognitiveServices/accounts/deployments", f"{aoai}/gpt-4.1"), ("Microsoft.DocumentDB/databaseAccounts", cosmos), ("Microsoft.Storage/storageAccounts", storage), ("Microsoft.Network/virtualNetworks", vnet_name), ("Microsoft.Network/privateEndpoints", cosmos_pe), ("Microsoft.Network/privateEndpoints", storage_pe), ("Microsoft.Network/privateDnsZones", cosmos_zone), ("Microsoft.Network/privateDnsZones", storage_zone), ("Microsoft.Network/networkInterfaces", f"{cosmos_pe}-nic"), ("Microsoft.Network/networkInterfaces", f"{storage_pe}-nic"), ("Microsoft.EventGrid/systemTopics", "storage-antimalware"), ("Microsoft.Network/privateDnsZones/virtualNetworkLinks", f"{cosmos_zone}/csa-workbench-vnet-link"), ("Microsoft.Network/privateDnsZones/virtualNetworkLinks", f"{storage_zone}/csa-workbench-vnet-link")]
     resources = [{"type": resource_type, "name": name} for resource_type, name in resource_entries]
-    environment = {**os.environ, "APPS": json.dumps(apps), "RESOURCES": json.dumps(resources), "NETWORK_SECURITY_GROUPS": "[]", "ASSIGNMENTS": json.dumps(assignments), "COSMOS": json.dumps({"disableLocalAuth": True, "publicNetworkAccess": "Disabled"}), "COSMOS_SQL_ASSIGNMENTS": json.dumps([{"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "api"}, {"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "runtime"}]), "STORAGE": json.dumps({"publicNetworkAccess": "Disabled", "allowSharedKeyAccess": False, "allowBlobPublicAccess": False}), "MANAGED_ENVIRONMENT": json.dumps(managed_environment), "VNET": json.dumps(vnet), "PRIVATE_ENDPOINTS": json.dumps(private_endpoints), "PRIVATE_DNS_ZONES": json.dumps(private_dns_zones), "COSMOS_DNS_LINKS": json.dumps(dns_link()), "STORAGE_DNS_LINKS": json.dumps(dns_link()), "COSMOS_DNS_GROUPS": json.dumps(dns_group(cosmos_zone, [cosmos, f"{cosmos}-eastus2"])), "STORAGE_DNS_GROUPS": json.dumps(dns_group(storage_zone, [storage])), "COSMOS_DNS_RECORDS": json.dumps(records(cosmos) + records(f"{cosmos}-eastus2")), "STORAGE_DNS_RECORDS": json.dumps(records(storage)), "EVENT_TOPICS": json.dumps(event_topics), "EVENT_SUBSCRIPTIONS": json.dumps([{"name": "StorageAntimalwareSubscription", "provisioningState": "Succeeded"}]), "SUBSCRIPTION_ID": subscription, "RESOURCE_GROUP": resource_group, "ACR_RESOURCE_GROUP": acr_group, "AOAI_RESOURCE_GROUP": aoai_group, "ACR_NAME": acr, "AOAI_NAME": aoai, "COSMOS_ACCOUNT_NAME": cosmos, "STORAGE_ACCOUNT_NAME": storage, "FRONTEND_APP_NAME": "csa-workbench-frontend", "API_APP_NAME": "csa-workbench-api", "RUNTIME_APP_NAME": "csa-workbench-runtime", "ENVIRONMENT_NAME": environment_name, "VNET_NAME": vnet_name, "ACA_INFRASTRUCTURE_SUBNET_NAME": aca_subnet, "PRIVATE_ENDPOINT_SUBNET_NAME": pe_subnet, "COSMOS_PRIVATE_ENDPOINT_NAME": cosmos_pe, "STORAGE_PRIVATE_ENDPOINT_NAME": storage_pe, "COSMOS_PRIVATE_DNS_ZONE": cosmos_zone, "STORAGE_PRIVATE_DNS_ZONE": storage_zone, "LOCATION": "eastus2", "SHA": "a" * 40, **principals}
+    environment = {**os.environ, "APPS": json.dumps(apps), "RESOURCES": json.dumps(resources), "NETWORK_SECURITY_GROUPS": "[]", "ASSIGNMENTS": json.dumps(assignments), "ACR": json.dumps(acr_resource), "AZURE_OPEN_AI": json.dumps(azure_open_ai), "AZURE_OPEN_AI_DEPLOYMENTS": json.dumps(azure_open_ai_deployments), "COSMOS": json.dumps({"disableLocalAuth": True, "publicNetworkAccess": "Disabled"}), "COSMOS_SQL_ASSIGNMENTS": json.dumps([{"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "api"}, {"roleDefinitionId": sql_role, "scope": cosmos_scope, "principalId": "runtime"}]), "STORAGE": json.dumps({"publicNetworkAccess": "Disabled", "allowSharedKeyAccess": False, "allowBlobPublicAccess": False}), "MANAGED_ENVIRONMENT": json.dumps(managed_environment), "VNET": json.dumps(vnet), "PRIVATE_ENDPOINTS": json.dumps(private_endpoints), "PRIVATE_DNS_ZONES": json.dumps(private_dns_zones), "COSMOS_DNS_LINKS": json.dumps(dns_link()), "STORAGE_DNS_LINKS": json.dumps(dns_link()), "COSMOS_DNS_GROUPS": json.dumps(dns_group(cosmos_zone, [cosmos, f"{cosmos}-eastus2"])), "STORAGE_DNS_GROUPS": json.dumps(dns_group(storage_zone, [storage])), "COSMOS_DNS_RECORDS": json.dumps(records(cosmos) + records(f"{cosmos}-eastus2")), "STORAGE_DNS_RECORDS": json.dumps(records(storage)), "EVENT_TOPICS": json.dumps(event_topics), "EVENT_SUBSCRIPTIONS": json.dumps([{"name": "StorageAntimalwareSubscription", "provisioningState": "Succeeded"}]), "SUBSCRIPTION_ID": subscription, "RESOURCE_GROUP": resource_group, "ACR_NAME": acr, "ACR_LOCATION": "eastus", "AOAI_NAME": aoai, "AZURE_DEPLOYMENT": "gpt-4.1", "COSMOS_ACCOUNT_NAME": cosmos, "STORAGE_ACCOUNT_NAME": storage, "FRONTEND_APP_NAME": "csa-workbench-frontend", "API_APP_NAME": "csa-workbench-api", "RUNTIME_APP_NAME": "csa-workbench-runtime", "ENVIRONMENT_NAME": environment_name, "VNET_NAME": vnet_name, "ACA_INFRASTRUCTURE_SUBNET_NAME": aca_subnet, "PRIVATE_ENDPOINT_SUBNET_NAME": pe_subnet, "COSMOS_PRIVATE_ENDPOINT_NAME": cosmos_pe, "STORAGE_PRIVATE_ENDPOINT_NAME": storage_pe, "COSMOS_PRIVATE_DNS_ZONE": cosmos_zone, "STORAGE_PRIVATE_DNS_ZONE": storage_zone, "LOCATION": "eastus2", "SHA": "a" * 40, **principals}
     assert subprocess.run([sys.executable, "-c", verifier], env=environment, text=True, capture_output=True).returncode == 0
+    external_assignments = deepcopy(assignments)
+    external_assignments[0][0]["scope"] = f"{prefix}/shared-services-rg/providers/Microsoft.ContainerRegistry/registries/{acr}"
+    environment["ASSIGNMENTS"] = json.dumps(external_assignments)
+    rejected = subprocess.run([sys.executable, "-c", verifier], env=environment, text=True, capture_output=True)
+    assert rejected.returncode != 0
+    assert "managed identity role assignment escapes the CSA resource group" in rejected.stderr
+    environment["ASSIGNMENTS"] = json.dumps(assignments)
     aca_nsg, private_endpoints_nsg = "csa-workbench-vnet-aca-infrastructure-nsg-eastus2", "csa-workbench-vnet-private-endpoints-nsg-eastus2"
 
     def governance_nsg(name: str, subnets: list[str]) -> dict[str, Any]:
@@ -389,6 +417,9 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
         environment["NETWORK_SECURITY_GROUPS"] = json.dumps(nsgs)
         environment["RESOURCES"] = json.dumps(resource_inventory_for_nsgs(nsgs) if resource_inventory is None else resource_inventory)
         environment["LOCATION"] = location
+        account_for_location = deepcopy(azure_open_ai)
+        account_for_location["location"] = location
+        environment["AZURE_OPEN_AI"] = json.dumps(account_for_location)
         return subprocess.run([sys.executable, "-c", verifier], env=environment, text=True, capture_output=True)
 
     def assert_governance_nsg_rejected(nsgs: object, expected_error: str, resource_inventory: list[dict[str, Any]] | None = None, location: str = "eastus2") -> None:

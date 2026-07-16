@@ -37,6 +37,10 @@ Internet
   `-- public API Container App (0-1)
         `-- Entra-authenticated HTTPS
               `-- internal runtime Container App (0-1)
+                    `-- Azure OpenAI gpt-4.1 (Standard, 10K TPM)
+
+Basic Azure Container Registry
+  `-- three immutable SHA-tagged application images
 
 VNet 10.42.0.0/24
   |-- ACA infrastructure subnet 10.42.0.0/27
@@ -56,19 +60,21 @@ uses internal ingress, but the environment is not an environment-wide private-in
 
 The application resource group owns the environment and apps, three user-assigned managed
 identities, VNet, subnets, Cosmos account/database/container, Storage account/Blob container, two
-private endpoints, and two private DNS zones and links. A shared Azure Container Registry and a
-shared Azure OpenAI account are explicit dependencies outside the resource group:
+private endpoints, two private DNS zones and links, the Basic registry, and the Azure OpenAI account
+and deployment. There are no application-managed Azure dependencies in another resource group.
 
-| Dependency | Repository default | Relationship |
-|---|---|---|
-| Azure Container Registry | `djgsharedacr` in `shared-services-rg` | Existing registry; stores the three immutable images |
-| Azure OpenAI | `rfpagent-ai` in `flow-dev-rg` | Existing account; runtime calls the selected deployment |
+The registry retains the globally unique `djgsharedacr` name and East US location because moving the
+existing Basic registry avoids paying for a duplicate fixed-cost registry. The Azure OpenAI account
+is `csa-workbench-ai` in East US 2. It disables local-key authentication and exposes one Standard
+10K-TPM `gpt-4.1` deployment (`2025-04-14`); Standard capacity limits throughput but is billed by
+token use rather than as provisioned hourly model compute. The runtime reaches it through
+identity-authenticated public TLS, and no Azure OpenAI private endpoint is provisioned.
 
-The deployment does not create a second registry or model account. Azure OpenAI remains an
-identity-authenticated public-TLS dependency: the repository assigns its existing account's
-`Cognitive Services OpenAI User` role and does not provision an Azure OpenAI private endpoint. Its
-network configuration is not inventoried by this resource-group deployment; the public-TLS
-observation is live evidence recorded in the authoritative design.
+The VNet-integrated Container Apps environment necessarily has a separate
+`ME_csa-workbench-env_csa-workbench-rg_eastus2` resource group containing Azure-managed public-IP
+and load-balancer resources. Microsoft documents that this group is created and operated by the
+Container Apps platform and must not be modified. It is the sole resource-group exception and is
+not an application-owned dependency.
 
 ## Identity and data paths
 
@@ -76,7 +82,7 @@ Each workload has its own user-assigned managed identity:
 
 | Identity | Repository-declared access |
 |---|---|
-| Frontend | `AcrPull` on the shared registry |
+| Frontend | `AcrPull` on the CSA-owned registry |
 | API | `AcrPull`; Cosmos DB Built-in Data Contributor; Storage Blob Data Contributor; runtime `invoke` application role |
 | Runtime | `AcrPull`; Cosmos DB Built-in Data Contributor; Cognitive Services OpenAI User |
 
@@ -124,6 +130,12 @@ The safe sequence is:
    images.
 5. Run the resource-group app what-if, deploy the apps, and execute the live inventory verifier.
 
+The current environment required one migration before this sequence: remove the three direct
+`AcrPull` assignments from `djgsharedacr`, move that registry from `shared-services-rg` into
+`csa-workbench-rg`, and let the foundation deployment recreate the same least-privilege assignments
+at the new resource ID. The move preserves the registry, images, login server, region, and single
+Basic-SKU cost.
+
 The app what-if occurs after the foundation, Entra, and image steps on the apply path; it previews
 the app deployment, not those earlier mutations. Recovery ordering and fail-closed cases are covered
 by the focused infrastructure tests.
@@ -140,11 +152,13 @@ successful command as sufficient. It requires:
 
 - exactly the three named Container Apps in one Consumption environment, with the ingress, ports,
   0-1 scale, resources, provisioning state, and SHA image references shown above;
+- one Basic registry with admin access disabled, and one AAD-only OpenAI S0 account with exactly one
+  Standard 10K-TPM `gpt-4.1` deployment;
 - the exact VNet and two-subnet shape, two approved private endpoints, two private DNS zones and
   links, endpoint zone groups, and matching private A records;
 - disabled Cosmos local/public access and disabled Storage public/shared-key/public-blob access;
-- the required ACR, Cosmos, Blob, and Azure OpenAI role assignments, plus no subscription-scoped
-  assignment for any of the three workload identities; and
+- the required ACR, Cosmos, Blob, and Azure OpenAI role assignments, with every Azure RBAC scope for
+  the three workload identities contained by `csa-workbench-rg`; and
 - the owned resource inventory with Search, session pools, telemetry workspaces, APIM, CDN/Front
   Door, NAT, Firewall, VPN gateways, and route tables absent. Application Bicep declares no network
   security groups.
@@ -179,8 +193,8 @@ deployment free. The actual billing boundary includes:
 - Cosmos serverless requests and storage;
 - Blob LRS capacity, operations, and transfer;
 - two private endpoints and two private DNS zones;
-- image build/storage/pull activity in the shared registry;
-- Azure OpenAI tokens in the shared model account; and
+- the one Basic registry's fixed tier plus image build/storage/pull activity;
+- Azure OpenAI input/output tokens on the Standard deployment; and
 - any tenant-policy Defender for Storage charges that apply outside the application-owned graph.
 
 There is no checked-in Azure cost export or numeric budget, so no dollar amount is claimed here.

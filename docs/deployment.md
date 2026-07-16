@@ -14,10 +14,15 @@ a public API, and an internal session runtime. Each scales from zero to one repl
 Blob Storage disable public network access and use two private endpoints plus private DNS. Workload
 access uses managed identity.
 
-The deployment reuses, but does not create, the configured Azure Container Registry and Azure
-OpenAI account. Azure OpenAI remains on identity-authenticated public TLS. Search, warm session
-pools, NAT Gateway, Firewall, Front Door, APIM, VPN, and broader private ingress are not part of this
-profile.
+The same resource group owns the Basic Azure Container Registry and the Azure OpenAI account with
+one 10K-TPM Standard `gpt-4.1` deployment. The registry retains its East US location while all other
+application resources use East US 2. Azure OpenAI disables local-key authentication and remains on
+identity-authenticated public TLS. Search, warm session pools, NAT Gateway, Firewall, Front Door,
+APIM, VPN, and broader private ingress are not part of this profile.
+
+Azure Container Apps creates a separate `ME_...` resource group for platform-managed load-balancer
+infrastructure when the environment uses the application VNet. It is an Azure-owned implementation
+detail, not an application dependency, and must not be modified.
 
 Read [Infrastructure](capabilities/infrastructure.md) for the exact resource, identity, network,
 cost, and exclusion contract before changing the deployment.
@@ -26,15 +31,19 @@ cost, and exclusion contract before changing the deployment.
 
 - Azure CLI with Bicep support and an authenticated account in the intended subscription.
 - Permission to create subscription/resource-group deployments, reconcile the three dedicated
-  Entra applications, assign the declared roles, build images in the shared ACR, and read the shared
-  Azure OpenAI account.
+  Entra applications, assign the declared roles, build images, and create an Azure OpenAI model
+  deployment.
 - A clean Git worktree at the exact revision to deploy. Image tags are the full 40-character commit
   SHA; `latest` is not used.
-- The existing ACR and Azure OpenAI defaults, or explicit environment overrides for them.
+- For the one-time legacy consolidation only: move `djgsharedacr` from `shared-services-rg` into
+  `csa-workbench-rg` before running the deployment. Azure changes the resource ID during a move, so
+  remove the old direct `AcrPull` assignments first; the foundation deployment recreates them at
+  the destination. A fresh deployment creates the registry directly in the target group.
 
 The script accepts narrow environment overrides such as `LOCATION`, `RESOURCE_GROUP`, `ACR_NAME`,
-`ACR_RESOURCE_GROUP`, `AOAI_NAME`, `AOAI_RESOURCE_GROUP`, and `AZURE_DEPLOYMENT`. Review the defaults
-at the top of [`infra/deploy.sh`](../infra/deploy.sh) before applying.
+`ACR_LOCATION`, `AOAI_NAME`, and `AZURE_DEPLOYMENT`. Registry and model resources cannot be pointed
+at another resource group. Review the defaults at the top of
+[`infra/deploy.sh`](../infra/deploy.sh) before applying.
 
 ## Dry run
 
@@ -79,9 +88,11 @@ The final verifier checks live Azure JSON. It requires:
   scale, and identical SHA tags;
 - the exact VNet, two subnets, two approved private endpoints, two private DNS zones/links/groups,
   and private A records;
+- the Basic, admin-disabled registry and the AAD-only Azure OpenAI S0 account with exactly one
+  Standard 10K-TPM `gpt-4.1` deployment;
 - disabled Cosmos public/local-key access and disabled Storage public/shared-key/public-blob access;
-- the required resource-scoped managed-identity and Cosmos data-plane roles, with no
-  subscription-scoped workload assignment; and
+- the required resource-scoped managed-identity and Cosmos data-plane roles, with every Azure RBAC
+  scope contained by `csa-workbench-rg`; and
 - the expected resource allowlist, excluding the deferred services named above.
 
 Tenant policy may add one Defender for Storage Event Grid system topic and the exact
