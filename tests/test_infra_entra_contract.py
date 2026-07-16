@@ -347,7 +347,7 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
         env = []
         if name == "csa-workbench-runtime":
             env = [
-                {"name": "AZURE_ENDPOINT", "value": f"https://{aoai}.cognitiveservices.azure.com/openai/v1/"},
+                {"name": "AZURE_ENDPOINT", "value": f"https://{aoai}.openai.azure.com/openai/v1/"},
                 {"name": "AZURE_DEPLOYMENT", "value": "gpt-4.1"},
             ]
         return {"name": name, "properties": {"provisioningState": "Succeeded", "managedEnvironmentId": environment_id, "workloadProfileName": "Consumption", "configuration": {"ingress": {"external": external, "targetPort": {"csa-workbench-frontend": 3000, "csa-workbench-api": 8000, "csa-workbench-runtime": 8080}[name], "transport": "auto"}, "registries": [{"server": f"{acr}.azurecr.io", "identity": f"{name}-identity"}]}, "template": {
@@ -384,7 +384,7 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
 
     managed_environment = {"name": environment_name, "properties": {"provisioningState": "Succeeded", "vnetConfiguration": {"infrastructureSubnetId": f"{vnet_id}/subnets/{aca_subnet}"}, "workloadProfiles": [{"name": "Consumption", "workloadProfileType": "Consumption", "enableFips": False}]}}
     acr_resource = {"name": acr, "location": "eastus", "provisioningState": "Succeeded", "sku": {"name": "Basic"}, "adminUserEnabled": False, "publicNetworkAccess": "Enabled"}
-    azure_open_ai = {"name": aoai, "location": "eastus2", "kind": "OpenAI", "sku": {"name": "S0"}, "properties": {"provisioningState": "Succeeded", "disableLocalAuth": True, "publicNetworkAccess": "Enabled", "customSubDomainName": aoai}}
+    azure_open_ai = {"name": aoai, "location": "eastus2", "kind": "OpenAI", "sku": {"name": "S0"}, "properties": {"provisioningState": "Succeeded", "disableLocalAuth": True, "publicNetworkAccess": "Enabled", "customSubDomainName": aoai, "endpoint": f"https://{aoai}.openai.azure.com/"}}
     azure_open_ai_deployments = [{"name": "gpt-4.1", "sku": {"name": "Standard", "capacity": 10}, "properties": {"provisioningState": "Succeeded", "model": {"format": "OpenAI", "name": "gpt-4.1", "version": "2025-04-14"}}}]
     records = lambda name: [{"name": name, "provisioningState": "Succeeded", "aRecords": [{"ipv4Address": "10.42.0.36"}]}]
     event_topics = [{"name": "storage-antimalware", "source": storage_scope, "topicType": "microsoft.storage.storageaccounts", "provisioningState": "Succeeded"}]

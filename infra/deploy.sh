@@ -244,7 +244,8 @@ for app in apps:
         raise SystemExit(f"invalid Container Registry binding: {app['name']}")
     if app['name'] == os.environ['RUNTIME_APP_NAME']:
         runtime_env = {item.get('name'): item.get('value') for item in container.get('env', []) if isinstance(item, dict)}
-        expected_endpoint = f"https://{os.environ['AOAI_NAME']}.cognitiveservices.azure.com/openai/v1/"
+        account_endpoint = azure_open_ai.get('properties', {}).get('endpoint')
+        expected_endpoint = f"{account_endpoint.rstrip('/')}/openai/v1/" if isinstance(account_endpoint, str) and account_endpoint else ''
         if runtime_env.get('AZURE_ENDPOINT') != expected_endpoint or runtime_env.get('AZURE_DEPLOYMENT') != os.environ['AZURE_DEPLOYMENT']:
             raise SystemExit('runtime Azure OpenAI binding drifted')
 excluded = ('Microsoft.Search/', 'Microsoft.App/sessionPools', 'Microsoft.CognitiveServices/accounts/projects', 'Microsoft.Communication/', 'Microsoft.ApiManagement/', 'Microsoft.Cdn/', 'Microsoft.Network/natGateways', 'Microsoft.Insights/', 'Microsoft.OperationalInsights/')
