@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agentic SDLC"
+  short_description: "Apply the repository work-item lifecycle"
+  default_prompt: "Use $agentic-sdlc to follow the approved repository work lifecycle."

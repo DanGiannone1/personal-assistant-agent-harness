@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing"
+  short_description: "Apply behavioral testing and evidence rules"
+  default_prompt: "Use $testing to design or verify behavioral evidence for this change."

@@ -6,6 +6,9 @@ The single repository and documentation front door is the [root README](../READM
 [authoritative design](design.md), [v1 requirements](requirements.md), capability designs, and
 runbooks are mapped there.
 
+[Repository governance](governance/README.md) owns the canonical work lifecycle, testing,
+engineering-execution, and agent-design rules loaded by the local Claude and Codex entrypoints.
+
 This path remains temporarily because local repository-governance material still names it as an
 entrypoint. Once that human-owned reference is explicitly authorized and updated, this pointer can
 be removed.
