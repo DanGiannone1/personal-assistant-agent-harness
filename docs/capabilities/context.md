@@ -176,7 +176,7 @@ The deployed application revision does **not** implement:
 
 - one official, unchangeable server-side context snapshot per turn;
 - separate `user_text` and verified-context fields at the harness boundary;
-- an ID for a given context bundle, a timestamp showing when it was assembled, a record of which
+- a `contextId` for a given context bundle, a timestamp showing when it was assembled, a record of which
   source each fact came from, a rule for how stale a fact can be before it's dropped, or a documented
   policy for what gets left out and why;
 - `CONTEXT_APPLIED` or any equivalent streamed context event;

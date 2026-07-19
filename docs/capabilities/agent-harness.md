@@ -20,7 +20,8 @@ the same seven model-visible tool names and schemas.
 
 The important result of a tool call is a structured `ProductToolResult`, not the tool label or the
 assistant's sentence. The browser renders that result, accepts navigation only from a correlated
-structured event, and refreshes the current application state after tool activity and terminal
+structured event, and re-reads authoritative application state (the stored truth, not a cached
+copy) after tool activity and terminal
 events. This is how the harness supports the product rule that a claim can never outrun reality.
 
 ## One turn, end to end
@@ -47,7 +48,7 @@ For a normal assistant request, the implemented path is:
 The system doesn't yet have one central piece of code that manages event types, security context, and
 turn cancellation the same way across both adapters. It also has no permanent record proving a turn
 completed, or one place that assembles all the context the model sees. Neither gap weakens who a
-request is bound to or what it's allowed to do — those checks happen outside the prompt and the tools
+request is bound to or what it's allowed to do — those checks are enforced outside the prompt and the tools
 the model can see.
 
 ## Harness seam and selection
@@ -218,8 +219,9 @@ propagates. New session also aborts the browser stream and then asks the runtime
 session; runtime deletion is serialized by the same lock.
 
 Cancelling doesn't undo anything. A tool call may already have saved its change before the disconnect,
-and clicking Stop doesn't itself wait to check whether that happened. The next time the app reads data,
-that's what's trusted. There's no guarantee the underlying Deep Agents call has actually stopped when
+and clicking Stop doesn't itself wait to check whether that happened, nor does it receive a known
+commit state. The next time the app reads data, that's what's trusted. There's no strict guarantee
+the underlying Deep Agents provider or tool operation has actually stopped when
 the screen goes idle, no stored `cancelled` status, and no way to resume a stopped stream.
 
 ### Visible failures
@@ -293,11 +295,11 @@ marker-like prompt that produced no false effect.
 
 The ignored local browser observation with run ID
 `2026-07-19T14-35-51-193Z-779df115` passed 34 checks at source revision `e641082`, including a
-structured Engagement update followed by a refresh of the current state and UI. These ignored
+structured Engagement update followed by a state and UI refresh from authoritative state. These ignored
 results are local observations, not portable evidence in a fresh clone.
 
-The [authoritative design](../design.md) records the smoke test run against the final release
-candidate before deployment: the Deep Agents turn `List my engagements.` emitted a typed
+The [authoritative design](../design.md) records the smoke test run against the final deployed
+release candidate: the Deep Agents turn `List my engagements.` emitted a typed
 `list_engagements` call and successful `engagement.listed` result before describing the exact
 Cosmos-backed Engagement. That smoke also covered a workload-authenticated runtime call and reading
 back the current Engagement state afterward.
@@ -313,9 +315,9 @@ back the current Engagement state afterward.
   bundle.
 - Prompt and per-turn context sources are duplicated across adapters or assembled in the browser.
   Skills are disabled, and there's no server-recorded copy of the context that was actually applied.
-- Stop/disconnect, a timeout during a tool call, and an unknown commit state are not covered by a
-  proven, end-to-end cancellation guarantee. Deep Agents cancellation in particular is not proven to
-  be strict.
+- Stop/disconnect, a timeout during a tool call, and an unknown commit state are not covered by an
+  end-to-end cancellation contract in which the server acknowledges what was actually stopped. Deep
+  Agents cancellation in particular is not proven to be strict.
 - The shared core covers basic Engagement operations only — full parity between manual and agent
   capability is not implemented.
 - Traces and turn state are ephemeral, optional, and incomplete. There are no permanent records of

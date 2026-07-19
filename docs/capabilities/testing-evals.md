@@ -71,7 +71,7 @@ The accepted local synthetic Playwright observation has run ID
 failures, and no page errors at
 `e641082f377d4a05f81d5489cfb54d390fddb575`. It reconciles three deterministic actors, sharing and
 outsider isolation, viewer affordances, rejected validation with unchanged state, a typed agent
-status update, a refresh of the current UI, wide/compact/narrow overflow, and narrow drawer focus and
+status update, a UI refresh from authoritative state, wide/compact/narrow overflow, and narrow drawer focus and
 hit-testing.
 
 The same run contains six captures:
