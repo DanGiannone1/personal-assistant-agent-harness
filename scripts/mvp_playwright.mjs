@@ -9,15 +9,18 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { chromium } from "@playwright/test";
-import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireLoopbackUrl, terminalEvents } from "./mvp_evidence.mjs";
+import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireTargetUrl, terminalEvents } from "./mvp_evidence.mjs";
 
 const startedAt = new Date().toISOString();
-const APP = requireLoopbackUrl(process.env.MVP_APP_URL || "http://localhost:3000", "MVP_APP_URL");
-const API = requireLoopbackUrl(process.env.MVP_API_URL || "http://localhost:8000", "MVP_API_URL");
+const APP = requireTargetUrl(process.env.MVP_APP_URL || "http://localhost:3000", "MVP_APP_URL");
+const API = requireTargetUrl(process.env.MVP_API_URL || "http://localhost:8000", "MVP_API_URL");
 const runId = process.env.MVP_RUN_ID || new Date().toISOString().replace(/[:.]/g, "-") + `-${randomUUID().slice(0, 8)}`;
 const out = evidencePath("playwright", runId);
 if (!process.env.DEMO_PASSWORD) throw new Error("DEMO_PASSWORD is required; this runner never supplies a static password.");
-if (process.env.MVP_RESET_BEFORE_RUN !== "1") throw new Error("Set MVP_RESET_BEFORE_RUN=1; browser evidence starts only after a guarded fixture reset.");
+// Remote (live Azure demo) runs rely on the instance's idempotent boot-seed instead of the
+// local-only reset_demo_state.py fixture; local runs still require the guarded reset.
+const REMOTE = process.env.MVP_ALLOW_REMOTE === "1";
+if (!REMOTE && process.env.MVP_RESET_BEFORE_RUN !== "1") throw new Error("Set MVP_RESET_BEFORE_RUN=1; browser evidence starts only after a guarded fixture reset.");
 
 function resetFixture() {
   const output = execFileSync("uv", ["run", "python", "scripts/reset_demo_state.py"], {
@@ -166,7 +169,7 @@ let browser;
 
 try {
   requireCleanWorktree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
-  report.fixture = resetFixture();
+  report.fixture = REMOTE ? { mode: "remote-boot-seed", note: "Azure demo self-seeds on boot; local reset skipped" } : resetFixture();
   browser = await chromium.launch({ headless: process.env.MVP_HEADLESS !== "0" });
   const dan = await newPage(browser, { width: 1440, height: 900 }, "dan");
   const ava = await newPage(browser, { width: 1440, height: 900 }, "ava");

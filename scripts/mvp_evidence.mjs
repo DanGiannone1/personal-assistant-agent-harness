@@ -29,6 +29,19 @@ export function requireLoopbackUrl(value, label) {
   return url.toString().replace(/\/$/, "");
 }
 
+// Loopback-only by default (safe). Opt in with MVP_ALLOW_REMOTE=1 to drive the live
+// Azure demo stack; then only an https *.azurecontainerapps.io host is accepted.
+export function requireTargetUrl(value, label) {
+  if (process.env.MVP_ALLOW_REMOTE !== "1") return requireLoopbackUrl(value, label);
+  let url;
+  try { url = new URL(value); } catch { throw new Error(`${label} must be an absolute http(s) URL`); }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (url.protocol !== "https:" || !host.endsWith(".azurecontainerapps.io")) {
+    throw new Error(`${label} with MVP_ALLOW_REMOTE=1 must be an https *.azurecontainerapps.io host`);
+  }
+  return url.toString().replace(/\/$/, "");
+}
+
 export function requireCleanWorktree(status) {
   const sourceChanges = status.split(/\r?\n/).filter(Boolean).filter((line) => {
     const path = line.slice(3);
