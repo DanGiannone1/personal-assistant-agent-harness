@@ -1,7 +1,7 @@
 # Testing and evaluation evidence
 
-> **Authority:** Behavioral-evidence detail subordinate to the [authoritative design](../design.md)
-> and [MVP requirements](../requirements.md)
+> **Authority:** This document covers testing and evaluation evidence; see [design.md](../design.md)
+> and [MVP requirements](../requirements.md) for the full picture.
 >
 > **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
@@ -9,30 +9,29 @@
 
 ## What counts as proof
 
-CSA Workbench tests a claim against the product state and control event that can make that claim
-true. A passing result identifies its source revision and environment; local demo, real Entra, and
-deployed observations are never interchangeable.
+CSA Workbench checks a claim against two things: the actual product state, and the structured event
+that would prove the action happened. A passing result always names the source revision and
+environment it came from; local demo, real Entra, and deployed observations are never interchangeable.
 
-Use this truth order for each behavior:
+Trust these kinds of evidence in this order:
 
-1. **Authoritative effect** — read back the exact Cosmos state or Blob bytes the behavior should
+1. **What actually happened** — read back the exact Cosmos state or Blob bytes the behavior should
    create, preserve, hide, or reject.
-2. **Structured control** — correlate the typed tool result, navigation event, and one terminal event
-   to the same run and target.
-3. **Rendered behavior** — drive the real frontend as a user and reconcile what it renders with that
-   state and event record.
-4. **Supporting record** — use traces, timings, screenshots, manifests, and command output to explain
-   the run and make review possible.
+2. **What the system reported as it happened** — match the typed tool result, navigation event, and
+   final event to the same run and target.
+3. **What the user saw** — drive the real frontend and check it against that state and event record.
+4. **Supporting detail** — traces, timings, screenshots, manifests, and command output that help
+   explain a run and make it reviewable.
 
-The expected behavior must be stated before interpreting the observation. Assistant wording, tool
-progress labels, success-like marker text, browser-cached or optimistic state, HTTP health alone, a
-screenshot alone, and a green build or command are not application-state oracles. Normalizing
-volatile timestamps and store metadata helps compare states; it does not turn wording, static
-inspection, or a runner's own `pass` field into proof.
+You have to state the expected behavior before you look at the observation, not after. Assistant
+wording, tool progress labels, success-like marker text, browser-cached or optimistic state, HTTP
+health alone, a screenshot alone, and a green build or command are none of them proof of application
+state on their own. Normalizing volatile timestamps and store metadata helps compare states; it does
+not turn wording, static inspection, or a runner's own `pass` field into proof.
 
-## Evidence profiles
+## Kinds of test evidence
 
-| Profile | Oracle and use | Boundary |
+| Kind of evidence | What it proves, and how it's used | What it doesn't prove |
 |---|---|---|
 | Unit and contract | Deterministic assertions for domain rules, identity and workload boundaries, tool/event schemas, evidence utilities, and infrastructure inventory logic | No browser, model, data service, Entra redirect, or live Azure proof |
 | Local deterministic users | Guarded `demo` fixtures for Dan, Ava, and Sam; compare personal portfolios, roles, sharing, denial, and exact state effects in a dedicated local Cosmos emulator | Synthetic actors are not tenant identities; local storage and networking are not Azure |
@@ -40,9 +39,9 @@ inspection, or a runner's own `pass` field into proof.
 | Playwright and responsive captures | A real browser drives the frontend/API at 1440, 1024, and 390 CSS px; DOM behavior, overflow, focus, state, and structured SSE evidence are asserted and six representative screenshots are reviewed | Captures support the asserted host journey; they are not broad visual, accessibility, or `/assistant` proof |
 | Deployed real Entra | The identified immutable revision exercises tenant auth, actor-bound state, API-to-runtime workload identity, private Cosmos/Blob paths, and a typed live turn | Run-specific deployment evidence does not become proof for another revision, tenant actor, or journey |
 
-One run may contribute to more than one profile, but its claims stay within the environment and
-oracles it actually exercised. Broad production, load, disaster-recovery, multi-region, and
-generalized security test programs are outside the MVP release bar.
+One run may contribute evidence of more than one kind, but its claims stay limited to the environment
+and checks it actually exercised. Broad production, load, disaster-recovery, multi-region, and
+generalized security test programs are outside what this release requires.
 
 ## Current evidence record
 
@@ -72,7 +71,7 @@ The accepted local synthetic Playwright observation has run ID
 failures, and no page errors at
 `e641082f377d4a05f81d5489cfb54d390fddb575`. It reconciles three deterministic actors, sharing and
 outsider isolation, viewer affordances, rejected validation with unchanged state, a typed agent
-status update, authoritative UI refresh, wide/compact/narrow overflow, and narrow drawer focus and
+status update, a refresh of the current UI, wide/compact/narrow overflow, and narrow drawer focus and
 hit-testing.
 
 The same run contains six captures:
@@ -97,13 +96,13 @@ outsider non-commit, and inert marker/success-like prose. The ignored local obse
 `e641082f377d4a05f81d5489cfb54d390fddb575`. It is source-labelled local evidence rather than a
 tracked portable artifact.
 
-Each case requires one correlated `RUN_STARTED`, exactly one final terminal event, the expected
-typed result where required, and the expected normalized state effect. The missing-reason and
-outsider cases also allow narrowly named safe-non-execution alternatives observed from the model:
-no tool result for the former, or one `list`/`succeeded` result for the latter. Those alternatives
-prove unchanged state and no false effect; they do not prove the typed invalid/not-found branch ran.
+Each case requires one correlated `RUN_STARTED`, exactly one final terminal event, the expected typed
+result where required, and the expected normalized state effect. The missing-reason and outsider
+cases also allow a narrow, named alternative where the model safely does nothing: no tool result for
+the former, or one `list`/`succeeded` result for the latter. Those alternatives prove the state didn't
+change and nothing false happened — they don't prove the typed invalid/not-found branch actually ran.
 The marker case requires zero tool results, no navigation, and unchanged state. Exact prose, token
-timing, and hidden reasoning are deliberately ungraded.
+timing, and hidden reasoning are deliberately left ungraded.
 
 ### Final deployed release observation
 
@@ -118,7 +117,7 @@ behavior/dependency change.
 
 The authoritative design records application revision `807a0d6` passing frontend root and
 `/assistant` responses, API health, real-Entra `/auth/me`, Engagement and quick-link reads, session
-creation, authoritative Engagement state readback, and a Deep Agents turn. The turn
+creation, a readback of the current Engagement state, and a Deep Agents turn. The turn
 `List my engagements.` emitted typed `list_engagements` and successful `engagement.listed` evidence
 before describing the same Cosmos-backed record. It also records a Blob-backed API round trip at the
 final private topology: upload, list, byte-for-byte download, and delete. The live post-deployment
@@ -126,7 +125,7 @@ topology verifier passed for the three SHA-pinned, scale-to-zero apps, private C
 DNS, exact inventory, managed-identity role containment within `csa-workbench-rg`, the moved Basic
 registry, and the exact optional tenant-governance NSG pair.
 
-These are authoritative release observations, but the repository has no checked-in deployment
+These are real observations from this release, but the repository has no checked-in deployment
 transcript, per-event turn transcript, Blob request/response and hash record, inventory JSON, or
 verifier output. They therefore cannot be independently replayed from this checkout. A successful
 health probe alone would not prove auth, state, typed control, or private data paths.
@@ -180,7 +179,7 @@ The password and emulator key stay in the local environment and must not enter s
 text. [Local development](../development.md) covers service startup. The runners do not start
 services and must never be pointed at Entra or a remote store.
 
-## Release-bar map
+## What's required before release, and current status
 
 | Requirement or journey | Minimum evidence and current boundary |
 |---|---|
@@ -189,7 +188,7 @@ services and must never be pointed at Entra or a remote store.
 | R3–R5 and S1–S2 | Focused role/identity contracts, deterministic multi-user browser state reconciliation, and real-Entra confirmation; the second real tenant actor remains absent |
 | R6 and S4 | Reviewed real-frontend Playwright journey and six captures at wide, compact, and 390 px; narrow standalone `/assistant` remains absent |
 | R7 and S3 | Tool/schema/event contracts, adversarial inert-text cases, live local model results, and the final typed deployed turn; prose never supplies control or commit evidence |
-| R8 | One criterion-level record that names revision, profile, fixture/configuration, oracles, results, screenshots where applicable, and gaps |
+| R8 | One record per requirement that names the revision, the kind of evidence, the fixture/configuration, what it checked against, the results, screenshots where applicable, and gaps |
 
 ## Open evidence gaps
 
@@ -201,8 +200,10 @@ services and must never be pointed at Entra or a remote store.
 - The standalone `/assistant` route is not narrow-screen complete or covered at 390 px.
 - No deployment transcript, live topology output, Blob round-trip transcript, or Azure cost export is
   checked in; no numeric cost is claimed.
-- Commands, agent turns, and deployment checks have no durable, actor-authorized receipts. Local
-  traces and generated bundles are ephemeral evidence, not a replay or recovery contract.
+- Commands, agent turns, and deployment checks have no permanent, actor-authorized record proving they
+  happened. Local traces and generated bundles are ephemeral evidence, not a replay or recovery
+  guarantee.
 
-Mark a missing profile **UNVERIFIED**. Do not replace it with source inspection, assistant wording,
-an older revision's result, or a broader production test requirement outside R1–R8 and S1–S5.
+Mark a missing kind of evidence **UNVERIFIED**. Do not replace it with source inspection, assistant
+wording, an older revision's result, or a broader production test requirement outside R1–R8 and
+S1–S5.
