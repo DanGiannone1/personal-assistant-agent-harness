@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical context detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Applies to:** Actor/session grounding, browser-composed turn hints, persona and conventions, current-view handling, and the context inspector
 >

@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical harness detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Applies to:** Harness selection, the `AgentSession` seam, product-tool adaptation, AG-UI/SSE events, turn coordination, cancellation, and traces
 >
@@ -274,12 +274,12 @@ The primary sources are
 [`tests/test_engagement_core.py`](../../tests/test_engagement_core.py).
 
 The ignored local Deep Agents observation with run ID
-`2026-07-15T01-27-46-902Z-2ecc70df` passed seven structured cases at source revision `7bca264`,
+`2026-07-19T14-36-18-536Z-0a399fbe` passed seven structured cases at source revision `e641082`,
 including typed reads, mutation, navigation, denial/non-execution, exact terminal validation, and a
 marker-like prompt that produced no false effect.
 
 The ignored local browser observation with run ID
-`2026-07-15T02-57-58-244Z-1e852bb3` passed 34 checks at source revision `9142b2a`, including a
+`2026-07-19T14-35-51-193Z-779df115` passed 34 checks at source revision `e641082`, including a
 structured Engagement update followed by authoritative state/UI refresh. These ignored results are
 local observations, not portable evidence in a fresh clone.
 

@@ -3,7 +3,7 @@
 > **Authority:** Canonical subordinate design for Engagement artifacts and the boundaries around
 > session files, the legacy Library, conversion, and retrieval
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Parent:** [Authoritative Product and System Design](../design.md)
 >

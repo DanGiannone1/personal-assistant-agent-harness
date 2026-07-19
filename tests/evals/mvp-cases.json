@@ -48,7 +48,7 @@
       "id": "MVP-E6-outsider-change",
       "actor": "sam",
       "observerActor": "dan",
-      "prompt": "Set Engagement eng-product-launch to Red with reason 'unauthorized probe'.", 
+      "prompt": "Set Engagement eng-product-launch to Red with reason 'unauthorized probe'.",
       "expectation": {
         "operation": "update", "status": "not_found", "stateChanged": false, "noCommitted": true,
         "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },

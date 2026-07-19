@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical UI/UX detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Applies to:** Information architecture, interaction, responsive behavior, accessibility intent, and presentation
 >
@@ -192,9 +192,9 @@ identify a separate visual-review sign-off.
 
 ### Remaining evidence gaps
 
-- The browser run is not stamped with the final application SHA. It remains supporting evidence for
-  the unchanged host workflows and responsive layout, but it does not prove the corrected suggestion
-  copy interactively; the recorded captures may show the prior copy.
+- The latest browser run is stamped with clean source revision `e641082` and covers the corrected
+  suggestion copy, but its generated bundle remains ignored local evidence rather than a portable
+  artifact committed to Git.
 - The responsive run does not exercise `/assistant`; its narrow split layout remains an
   implementation and evidence gap.
 - Dock-to-workbench continuity, collapse during a turn, and component-local draft behavior are not

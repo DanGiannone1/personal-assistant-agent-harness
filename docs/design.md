@@ -1,9 +1,9 @@
 # CSA Workbench — Authoritative Product and System Design
 
-> **Authority:** Canonical high-level product and system design  
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Authority:** Canonical high-level product and system design
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
-> **Deployment verified:** 2026-07-16 in `csa-workbench-rg`
+> **Deployment verified:** 2026-07-19 in `csa-workbench-rg`
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
 ## Executive summary

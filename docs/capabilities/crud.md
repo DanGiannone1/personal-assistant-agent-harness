@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical CRUD detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Applies to:** Implemented Engagement reads and changes through the manual application and assistant tools
 >
@@ -217,14 +217,12 @@ status-with-a-reason, final-owner protection, field limits, no-op behavior, nati
 Copilot/Deep Agents schema and result parity. The structured evidence-oracle tests reject prose-only
 success and malformed event lifecycles.
 
-Local synthetic evidence bundles are source-labelled rather than timeless. The latest available browser
-bundle reports 34 passing checks at source revision `9142b2a`, including two-user sharing, outsider
-read/write rejection, viewer affordances, validation with unchanged state, structured agent mutation,
-and authoritative UI refresh. The available live agent bundle reports seven passing cases at revision
-`7bca264`. Both precede the deployed application revision; the focused contracts run against the current checkout,
-but a fresh clean-worktree browser/eval bundle for `807a0d6` is not present. The browser bundle checks
-that a blank Engagement task is rejected without changing state; it does not exercise a complete task
-mutation or artifact lifecycle at that revision.
+Local synthetic evidence bundles are source-labelled rather than timeless. The latest browser bundle
+reports 34 passing checks at source revision `e641082`, including two-user sharing, outsider read/write
+rejection, viewer affordances, validation with unchanged state, structured agent mutation, and
+authoritative UI refresh. The live agent bundle reports seven passing cases at the same revision. The
+browser bundle checks that a blank Engagement task is rejected without changing state; it does not
+exercise a complete task mutation or artifact lifecycle.
 
 ## Remaining gaps
 

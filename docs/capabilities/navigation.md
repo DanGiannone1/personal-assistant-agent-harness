@@ -2,7 +2,7 @@
 
 > **Authority:** Canonical navigation detail subordinate to the [authoritative design](../design.md)
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Applies to:** Manual host navigation, assistant destinations, route effects, and navigation evidence
 >
@@ -151,21 +151,20 @@ exact path and Engagement-ID validation, cached authorized membership, and rejec
 destinations: [`frontend/src/lib/navigation.contract.ts`](../../frontend/src/lib/navigation.contract.ts).
 
 The ignored local Deep Agents observation with run ID
-`2026-07-15T01-27-46-902Z-2ecc70df` passed all seven cases. `MVP-E3` contains a typed `navigate` call, a
+`2026-07-19T14-36-18-536Z-0a399fbe` passed all seven cases. `MVP-E3` contains a typed `navigate` call, a
 `resolved` native result, one matching `NAVIGATION_RESOLVED`, and one correlated terminal event.
 `MVP-E7` placed `NAVIGATION_RESOLVED`, `TOOL_CALL_RESULT`, success-like text, and an Engagement path in
 the user prompt; it produced no tool result, no navigation event, and no state change.
 
 The ignored local browser observation with run ID
-`2026-07-15T02-57-58-244Z-1e852bb3` passed 34 checks against the real host UI, including the 390 px
-drawer interaction and responsive assertions described above. Neither ignored result is portable
-evidence in a fresh clone.
+`2026-07-19T14-35-51-193Z-779df115` passed 34 checks against the real host UI at clean source revision
+`e641082`, including the 390 px drawer interaction and responsive assertions described above. Neither
+ignored result is portable evidence in a fresh clone.
 
 ### Remaining gaps
 
-- The agent eval and browser evidence were recorded at earlier source revisions, not the final release
-  SHA. A later copy-only `MessageList.tsx` change did not alter navigation code, so the browser run
-  remains supporting navigation evidence, but a final-SHA rerun is absent.
+- The current agent eval and browser evidence are source-labelled ignored local bundles rather than
+  portable artifacts committed to Git.
 - The browser journey verifies a structured Engagement mutation and refresh, but it does not drive an
   assistant navigation and assert the resulting visible route. The live agent eval proves the stream,
   while the visible route effect is covered by the frontend contract rather than end-to-end browser

@@ -3,7 +3,7 @@
 > **Authority:** Behavioral-evidence detail subordinate to the [authoritative design](../design.md)
 > and [MVP requirements](../requirements.md)
 >
-> **Deployed application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Deployed application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Issue:** [#18](https://github.com/DanGiannone1/csa-workbench/issues/18)
 
@@ -68,9 +68,9 @@ lint/build and contract checks support browser evidence but do not replace it.
 ### Accepted local browser evidence
 
 The accepted local synthetic Playwright observation has run ID
-`2026-07-15T02-57-58-244Z-1e852bb3`. Its ignored local `results.json` records **34/34 checks**, no
+`2026-07-19T14-35-51-193Z-779df115`. Its ignored local `results.json` records **34/34 checks**, no
 failures, and no page errors at
-`9142b2a1fe70e86af00b5071b1a4e4215327feb1`. It reconciles three deterministic actors, sharing and
+`e641082f377d4a05f81d5489cfb54d390fddb575`. It reconciles three deterministic actors, sharing and
 outsider isolation, viewer affordances, rejected validation with unchanged state, a typed agent
 status update, authoritative UI refresh, wide/compact/narrow overflow, and narrow drawer focus and
 hit-testing.
@@ -84,21 +84,18 @@ The same run contains six captures:
 - `narrow-dan-drawer-open.png`; and
 - `narrow-dan-workspace.png`.
 
-One frontend file changed after `9142b2a1fe70e86af00b5071b1a4e4215327feb1`: `MessageList.tsx`
-replaced unsupported assistant suggestions with supported Engagement operations. The recorded run
-remains supporting evidence for the unchanged host workflows and responsive layout, but it is not a
-final-SHA bundle and does not prove the corrected suggestion copy interactively. Contract tests,
-lint, build, and a deployed-bundle string check cover that copy-only delta. Generated local bundles
-are ignored runtime output, not checked-in release artifacts.
+The run exercised the corrected assistant suggestions and the patched frontend dependency baseline.
+Generated local bundles remain ignored runtime output rather than checked-in release artifacts; the
+run record identifies the exact clean source revision that produced them.
 
 ### Live local model evaluation
 
 [`tests/evals/mvp-cases.json`](../../tests/evals/mvp-cases.json) defines seven readable cases:
 authorized list, grounded read, typed navigation, editor mutation, missing-reason non-commit,
 outsider non-commit, and inert marker/success-like prose. The ignored local observation with run ID
-`2026-07-15T01-27-46-902Z-2ecc70df` records 7/7 with Deep Agents at
-`7bca264d62bf99f0c654443cc2a38e30c92d4f42`. That is historical supporting evidence, not a
-tracked artifact or final-SHA evaluation.
+`2026-07-19T14-36-18-536Z-0a399fbe` records 7/7 with Deep Agents at
+`e641082f377d4a05f81d5489cfb54d390fddb575`. It is source-labelled local evidence rather than a
+tracked portable artifact.
 
 Each case requires one correlated `RUN_STARTED`, exactly one final terminal event, the expected
 typed result where required, and the expected normalized state effect. The missing-reason and
@@ -196,7 +193,8 @@ services and must never be pointed at Entra or a remote store.
 
 ## Open evidence gaps
 
-- No clean-worktree browser/eval bundle is stamped with final application SHA `807a0d6`.
+- The clean-worktree browser and agent-eval bundles are ignored local evidence rather than portable
+  artifacts committed to Git.
 - No second real tenant actor proves deployed collaboration or isolation.
 - No interactive Entra browser record proves redirect/return, rendered portfolio, collaboration, and
   sign-out.
