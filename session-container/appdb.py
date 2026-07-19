@@ -517,7 +517,7 @@ def new_engagement(creator_id: str, name: str, description: str = "",
     if not name:
         raise ValueError("engagement name is required")
     container = _container()
-    pid = f"eng-{secrets.token_hex(4)}"
+    pid = f"eng-{secrets.token_hex(8)}"
     doc = {
         "id": pid, "sessionId": pid,
         "name": name, "description": (description or "").strip(),
@@ -555,17 +555,23 @@ def update_engagement(engagement_id: str, mutator):
 
 
 def list_engagements_for(user_id: str) -> list[dict]:
-    """Every engagement where the user is a member (any role), as full docs."""
+    """Every engagement where the user is a member (any role), as full docs.
+
+    The membership test runs in the query (Cosmos indexes /members/[]/userId by
+    default) so the app tier receives only this user's engagements instead of
+    scanning every engagement doc — this path runs on every app-state load.
+    """
     uid = _valid_user(user_id)
     container = _container()
     rows = container.query_items(
-        query="SELECT * FROM c WHERE STARTSWITH(c.id, 'eng-')",
+        query=(
+            "SELECT * FROM c WHERE STARTSWITH(c.id, 'eng-') "
+            "AND EXISTS(SELECT VALUE m FROM m IN c.members WHERE m.userId = @uid)"
+        ),
+        parameters=[{"name": "@uid", "value": uid}],
         enable_cross_partition_query=True,
     )
-    out = []
-    for doc in rows:
-        if member_role(doc, uid) is not None:
-            out.append(_with_domain_defaults({k: v for k, v in doc.items() if not k.startswith("_")}))
+    out = [_with_domain_defaults({k: v for k, v in doc.items() if not k.startswith("_")}) for doc in rows]
     out.sort(key=lambda d: d.get("name", "").lower())
     return out
 

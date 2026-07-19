@@ -557,6 +557,11 @@ class _NotFound(Exception):
     appdb.update (which only catches AbortWrite) so _mutate can map it to a 404."""
 
 
+class _Forbidden(Exception):
+    """Raised inside a mutator when the actor lacks the required role. Propagates like
+    _NotFound so _mutate_engagement maps it to a 403 without a string sentinel."""
+
+
 async def _require_session(session_id: str, uid: str) -> None:
     await _require_owned_session(session_id, uid)
 
@@ -927,14 +932,14 @@ async def _mutate_engagement(engagement_id: str, uid: str, minimum: str, mutator
         if appdb.member_role(doc, uid) is None:
             raise _NotFound()
         if not appdb.role_at_least(doc, uid, minimum):
-            raise appdb.AbortWrite("forbidden")
+            raise _Forbidden()
         return mutator(doc)
 
     try:
-        result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _mut)
+        await asyncio.to_thread(appdb.update_engagement, engagement_id, _mut)
     except _NotFound:
         raise HTTPException(status_code=404, detail="Not found")
-    if result == "forbidden":
+    except _Forbidden:
         raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
 
 
@@ -1120,7 +1125,7 @@ async def upload_artifact(engagement_id: str, file: UploadFile,
     if not data:
         raise HTTPException(status_code=422, detail="Empty file")
     entry = {
-        "id": f"art-{secrets.token_hex(4)}",
+        "id": f"art-{secrets.token_hex(8)}",
         "name": _safe_artifact_name(file.filename),
         "size": len(data),
         "contentType": file.content_type or "application/octet-stream",
