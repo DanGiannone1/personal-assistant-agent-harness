@@ -94,16 +94,23 @@ exist before it can run, the operational steps, the grading rules and their
 order of authority, how tasks are written so grading is fair, and where the
 recordings and scorecards live.
 
-## Prerequisites: what you need before you can evaluate anything
+## What you need before you can run evals
 
-| # | Prerequisite | Why it's required | Status |
-|---|---|---|---|
-| 1 | A set of realistic tasks | You can only measure what you test | In progress (use-case work, separate owner); 7 exist today |
-| 2 | A written "right answer" per task — expected data outcome, forbidden actions, judge questions | Without it, grading is opinion | To write per task; this is the real labor |
-| 3 | Fixed, known starting data | "Expected outcome" is meaningless if every run starts differently | ✅ Exists (dan/ava/sam test data with reset) |
-| 4 | A runner that plays the user and records transcripts | The recording is what everything else grades | ✅ Exists; needs upgrades (see roadmap) |
-| 5 | Graders: code checks + an AI judge | Code for facts, judge for language | Code checks exist; judge is manual today |
-| 6 | Somewhere scores accumulate | One run tells you nothing; the comparison is the product | ❌ Missing — first thing to build |
+You need six things. If one is missing, the results can't be trusted or
+compared.
+
+| # | You need | Why |
+|---|---|---|
+| 1 | Test questions | You can only measure what you test. Write questions users would really ask. Don't write them from the tool list — that only tests what you already built. |
+| 2 | The right answer for each question | What should the data look like after? What should the assistant never do? What should a good reply say? If this isn't written down, grading is just opinion. Writing the questions is fast; writing the right answers is the real work. |
+| 3 | The same starting data every time | If every run starts from different data, "the right answer" means nothing. |
+| 4 | A script that asks the questions and records everything | The recording is what gets graded. If something isn't recorded, it can never be graded. |
+| 5 | Graders | Code checks the facts. An AI judge checks the wording. Each catches problems the other can't see. |
+| 6 | A place to keep the scores | One run tells you nothing. Comparing this week's run to last week's is the entire point. |
+
+Where we stand on each of these is in
+[Where we are today](#where-we-are-today-honestly). This list is what's
+needed, not what we have.
 
 ## How a run works, step by step
 
