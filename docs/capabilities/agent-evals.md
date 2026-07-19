@@ -146,7 +146,12 @@ Four rules keep the layers honest:
    find valid approaches the task author didn't anticipate, and rigid
    step-checking fails correct behavior.
 2. **The judge grades only language.** It can never overturn a code check —
-   the database outranks any opinion about wording.
+   the database outranks any opinion about wording. But the two graders can
+   legitimately disagree, in both directions, and both disagreements are
+   signal: a code failure with a judge pass usually means the task spec is
+   too narrow; a code pass with a judge fail means the assistant did the
+   right thing and communicated it badly. Disagreements are reviewed, not
+   averaged.
 3. **Code checks never grade wording.** No keyword matching on assistant text,
    ever. Language belongs to the judge.
 4. **Partial credit is kept.** A task reports the fraction of its checks
@@ -200,9 +205,12 @@ Authoring rules, learned the hard way by the field:
 - **Test both directions.** For every behavior, include tasks where it should
   happen and tasks where it shouldn't (update vs. refuse; act vs. ask first).
   One-sided tests train one-sided assistants.
-- **Accept legitimate alternatives explicitly.** If refusing via the tool and
-  asking a clarifying question are both correct, the task says so — and still
-  requires the same unchanged data.
+- **Accept legitimate alternatives explicitly — and consistently.** If
+  refusing via the tool and asking a clarifying question are both correct, the
+  task says so, and still requires the same unchanged data. A safe behavior
+  accepted by one task (such as a harmless read before refusing) must be
+  accepted by every sibling task; inconsistent allowances turn a model's
+  style change into false failures.
 - **Tasks come from the job, not from the tool list.** They derive from CSA
   use cases and, over time, from real observed failures. A task that fails
   because a capability is missing is kept and reported as product signal —
@@ -321,6 +329,12 @@ records exist, real failures become the primary source of new tasks.
   declined — without ever proving the rejection behavior they were written to
   test
 - ⚠️ Judging is manual (a Claude session), not yet automated or calibrated
+- The first live model comparison (2026-07-19, gpt-4.1 → gpt-5.6-terra on the
+  same seven tasks) exercised the loop end to end and demonstrated each layer
+  earning its keep: a 3.7× latency improvement caught by measurement, one
+  false code-check failure caused by an inconsistent task allowance, one
+  reply-quality failure both models share that only the judge sees, and no
+  cost comparison possible because tokens are not yet captured
 
 ## Roadmap
 
