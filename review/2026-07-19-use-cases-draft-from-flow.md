@@ -8,7 +8,7 @@ The canonical scenario set for the product. It serves two purposes at once:
    architect actually does: prepare for customer calls, capture what happened in them, track
    actions and risks across Engagements, work with documents, and report status.
 2. **A live reference architecture.** Each scenario demonstrates a reusable pattern — the same
-   pattern an enterprise team (for example, the IDA client) applies to its own domain. The
+   pattern an enterprise team (for example, a customer building its own agent) applies to its own domain. The
    capability layer is domain-agnostic; our CSA nouns are the first plugged-in domain, not the
    skeleton. See the [teach-through map](#teach-through-map).
 
@@ -43,7 +43,7 @@ claim work a tool performed, and you watch the app change as it acts.
 
 ### 1. Orient — "what needs my attention?" `C+Q+N` — Partial
 
-> *"take me to my calendar"* · *"what's overdue?"* · *"open the IDA Engagement"*
+> *"take me to my calendar"* · *"what's overdue?"* · *"open the Fabrikam Engagement"*
 
 Navigation resolves deterministically today (no LLM routing): **resolved** moves the pane,
 **ambiguous** lists candidates, **not-found** answers honestly and stays put. "What's overdue"
@@ -162,7 +162,7 @@ conventions from context), offer the download. The scheduled variant is scenario
 
 ### 12. Prep me — the flagship `C→Q+R→D→N` — Target
 
-> *"Prep me for tomorrow's IDA call."*
+> *"Prep me for tomorrow's Fabrikam call."*
 
 Context picks the Engagement; query pulls open actions, risks, and milestones; retrieval pulls
 what the last two transcripts said; doc AI generates a one-page brief; the app opens it. The

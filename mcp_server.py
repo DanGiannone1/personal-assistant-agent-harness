@@ -4,7 +4,7 @@ Cosmos is private-endpoint-only (see docs/deployment.md), so nothing outside the
 VNet can reach it directly. This server runs as the `flow-mcp` Container App inside
 the VNet-integrated ACA environment (scale-to-zero) and exposes the app-state
 operations as MCP tools over streamable HTTP, authenticated by a shared key. That
-gives laptops and agents (Claude Code, schedulers, future IDA work) tool-level
+gives laptops and agents (Claude Code, schedulers, other future agents) tool-level
 access to tasks/events/schedules without any network path to Cosmos itself.
 
 Auth: every request must carry the key in `x-api-key` or `Authorization: Bearer`.

@@ -21,8 +21,8 @@ assistant prose. This is the defining architecture rule:
 
 The repository is also a practical reference for agent-harness systems: authenticated actor
 binding, replaceable harnesses, structured control, durable product state outside compute,
-responsive UI, and behavioral evidence. IDA material is comparative input only. CSA Workbench must
-stand on its own as a useful solution-architect product.
+responsive UI, and behavioral evidence. CSA Workbench must stand on its own as a useful
+solution-architect product.
 
 ## What problem it solves
 
@@ -311,14 +311,14 @@ named capability document:
 [Requirements](requirements.md) owns the release bar. [Development](development.md) and
 [Deployment](deployment.md) are runbooks; they describe mechanics and never override design.
 
-## Relationship to IDA
+## Relationship to external agent platforms
 
-IDA is not a product dependency, target platform, or source of requirements for CSA Workbench. The
-useful relationship is architectural: IDA teams can examine a working example of trusted context,
-typed tools, durable domain state, structured outcomes, responsive agent UI, harness portability,
-and behavioral evidence.
+No customer agent platform is a product dependency, target platform, or source of requirements for
+CSA Workbench. The useful relationship is architectural: teams building their own agents can
+examine a working example of trusted context, typed tools, durable domain state, structured
+outcomes, responsive agent UI, harness portability, and behavioral evidence.
 
-A future IDA adapter must authenticate a delegated actor and enter through the same application
-contracts. It receives no global-owner, shared-key, or authorization-bypass path. IDA-specific
-taxonomy, connectors, semantic layers, and orchestration remain outside this repository unless they
-independently solve a CSA Workbench product need.
+A future external adapter must authenticate a delegated actor and enter through the same
+application contracts. It receives no global-owner, shared-key, or authorization-bypass path.
+Customer-specific taxonomy, connectors, semantic layers, and orchestration remain outside this
+repository unless they independently solve a CSA Workbench product need.

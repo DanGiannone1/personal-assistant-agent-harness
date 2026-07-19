@@ -11,8 +11,8 @@ renders, so a claim cannot outrun the state that was actually read or changed.
 The application is the product; chat is one way to use it. The repository also works as an
 example of solid agent-system design: every action is tied to a verified user, the AI runtime can
 be swapped out, results are structured data rather than prose, durable data lives in the database
-rather than in the running services, and behavior is proven with real tests — without depending on
-IDA or becoming a generic agent platform.
+rather than in the running services, and behavior is proven with real tests — without becoming a
+generic agent platform.
 
 ## Start here
 
@@ -143,9 +143,9 @@ The orchestrator is at the repository root; there is no separate `orchestrator/`
 | Infrastructure | `infra/`, `.github/workflows/` |
 | Tests and check scripts | `scripts/`, `tests/` where present |
 
-## Reference relationship to IDA
+## Relationship to external agent platforms
 
-Local IDA material is comparative input only. It creates no CSA Workbench requirement and is not needed to
-build, run, or understand the application. The useful bridge is architectural: an IDA team may reuse
-CSA Workbench's context, tool, state, outcome, trace, and harness patterns through a future authenticated
-adapter without receiving a bypass around the product's identity or authorization rules.
+CSA Workbench does not depend on any customer's agent platform, and none is needed to build, run,
+or understand the application. Teams building their own agents may reuse this repository's context,
+tool, state, outcome, trace, and harness patterns through a future authenticated adapter — one that
+gets no bypass around the product's identity or authorization rules.
