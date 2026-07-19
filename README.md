@@ -8,30 +8,32 @@ CSA Workbench gives solution architects a personal place to organize their work 
 to run customer engagements. An embedded assistant can navigate and operate the same records the UI
 renders, so a claim cannot outrun the state that was actually read or changed.
 
-The application is the product; chat is one control surface. The repository also serves as a
-reference implementation for modern agent-harness patterns—trusted actor binding, replaceable
-runtimes, structured outcomes, durable product state outside compute, and behavioral
-evidence—without depending on IDA or becoming a generic agent platform.
+The application is the product; chat is one way to use it. The repository also works as an
+example of solid agent-system design: every action is tied to a verified user, the AI runtime can
+be swapped out, results are structured data rather than prose, durable data lives in the database
+rather than in the running services, and behavior is proven with real tests — without depending on
+IDA or becoming a generic agent platform.
 
 ## Start here
 
-- [Authoritative design](docs/design.md) — product promise, scope, domain, system/trust/state
-  boundaries, implemented architecture, verified evidence, and explicit gaps.
-- [v1 requirements](docs/requirements.md) — release requirements, acceptance journeys, and
-  verification profiles.
-- [Development](docs/development.md) — current local prerequisites, configuration, and commands.
+- [Design](docs/design.md) — what the product is, what it includes and excludes, how the system is
+  built, what has been verified, and what hasn't.
+- [v1 requirements](docs/requirements.md) — what must be true to ship, the user journeys that prove
+  it, and how each is verified.
+- [Development](docs/development.md) — local prerequisites, configuration, and commands.
 
-The design distinguishes implemented behavior, verified evidence, and intentionally deferred
-patterns. The current application revision is deployed and behaviorally verified as recorded there;
-remaining evidence gaps are named rather than hidden behind a generic target-state disclaimer.
+The design separates what is built, what is proven, and what is deliberately postponed. The
+deployed version has been verified as recorded there, and the remaining gaps are listed by name
+instead of being hidden behind a vague disclaimer.
 
 ## Product shape
 
 - **Personal CSA space** — see the Engagements that belong to the signed-in user.
 - **Shared Engagement workspace** — create, open, edit, and share role-gated Engagement records.
 - **Embedded assistant** — the same conversation in a dock or full artifact workbench.
-- **Truthful operations** — shared rules for manual and agent actions, structured outcomes, and
-  authoritative refresh.
+- **Truthful operations** — the same rules apply whether a person or the assistant makes a change,
+  every result is structured data, and the UI re-reads the confirmed state afterward instead of
+  trusting what was said.
 - **Responsive professional UX** — wide, compact, and narrow web layouts with WCAG 2.2 AA intent.
 
 ## Architecture at a glance
@@ -55,7 +57,8 @@ The frontend, orchestrator, and runtime are separate deployment boundaries. The 
 Engagement operations—create, list, get, update, set status, and share/change membership—use one
 application core behind REST and agent-tool adapters. Member removal, tasks, conventions, and
 artifacts remain manual application paths. Agent sessions, chat history, uploads, and local traces
-are ephemeral in the MVP; durable Engagement records and artifacts remain outside compute.
+do not survive a restart in the MVP; Engagement records and artifacts do, because they live in
+Cosmos and Blob rather than in the running services.
 
 ## Run the current implementation locally
 
@@ -95,16 +98,16 @@ and are not required for Engagement work or direct artifact access.
 
 ## Documentation map
 
-### Authority
+### Core documents
 
-| Document | Owns |
+| Document | Covers |
 |---|---|
-| [Design](docs/design.md) | High-level product and system architecture; capability boundaries |
-| [Requirements](docs/requirements.md) | v1 release bar and acceptance criteria |
+| [Design](docs/design.md) | High-level product and system architecture; what each capability may decide |
+| [Requirements](docs/requirements.md) | What must be true to ship v1, and how it's accepted |
 
 ### Capability designs
 
-| Capability | Detailed authority |
+| Capability | Covers |
 |---|---|
 | [UI/UX](docs/capabilities/ui-ux.md) | Information architecture, interaction, responsive behavior, accessibility |
 | [Context](docs/capabilities/context.md) | Prompt hints, live grounding, trust boundaries, precedence, and inspector |
@@ -122,11 +125,11 @@ and are not required for Engagement work or direct artifact access.
 | Document | Purpose |
 |---|---|
 | [Development](docs/development.md) | Operate and verify the current repository locally |
-| [Deployment](docs/deployment.md) | Guarded dry run, apply workflow, verified profile, and post-deployment checks |
+| [Deployment](docs/deployment.md) | Safety-checked dry run, the apply workflow, and post-deployment checks |
 
-The root README is the repository and documentation front door. Capability documents are
-subordinate to the high-level design and own only their named detail. Runbooks describe mechanics;
-they do not override product or architecture decisions.
+This README is the starting point for the repository and its docs. Capability documents fill in
+detail under the high-level design and can't contradict it. Runbooks explain how to do things; they
+don't change what the product or architecture is.
 
 ## Repository layout
 
@@ -138,7 +141,7 @@ The orchestrator is at the repository root; there is no separate `orchestrator/`
 | Session runtime and harnesses | `session-container/server.py`, `agent_deepagents.py`, `agent.py`, `appdb.py` |
 | Frontend | `frontend/src/components/`, `frontend/src/hooks/useAgentSession.ts`, `frontend/src/lib/` |
 | Infrastructure | `infra/`, `.github/workflows/` |
-| Behavioral probes | `scripts/`, `tests/` where present |
+| Tests and check scripts | `scripts/`, `tests/` where present |
 
 ## Reference relationship to IDA
 
