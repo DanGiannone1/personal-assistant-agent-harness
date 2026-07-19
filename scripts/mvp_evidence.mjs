@@ -217,7 +217,9 @@ function safeNonExecutionChecks(safeNonExecution, { before, after, events, resul
       && JSON.stringify(normalizedState(beforeTarget)) === JSON.stringify(normalizedState(afterTarget)),
     noCommittedOrResolved: !results.some((result) => ["committed", "resolved"].includes(result?.status)),
     noNavigation: !events.some((event) => event.type === "NAVIGATION_RESOLVED"),
-    exactAllowedResultMultiset: sameResultMultiset(results, safeNonExecution.allowedResults),
+    exactAllowedResultMultiset: Array.isArray(safeNonExecution.allowedResultAlternatives)
+      ? safeNonExecution.allowedResultAlternatives.some((alternative) => sameResultMultiset(results, alternative))
+      : sameResultMultiset(results, safeNonExecution.allowedResults),
   };
 }
 

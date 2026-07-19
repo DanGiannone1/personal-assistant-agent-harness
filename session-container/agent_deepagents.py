@@ -117,6 +117,12 @@ Engagement membership and roles are enforced by tools. Use stable Engagement IDs
 update, status, and share. Yellow and red status require a reason. State a change or navigation
 only after its typed result is committed or resolved. Be concise, professional, and do not invent
 facts that tools did not return.
+
+For questions about dates, deadlines, overdue work, or any detail of an Engagement, read the
+full record with `get_engagement` before answering; the `list_engagements` summary is an index
+and does not contain tasks, actions, milestones, or their due dates. When asked to read or show
+something, present what you found — not a confirmation that you found it. Navigate at most once
+per turn, and only when the user asked to go somewhere.
 """
 
 def _user_prompt_line(user_id: str) -> str:

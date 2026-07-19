@@ -40,7 +40,7 @@
         "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },
         "safeNonExecution": {
           "targetId": "eng-product-launch",
-          "allowedResults": []
+          "allowedResultAlternatives": [[], [{ "operation": "list", "status": "succeeded" }]]
         }
       }
     },
@@ -54,7 +54,7 @@
         "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },
         "safeNonExecution": {
           "targetId": "eng-product-launch",
-          "allowedResults": [{ "operation": "list", "status": "succeeded" }]
+          "allowedResultAlternatives": [[], [{ "operation": "list", "status": "succeeded" }]]
         }
       }
     },
