@@ -405,6 +405,37 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     def _engagements() -> list[dict]:
         return engagement_service.list(user_id).record["engagements"]
 
+    def _engagement_detail_text(record: dict) -> str:
+        """Model-visible detail for one Engagement: the facts a user would ask about.
+        The typed ProductToolResult stays the control-plane truth; this is the data."""
+        lines = [
+            f"Engagement [{record['id']}] {record.get('name', '')}",
+            f"customer={record.get('customer') or 'n/a'} | status={record.get('status', 'green')}"
+            + (f" ({record['statusNote']})" if record.get("statusNote") else "")
+            + f" | start={record.get('startDate') or 'n/a'} | target={record.get('targetDate') or 'n/a'}",
+            "members: " + (", ".join(f"{m.get('userId')}({m.get('role')})" for m in record.get("members") or []) or "none"),
+        ]
+        if record.get("description"):
+            lines.append(f"description: {record['description']}")
+        for label, key, fields in (
+            ("tasks", "tasks", ("title", "status", "priority", "dueDate")),
+            ("actions", "actions", ("title", "status", "owner", "dueDate")),
+            ("milestones", "milestones", ("title", "status", "dueDate")),
+            ("risks", "risks", ("title", "severity", "status")),
+        ):
+            items = record.get(key) or []
+            if items:
+                lines.append(f"{label}:")
+                for item in items:
+                    parts = [str(item.get(field)) for field in fields if item.get(field)]
+                    lines.append(f"- [{item.get('id')}] " + " | ".join(parts))
+        artifacts = record.get("library") or []
+        lines.append(f"artifacts: {len(artifacts)}")
+        conventions = record.get("conventions") or []
+        if conventions:
+            lines.append("conventions: " + "; ".join(c.get("text", "") for c in conventions))
+        return "\n".join(lines)
+
     def _visits() -> list[dict]:
         return appdb.load_context(user_id)["visits"]
 
@@ -821,7 +852,7 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     def get_engagement(params: GetEngagementParams) -> ToolResult:
         outcome = engagement_service.get(user_id, params.engagement_id)
         result = engagement_product_result(outcome)
-        text = f"Engagement [{outcome.record['id']}] {outcome.record['name']}" if outcome.record else result.message
+        text = _engagement_detail_text(outcome.record) if outcome.record else result.message
         return _tool_result(result, text)
 
     @define_tool(name="update_engagement", description="Update description, customer, or dates as an editor/owner; changing name requires owner access. Omit fields to leave them unchanged; empty optional fields clear them.")
