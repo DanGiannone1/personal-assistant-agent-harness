@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseSse, requireCleanWorktree, requireLoopbackUrl, stateFingerprint } from "../scripts/mvp_evidence.mjs";
 
@@ -18,6 +19,13 @@ const assistantText = (delta, messageId = "message-1") => [
   { type: "TEXT_MESSAGE_CONTENT", message_id: messageId, delta },
   { type: "TEXT_MESSAGE_END", message_id: messageId },
 ];
+
+test("the Tailwind theme exports the primary brand utilities used by sign-in controls", () => {
+  const theme = readFileSync(new URL("../frontend/src/app/globals.css", import.meta.url), "utf8");
+  const auth = readFileSync(new URL("../frontend/src/components/AppAuthProvider.tsx", import.meta.url), "utf8");
+  assert.match(auth, /data-testid="signin-microsoft"[\s\S]*?bg-brand-primary/);
+  assert.match(theme, /--color-brand-primary:\s*var\(--brand-primary\);/);
+});
 
 test("parses only one JSON event per SSE frame", () => {
   const events = parseSse('data: {"type":"RUN_STARTED"}\n\ndata: {"type":"RUN_FINISHED"}\n\n');

@@ -51,6 +51,7 @@
   --color-border-subtle: var(--border-subtle);
 
   --color-brand: var(--brand-primary);
+  --color-brand-primary: var(--brand-primary);
   --color-brand-accent: var(--brand-accent);
   --color-brand-secondary: var(--brand-secondary);
   --color-brand-success: var(--brand-success);
