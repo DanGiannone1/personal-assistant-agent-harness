@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseSse, requireCleanWorktree, requireLoopbackUrl, stateFingerprint } from "../scripts/mvp_evidence.mjs";
+import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, stateFingerprint } from "../scripts/mvp_evidence.mjs";
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
@@ -277,4 +277,21 @@ test("loopback and clean-worktree guards refuse crafted DNS, remote hosts, and s
   assert.throws(() => requireCleanWorktree(" M scripts/mvp_evidence.mjs\n"), /clean Git/);
   assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/local-synthetic/playwright/run/results.json\n"));
   assert.doesNotThrow(() => requireCleanWorktree(""));
+});
+
+test("requireTargetUrl stays loopback-only unless MVP_ALLOW_REMOTE=1 opts into an ACA https host", () => {
+  delete process.env.MVP_ALLOW_REMOTE;
+  assert.equal(requireTargetUrl("http://localhost:8000", "MVP_API_URL"), "http://localhost:8000");
+  assert.throws(() => requireTargetUrl("https://demo-api.eastus2.azurecontainerapps.io", "MVP_API_URL"), /loopback/);
+  process.env.MVP_ALLOW_REMOTE = "1";
+  try {
+    assert.equal(
+      requireTargetUrl("https://demo-api.bluedesert.eastus2.azurecontainerapps.io/", "MVP_API_URL"),
+      "https://demo-api.bluedesert.eastus2.azurecontainerapps.io",
+    );
+    assert.throws(() => requireTargetUrl("https://example.com", "MVP_API_URL"), /azurecontainerapps/);
+    assert.throws(() => requireTargetUrl("http://demo-api.eastus2.azurecontainerapps.io", "MVP_API_URL"), /azurecontainerapps/);
+  } finally {
+    delete process.env.MVP_ALLOW_REMOTE;
+  }
 });

@@ -3,10 +3,10 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { evidencePath, evaluateCase, parseSse, requireCleanWorktree, requireLoopbackUrl } from "./mvp_evidence.mjs";
+import { evidencePath, evaluateCase, parseSse, requireCleanWorktree, requireTargetUrl } from "./mvp_evidence.mjs";
 
 const startedAt = new Date().toISOString();
-const API = requireLoopbackUrl(process.env.MVP_API_URL || "http://localhost:8000", "MVP_API_URL");
+const API = requireTargetUrl(process.env.MVP_API_URL || "http://localhost:8000", "MVP_API_URL");
 const runId = process.env.MVP_RUN_ID || new Date().toISOString().replace(/[:.]/g, "-") + `-${randomUUID().slice(0, 8)}`;
 const out = evidencePath("agent-evals", runId);
 const cases = JSON.parse(readFileSync("tests/evals/mvp-cases.json", "utf8"));
