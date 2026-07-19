@@ -271,12 +271,14 @@ disabled. The live topology verifier also passed the exact app, network, DNS, id
 resource-group containment, and immutable-image contract. The exact tenant-governance NSG pair was
 present and passed its fail-closed policy-artifact contract.
 
-Application revision `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a` repeated frontend root,
+Application revision `ce251fbbe03c6b99bc38e676a8be88e9f199f777` repeated frontend root,
 `/assistant`, API health, real-Entra `/auth/me`, Engagement, quick-link, immutable-image, and exact
 topology checks. Desktop and 390px live-browser checks also proved the repaired Microsoft sign-in
 color, 4.525:1 contrast, zero horizontal overflow, no page/console errors, and redirect to the
-Microsoft login host. The typed-agent and Blob round trips in the preceding paragraph remain the
-recorded evidence from application revision `807a0d6`; they were not rerun for the CSS-only change.
+Microsoft login host. The deployed Next.js 16.2.10/PostCSS 8.5.20 dependency baseline had zero npm
+audit findings, and foundation deployment preserved the exact tenant-governance NSG pair. The
+typed-agent and Blob round trips in the preceding paragraph remain the recorded evidence from
+application revision `807a0d6`; they were not rerun for the frontend-only behavior/dependency change.
 
 A second real tenant actor and an interactive real-Entra browser journey remain evidence to capture;
 deterministic multi-user browser evidence is already present. The final UI copy was verified in the

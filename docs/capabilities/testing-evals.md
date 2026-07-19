@@ -110,12 +110,14 @@ timing, and hidden reasoning are deliberately ungraded.
 
 ### Final deployed release observation
 
-Application revision `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a` repeated frontend root,
+Application revision `ce251fbbe03c6b99bc38e676a8be88e9f199f777` repeated frontend root,
 `/assistant`, API health, real-Entra `/auth/me`, Engagement, quick-link, immutable-image, and exact
 topology checks. Live desktop and 390px browser evidence proved the repaired Microsoft sign-in
 color, 4.525:1 contrast, zero horizontal overflow, no page/console errors, and redirect to
-`login.microsoftonline.com`. The typed-agent and Blob round trips below were not repeated for that
-CSS-only application change.
+`login.microsoftonline.com`. The deployed Next.js 16.2.10/PostCSS 8.5.20 dependency baseline had
+zero npm audit findings, and foundation deployment preserved the exact tenant-governance NSG pair.
+The typed-agent and Blob round trips below were not repeated for that frontend-only
+behavior/dependency change.
 
 The authoritative design records application revision `807a0d6` passing frontend root and
 `/assistant` responses, API health, real-Entra `/auth/me`, Engagement and quick-link reads, session

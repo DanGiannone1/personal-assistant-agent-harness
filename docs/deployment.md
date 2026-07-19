@@ -3,7 +3,7 @@
 > **Purpose:** Operate the current guarded deployment; architecture authority remains in
 > [Infrastructure](capabilities/infrastructure.md).
 >
-> **Verified application revision:** `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a`
+> **Verified application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
 >
 > **Last verified:** 2026-07-19 in `csa-workbench-rg`, East US 2
 
@@ -115,7 +115,7 @@ and responsive evidence.
 
 ## Verified release observation
 
-For `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a`:
+For `ce251fbbe03c6b99bc38e676a8be88e9f199f777`:
 
 - all three apps were healthy, pinned to that SHA, and retained the public frontend/API, internal
   runtime, and `0–1` Consumption scale contract;
@@ -124,11 +124,12 @@ For `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a`:
 - desktop and 390px browser checks showed the Microsoft sign-in control with the intended
   `rgb(0, 115, 234)` background, white text, 4.525:1 contrast, no horizontal overflow, and no
   page/console errors; and
-- the sign-in action redirected to `login.microsoftonline.com`, and the live exact-topology
-  verifier passed after the approved tenant-governance NSG associations were restored.
+- the sign-in action redirected to `login.microsoftonline.com`, the Next.js 16.2.10/PostCSS 8.5.20
+  dependency baseline had zero npm audit findings, and the live exact-topology verifier passed with
+  the approved tenant-governance NSG associations preserved through foundation deployment.
 
 The session-create, typed-agent, and Blob round-trip observations below were not repeated for this
-CSS-only application change; they remain evidence for the prior release revision.
+frontend-only behavior/dependency change; they remain evidence for the prior release revision.
 
 For `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`:
 
