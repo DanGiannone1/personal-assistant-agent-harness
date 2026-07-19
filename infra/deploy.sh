@@ -20,6 +20,8 @@ ACR_NAME="${ACR_NAME:-djgsharedacr}"
 ACR_LOCATION="${ACR_LOCATION:-eastus}"
 AOAI_NAME="${AOAI_NAME:-csa-workbench-ai}"
 AZURE_DEPLOYMENT="${AZURE_DEPLOYMENT:-gpt-4.1}"
+IDENTITY_MODE="${IDENTITY_MODE:-entra}"
+DEMO_PASSWORD="${DEMO_PASSWORD:-}"
 VNET_NAME='csa-workbench-vnet'
 ACA_INFRASTRUCTURE_SUBNET_NAME='aca-infrastructure'
 PRIVATE_ENDPOINT_SUBNET_NAME='private-endpoints'
@@ -51,6 +53,8 @@ fi
 [[ "$STORAGE_ACCOUNT_NAME" =~ ^[a-z0-9]{3,24}$ ]] || fail "invalid Storage account name: $STORAGE_ACCOUNT_NAME"
 [[ "$ACR_NAME" =~ ^[a-zA-Z0-9]{5,50}$ ]] || fail "invalid Container Registry name: $ACR_NAME"
 [[ "$AOAI_NAME" =~ ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ ]] || fail "invalid Azure OpenAI account name: $AOAI_NAME"
+[[ "$IDENTITY_MODE" == "entra" || "$IDENTITY_MODE" == "demo" ]] || fail "IDENTITY_MODE must be 'entra' or 'demo'"
+[[ "$IDENTITY_MODE" != "demo" || -n "$DEMO_PASSWORD" ]] || fail "DEMO_PASSWORD is required when IDENTITY_MODE=demo"
 
 echo "CSA Workbench Azure MVP ($SHA)"
 echo "Target: $RESOURCE_GROUP in $LOCATION; APPLY=$APPLY"
@@ -153,7 +157,7 @@ az acr build -r "$ACR_NAME" -g "$RESOURCE_GROUP" -t "csa-workbench-api:$SHA" -f 
 az acr build -r "$ACR_NAME" -g "$RESOURCE_GROUP" -t "csa-workbench-runtime:$SHA" -f session-container/Dockerfile . --only-show-errors
 az acr build -r "$ACR_NAME" -g "$RESOURCE_GROUP" -t "csa-workbench-frontend:$SHA" -f frontend/Dockerfile frontend \
   --build-arg "NEXT_PUBLIC_API_URL=$API_URL" \
-  --build-arg NEXT_PUBLIC_IDENTITY_MODE=entra \
+  --build-arg "NEXT_PUBLIC_IDENTITY_MODE=$IDENTITY_MODE" \
   --build-arg "NEXT_PUBLIC_ENTRA_TENANT_ID=$TENANT_ID" \
   --build-arg "NEXT_PUBLIC_ENTRA_CLIENT_ID=$WEB_CLIENT_ID" \
   --build-arg "NEXT_PUBLIC_ENTRA_API_CLIENT_ID=$API_CLIENT_ID" \
@@ -165,7 +169,8 @@ APPS=(az deployment group create -g "$RESOURCE_GROUP" --name "csa-workbench-apps
   frontendAppName="$FRONTEND_APP_NAME" apiAppName="$API_APP_NAME" runtimeAppName="$RUNTIME_APP_NAME" \
   tenantId="$TENANT_ID" apiClientId="$API_CLIENT_ID" runtimeClientId="$RUNTIME_CLIENT_ID" \
   frontendUrl="$FRONTEND_URL" runtimeFqdn="$RUNTIME_FQDN" cosmosAccountName="$COSMOS_ACCOUNT_NAME" storageAccountName="$STORAGE_ACCOUNT_NAME" \
-  azureOpenAiEndpoint="$AOAI_ENDPOINT" azureOpenAiDeployment="$AZURE_DEPLOYMENT")
+  azureOpenAiEndpoint="$AOAI_ENDPOINT" azureOpenAiDeployment="$AZURE_DEPLOYMENT" \
+  identityMode="$IDENTITY_MODE" demoPassword="$DEMO_PASSWORD")
 echo "Running resource-group what-if before app deployment..."
 "${APPS[@]/create/what-if}" --result-format ResourceIdOnly --only-show-errors
 "${APPS[@]}" --only-show-errors >/dev/null
