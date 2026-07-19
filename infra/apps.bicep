@@ -17,8 +17,15 @@ param cosmosAccountName string
 param storageAccountName string
 param azureOpenAiEndpoint string
 param azureOpenAiDeployment string
+@allowed([
+  'entra'
+  'demo'
+])
+param identityMode string = 'entra'
+@secure()
+param demoPassword string = ''
+param databaseName string = 'csa-workbench-entra'
 
-var databaseName = 'csa-workbench-entra'
 var containerName = 'appstate'
 var artifactContainer = 'engagement-artifacts'
 var frontendIdentityId = resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', 'csa-workbench-frontend-identity')
@@ -89,6 +96,12 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: identityMode == 'demo' ? [
+        {
+          name: 'demo-password'
+          value: demoPassword
+        }
+      ] : []
       registries: [
         {
           server: acrServer
@@ -114,9 +127,9 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: [
+          env: concat([
             { name: 'AZURE_CLIENT_ID', value: reference(apiIdentityId, '2023-01-31').clientId }
-            { name: 'IDENTITY_MODE', value: 'entra' }
+            { name: 'IDENTITY_MODE', value: identityMode }
             { name: 'ENTRA_TENANT_ID', value: tenantId }
             { name: 'ENTRA_API_CLIENT_ID', value: apiClientId }
             { name: 'ENTRA_ALLOWED_AUDIENCES', value: 'api://${apiClientId}' }
@@ -130,7 +143,9 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ARTIFACTS_ACCOUNT', value: storageAccountName }
             { name: 'ARTIFACTS_CONTAINER', value: artifactContainer }
             { name: 'SCHEDULER_ENABLED', value: 'false' }
-          ]
+          ], identityMode == 'demo' ? [
+            { name: 'DEMO_PASSWORD', secretRef: 'demo-password' }
+          ] : [])
         }
       ]
     }
