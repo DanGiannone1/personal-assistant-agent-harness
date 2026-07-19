@@ -937,13 +937,22 @@ class AgentSession:
         # is passed as azure_ad_token (AAD auth — no key), mirroring the Copilot backend.
         base_endpoint = os.environ["AZURE_ENDPOINT"].split("/openai")[0].rstrip("/")
         deployment = os.environ["AZURE_DEPLOYMENT"]
+        # gpt-5 reasoning models (non-chat) only honor reasoning_effort via the Responses
+        # API — chat/completions rejects it alongside tools — so route those there at a
+        # version that supports it, and leave plain chat models on completions untouched.
+        is_reasoning = deployment.startswith("gpt-5") and "chat" not in deployment
         api_version = os.getenv("AZURE_API_VERSION", "2024-10-21")
+        reasoning_kwargs: dict = {}
+        if is_reasoning:
+            api_version = os.getenv("REASONING_API_VERSION", "2025-04-01-preview")
+            reasoning_kwargs = {"use_responses_api": True, "reasoning_effort": os.getenv("REASONING_EFFORT", "low")}
         model = AzureChatOpenAI(
             azure_endpoint=base_endpoint,
             azure_deployment=deployment,
             api_version=api_version,
             azure_ad_token=token,
             streaming=True,
+            **reasoning_kwargs,
         )
 
         tools = _build_langchain_tools(self._working_dir, self._user_id)
