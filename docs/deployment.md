@@ -3,9 +3,9 @@
 > **Purpose:** Operate the current guarded deployment; architecture authority remains in
 > [Infrastructure](capabilities/infrastructure.md).
 >
-> **Verified application revision:** `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`
+> **Verified application revision:** `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a`
 >
-> **Last verified:** 2026-07-16 in `csa-workbench-rg`, East US 2
+> **Last verified:** 2026-07-19 in `csa-workbench-rg`, East US 2
 
 ## What this runbook deploys
 
@@ -53,9 +53,10 @@ From the repository root:
 ./infra/deploy.sh
 ```
 
-With `APPLY` unset or false, the script validates its tools and clean revision, compiles both Bicep
-entrypoints, inspects any existing Container Apps environment, and runs the safe foundation what-if
-when recovery state permits. It does not reconcile Entra, build images, or deploy resources.
+With `APPLY` unset or false, the script validates its tools and clean revision, validates any exact
+tenant-governance NSG pair, compiles both Bicep entrypoints, inspects any existing Container Apps
+environment, and runs the safe foundation what-if when recovery state permits. It does not reconcile
+Entra, build images, or deploy resources.
 
 If the named environment exists with an incompatible network contract, dry run fails closed and
 reports that recovery requires an explicit apply. It does not delete the environment or pretend an
@@ -69,9 +70,10 @@ APPLY=true ./infra/deploy.sh
 
 The apply path:
 
-1. validates the existing environment and recovery allowlist;
+1. validates the optional tenant-governance NSG pair, existing environment, and recovery allowlist;
 2. if recovery is required, deletes only the three named apps and their named environment;
-3. runs foundation what-if and deployment;
+3. runs foundation what-if and deployment, preserving the approved NSG subnet associations when
+   that exact pair already exists;
 4. reconciles the three dedicated Entra registrations;
 5. builds frontend, API, and runtime images at the same full Git SHA;
 6. runs the app what-if and deployment; and
@@ -100,16 +102,33 @@ Tenant policy may add one Defender for Storage Event Grid system topic and the e
 absence and validates their exact shape when present.
 
 Tenant governance may also add no NSGs or the exact East US 2 pair named in
-[Infrastructure](capabilities/infrastructure.md). Application Bicep declares no NSGs. When the pair
-is present, the verifier requires both successful resources, no custom rules or NIC associations,
-and only the approved ACA/private-endpoint subnet attachments. Partial, extra, or mismatched policy
-state fails.
+[Infrastructure](capabilities/infrastructure.md). Application Bicep creates no NSGs, and the guarded
+preflight never creates or deletes them. When the exact pair exists, its IDs are passed into the
+foundation deployment so the VNet update preserves the approved subnet associations. The verifier
+then requires both successful resources, no custom rules or NIC associations, and only the approved
+ACA/private-endpoint subnet attachments. Partial, extra, or mismatched policy state fails before
+foundation mutation.
 
 A successful deployment command or health endpoint alone is not acceptance. Follow
 [Testing and evals](capabilities/testing-evals.md) for real-Entra, state, typed agent, Blob, browser,
 and responsive evidence.
 
 ## Verified release observation
+
+For `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a`:
+
+- all three apps were healthy, pinned to that SHA, and retained the public frontend/API, internal
+  runtime, and `0–1` Consumption scale contract;
+- the frontend root and `/assistant` returned `200`, and API health, real-Entra `/auth/me`,
+  Engagement reads, and quick-link reads returned `200`;
+- desktop and 390px browser checks showed the Microsoft sign-in control with the intended
+  `rgb(0, 115, 234)` background, white text, 4.525:1 contrast, no horizontal overflow, and no
+  page/console errors; and
+- the sign-in action redirected to `login.microsoftonline.com`, and the live exact-topology
+  verifier passed after the approved tenant-governance NSG associations were restored.
+
+The session-create, typed-agent, and Blob round-trip observations below were not repeated for this
+CSS-only application change; they remain evidence for the prior release revision.
 
 For `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`:
 

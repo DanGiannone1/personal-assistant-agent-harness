@@ -38,6 +38,8 @@ require python3
 az account show --only-show-errors >/dev/null || fail "sign in with az login before continuing"
 TENANT_ID="$(az account show --query tenantId -o tsv)"
 [[ -n "$TENANT_ID" ]] || fail "the current Azure account has no tenant id"
+SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+[[ -n "$SUBSCRIPTION_ID" ]] || fail "the current Azure account has no subscription id"
 az bicep version >/dev/null || fail "Azure CLI Bicep support is required"
 
 SHA="$(git rev-parse HEAD)"
@@ -53,6 +55,16 @@ fi
 echo "CSA Workbench Azure MVP ($SHA)"
 echo "Target: $RESOURCE_GROUP in $LOCATION; APPLY=$APPLY"
 
+GROUP_EXISTS="$(az group exists -n "$RESOURCE_GROUP" -o tsv)" || fail "cannot determine whether resource group $RESOURCE_GROUP exists"
+case "$GROUP_EXISTS" in
+  true) GOVERNANCE_NSG_INVENTORY="$(az network nsg list -g "$RESOURCE_GROUP" -o json)" || fail "cannot list tenant-governance NSGs" ;;
+  false) GOVERNANCE_NSG_INVENTORY='[]' ;;
+  *) fail "resource group existence check returned an invalid value" ;;
+esac
+GOVERNANCE_NSGS="$(python3 infra/governance_nsg.py --subscription-id "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" --location "$LOCATION" <<<"$GOVERNANCE_NSG_INVENTORY")" || fail "tenant-governance NSG preflight failed"
+ACA_INFRASTRUCTURE_NSG_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["aca_nsg_id"])' <<<"$GOVERNANCE_NSGS")"
+PRIVATE_ENDPOINT_NSG_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["private_endpoint_nsg_id"])' <<<"$GOVERNANCE_NSGS")"
+
 az bicep build --file infra/foundation.bicep --outfile /tmp/csa-workbench-foundation.json
 az bicep build --file infra/apps.bicep --outfile /tmp/csa-workbench-apps.json
 
@@ -62,7 +74,8 @@ FOUNDATION=(az deployment sub create --name "$FOUNDATION_DEPLOYMENT_NAME" --loca
   --parameters location="$LOCATION" resourceGroupName="$RESOURCE_GROUP" environmentName="$ENVIRONMENT_NAME"
   cosmosAccountName="$COSMOS_ACCOUNT_NAME" storageAccountName="$STORAGE_ACCOUNT_NAME"
   acrName="$ACR_NAME" acrLocation="$ACR_LOCATION"
-  azureOpenAiName="$AOAI_NAME" azureOpenAiDeploymentName="$AZURE_DEPLOYMENT")
+  azureOpenAiName="$AOAI_NAME" azureOpenAiDeploymentName="$AZURE_DEPLOYMENT"
+  acaInfrastructureNsgId="$ACA_INFRASTRUCTURE_NSG_ID" privateEndpointNsgId="$PRIVATE_ENDPOINT_NSG_ID")
 
 RECOVERY_STATE=''
 RECOVERY_ENVIRONMENT_ID=''
@@ -321,7 +334,9 @@ if network_security_groups:
         if isinstance(network_interfaces, list) and network_interfaces:
             raise SystemExit(f'tenant-governance NSG network-interface associations drifted: {name}')
         associations = nsg.get('subnets')
-        if not isinstance(associations, list):
+        if associations is None:
+            associations = []
+        elif not isinstance(associations, list):
             raise SystemExit(f'tenant-governance NSG subnet associations are malformed: {name}')
         subnet_ids = []
         for association in associations:

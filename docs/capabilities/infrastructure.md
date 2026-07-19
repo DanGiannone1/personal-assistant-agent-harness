@@ -182,7 +182,9 @@ topology. When present, the verifier requires the complete East US 2 pair to hav
 custom security rules, and no network-interface associations. The private-endpoints NSG must be
 attached only to the private-endpoints subnet; the ACA NSG may be unattached while governance
 attachment is asynchronous or attached only to the ACA infrastructure subnet. Any partial, extra,
-or otherwise mismatched NSG inventory fails verification.
+or otherwise mismatched NSG inventory fails verification. Before foundation mutation, the guarded
+deployment validates that optional inventory and passes the two existing IDs into Bicep so a VNet
+update preserves the approved associations. It never creates or deletes those governance resources.
 
 ## Cost boundary and deliberate exclusions
 

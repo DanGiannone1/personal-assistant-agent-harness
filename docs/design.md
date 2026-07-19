@@ -243,8 +243,9 @@ owns that group and the application does not configure or depend on its individu
 Tenant policy also creates a Defender for Storage Event Grid topic and subscription; the verifier
 tolerates their absence but validates their exact form when present because they are not
 application-owned topology. Tenant governance may also create either no network security groups or
-one exact East US 2 pair for the ACA and private-endpoint subnets. Application Bicep declares no
-NSGs; the verifier rejects partial, extra, associated-NIC, custom-rule, wrong-subnet, and other
+one exact East US 2 pair for the ACA and private-endpoint subnets. Application Bicep creates no
+NSGs; guarded deployment validates and preserves the existing exact pair's subnet associations,
+while the verifier rejects partial, extra, associated-NIC, custom-rule, wrong-subnet, and other
 mismatched policy state.
 
 Scale-to-zero cold starts of roughly 24 seconds were observed and accepted for this cost-minimized
@@ -269,6 +270,13 @@ downloaded byte-for-byte, deleted, and confirmed absent while Storage public net
 disabled. The live topology verifier also passed the exact app, network, DNS, identity, role,
 resource-group containment, and immutable-image contract. The exact tenant-governance NSG pair was
 present and passed its fail-closed policy-artifact contract.
+
+Application revision `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a` repeated frontend root,
+`/assistant`, API health, real-Entra `/auth/me`, Engagement, quick-link, immutable-image, and exact
+topology checks. Desktop and 390px live-browser checks also proved the repaired Microsoft sign-in
+color, 4.525:1 contrast, zero horizontal overflow, no page/console errors, and redirect to the
+Microsoft login host. The typed-agent and Blob round trips in the preceding paragraph remain the
+recorded evidence from application revision `807a0d6`; they were not rerun for the CSS-only change.
 
 A second real tenant actor and an interactive real-Entra browser journey remain evidence to capture;
 deterministic multi-user browser evidence is already present. The final UI copy was verified in the

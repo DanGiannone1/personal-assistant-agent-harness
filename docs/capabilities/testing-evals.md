@@ -110,6 +110,13 @@ timing, and hidden reasoning are deliberately ungraded.
 
 ### Final deployed release observation
 
+Application revision `8940e7d6c39ae69857a27c54c6db7b9e88d6ae8a` repeated frontend root,
+`/assistant`, API health, real-Entra `/auth/me`, Engagement, quick-link, immutable-image, and exact
+topology checks. Live desktop and 390px browser evidence proved the repaired Microsoft sign-in
+color, 4.525:1 contrast, zero horizontal overflow, no page/console errors, and redirect to
+`login.microsoftonline.com`. The typed-agent and Blob round trips below were not repeated for that
+CSS-only application change.
+
 The authoritative design records application revision `807a0d6` passing frontend root and
 `/assistant` responses, API health, real-Entra `/auth/me`, Engagement and quick-link reads, session
 creation, authoritative Engagement state readback, and a Deep Agents turn. The turn

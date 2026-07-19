@@ -8,6 +8,8 @@ param acrName string
 param acrLocation string
 param azureOpenAiName string
 param azureOpenAiDeploymentName string
+param acaInfrastructureNsgId string = ''
+param privateEndpointNsgId string = ''
 
 var databaseName = 'csa-workbench-entra'
 var containerName = 'appstate'
@@ -40,7 +42,7 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
     subnets: [
       {
         name: acaInfrastructureSubnetName
-        properties: {
+        properties: union({
           addressPrefix: '10.42.0.0/27'
           delegations: [
             {
@@ -50,14 +52,22 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
               }
             }
           ]
-        }
+        }, empty(acaInfrastructureNsgId) ? {} : {
+          networkSecurityGroup: {
+            id: acaInfrastructureNsgId
+          }
+        })
       }
       {
         name: privateEndpointSubnetName
-        properties: {
+        properties: union({
           addressPrefix: '10.42.0.32/27'
           privateEndpointNetworkPolicies: 'Disabled'
-        }
+        }, empty(privateEndpointNsgId) ? {} : {
+          networkSecurityGroup: {
+            id: privateEndpointNsgId
+          }
+        })
       }
     ]
   }

@@ -263,7 +263,69 @@ def test_entra_helper_fails_closed_for_duplicate_or_conflicting_dedicated_apps()
         entra.ensure_entra(graph, "tenant", "https://frontend.example", "api-uami-principal")
 
 
+def test_governance_nsg_preflight_preserves_only_the_exact_existing_pair() -> None:
+    helper_path = ROOT / "infra" / "governance_nsg.py"
+    helper_spec = importlib.util.spec_from_file_location("governance_nsg", helper_path)
+    assert helper_spec and helper_spec.loader
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
+
+    subscription = "subscription"
+    resource_group = "csa-workbench-rg"
+    location = "eastus2"
+    base = f"/subscriptions/{subscription}/resourceGroups/{resource_group}/providers/Microsoft.Network"
+    aca_name = "csa-workbench-vnet-aca-infrastructure-nsg-eastus2"
+    private_name = "csa-workbench-vnet-private-endpoints-nsg-eastus2"
+    aca_id = f"{base}/networkSecurityGroups/{aca_name}"
+    private_id = f"{base}/networkSecurityGroups/{private_name}"
+    vnet_id = f"{base}/virtualNetworks/csa-workbench-vnet"
+
+    def nsg(name: str, resource_id: str, subnets: object) -> dict[str, Any]:
+        return {
+            "name": name,
+            "id": resource_id,
+            "location": "EastUS2",
+            "provisioningState": "Succeeded",
+            "securityRules": [],
+            "networkInterfaces": None,
+            "subnets": subnets,
+        }
+
+    assert helper.select_governance_nsgs([], subscription, resource_group, location) == {
+        "aca_nsg_id": "",
+        "private_endpoint_nsg_id": "",
+    }
+    exact_pair = [
+        nsg(aca_name, aca_id, None),
+        nsg(private_name, private_id, []),
+    ]
+    assert helper.select_governance_nsgs(exact_pair, subscription, resource_group, location) == {
+        "aca_nsg_id": aca_id,
+        "private_endpoint_nsg_id": private_id,
+    }
+
+    attached_pair = deepcopy(exact_pair)
+    attached_pair[0]["subnets"] = [{"id": f"{vnet_id}/subnets/aca-infrastructure"}]
+    attached_pair[1]["subnets"] = [{"id": f"{vnet_id}/subnets/private-endpoints"}]
+    assert helper.select_governance_nsgs(attached_pair, subscription, resource_group, location) == {
+        "aca_nsg_id": aca_id,
+        "private_endpoint_nsg_id": private_id,
+    }
+
+    with pytest.raises(ValueError, match="inventory drifted"):
+        helper.select_governance_nsgs(exact_pair[:1], subscription, resource_group, location)
+    wrong_subnet = deepcopy(exact_pair)
+    wrong_subnet[1]["subnets"] = [{"id": f"{vnet_id}/subnets/aca-infrastructure"}]
+    with pytest.raises(ValueError, match="subnet associations drifted"):
+        helper.select_governance_nsgs(wrong_subnet, subscription, resource_group, location)
+    custom_rule = deepcopy(exact_pair)
+    custom_rule[0]["securityRules"] = [{"name": "deny-all"}]
+    with pytest.raises(ValueError, match="profile drifted"):
+        helper.select_governance_nsgs(custom_rule, subscription, resource_group, location)
+
+
 def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> None:
+    foundation_entrypoint = (ROOT / "infra" / "foundation.bicep").read_text()
     foundation = (ROOT / "infra" / "platform.bicep").read_text()
     apps = (ROOT / "infra" / "apps.bicep").read_text()
     deploy = (ROOT / "infra" / "deploy.sh").read_text()
@@ -317,6 +379,12 @@ def test_static_deployment_contract_has_no_legacy_or_secret_based_profile() -> N
     assert "${LOCATION:-eastus2}" in deploy
     assert "param location string = 'eastus2'" in (ROOT / "infra" / "foundation.bicep").read_text()
     assert "remove_incompatible_environment" in deploy
+    assert "governance_nsg.py" in deploy
+    assert "acaInfrastructureNsgId" in foundation_entrypoint
+    assert "privateEndpointNsgId" in foundation_entrypoint
+    assert "acaInfrastructureNsgId" in foundation
+    assert "privateEndpointNsgId" in foundation
+    assert foundation.count("networkSecurityGroup:") == 2
     assert "if ! truthy \"$APPLY\"; then" in deploy
     assert "event-subscription list -g \"$RESOURCE_GROUP\" --system-topic-name \"$event_topic_name\"" in deploy
     assert 'RUNTIME_FQDN="${RUNTIME_APP_NAME}.internal.${ENVIRONMENT_DOMAIN}"' in deploy
@@ -459,9 +527,12 @@ def test_embedded_inventory_verifier_tolerates_azure_fields_and_rejects_excluded
     malformed_nic_object_nsgs = deepcopy(governance_nsgs)
     malformed_nic_object_nsgs[0]["networkInterfaces"] = {}
     assert_governance_nsg_rejected(malformed_nic_object_nsgs, f"tenant-governance NSG network-interface associations are malformed: {aca_nsg}")
-    malformed_subnet_nsgs = deepcopy(governance_nsgs)
-    malformed_subnet_nsgs[0]["subnets"] = None
-    assert_governance_nsg_rejected(malformed_subnet_nsgs, f"tenant-governance NSG subnet associations are malformed: {aca_nsg}")
+    null_aca_subnet_nsgs = deepcopy(governance_nsgs)
+    null_aca_subnet_nsgs[0]["subnets"] = None
+    assert run_with_governance_nsgs(null_aca_subnet_nsgs).returncode == 0
+    null_private_subnet_nsgs = deepcopy(governance_nsgs)
+    null_private_subnet_nsgs[1]["subnets"] = None
+    assert_governance_nsg_rejected(null_private_subnet_nsgs, f"tenant-governance NSG subnet associations drifted: {private_endpoints_nsg}")
     malformed_subnet_association_nsgs = deepcopy(governance_nsgs)
     malformed_subnet_association_nsgs[0]["subnets"] = [{}]
     assert_governance_nsg_rejected(malformed_subnet_association_nsgs, f"tenant-governance NSG subnet associations are malformed: {aca_nsg}")
@@ -604,6 +675,7 @@ case "$*" in
   "bicep version") exit 0 ;;
   *"bicep build"*) exit 0 ;;
   "group exists"*) echo true ;;
+  *"network nsg list"*) echo '[]' ;;
   *"containerapp env list"*)
     [ "${RECOVERY_MODE:-ok}" = list_fail ] && exit 9
     [ "${RECOVERY_MODE:-ok}" = invalid_env ] && { echo '{'; exit 0; }

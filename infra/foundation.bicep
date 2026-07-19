@@ -10,6 +10,10 @@ param acrName string = 'djgsharedacr'
 param acrLocation string = 'eastus'
 param azureOpenAiName string = 'csa-workbench-ai'
 param azureOpenAiDeploymentName string = 'gpt-4.1'
+@description('Existing tenant-governance NSG ID to preserve on the ACA infrastructure subnet, or empty when absent.')
+param acaInfrastructureNsgId string = ''
+@description('Existing tenant-governance NSG ID to preserve on the private-endpoints subnet, or empty when absent.')
+param privateEndpointNsgId string = ''
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
@@ -28,6 +32,8 @@ module platform 'platform.bicep' = {
     acrLocation: acrLocation
     azureOpenAiName: azureOpenAiName
     azureOpenAiDeploymentName: azureOpenAiDeploymentName
+    acaInfrastructureNsgId: acaInfrastructureNsgId
+    privateEndpointNsgId: privateEndpointNsgId
   }
 }
 
