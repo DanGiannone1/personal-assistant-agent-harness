@@ -27,8 +27,8 @@ var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
 // This is the Azure public-cloud Private Link suffix required by the approved Storage endpoint.
 #disable-next-line no-hardcoded-env-urls
 var storagePrivateDnsZoneName = 'privatelink.blob.core.windows.net'
-var azureOpenAiModelName = 'gpt-4.1'
-var azureOpenAiModelVersion = '2025-04-14'
+var azureOpenAiModelName = 'gpt-5.6-terra'
+var azureOpenAiModelVersion = '2026-07-09'
 
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: virtualNetworkName
@@ -148,8 +148,8 @@ resource azureOpenAiDeployment 'Microsoft.CognitiveServices/accounts/deployments
   parent: azureOpenAi
   name: azureOpenAiDeploymentName
   sku: {
-    name: 'Standard'
-    capacity: 10
+    name: 'GlobalStandard'
+    capacity: 30
   }
   properties: {
     model: {
