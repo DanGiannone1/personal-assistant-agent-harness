@@ -329,12 +329,6 @@ records exist, real failures become the primary source of new tasks.
   declined — without ever proving the rejection behavior they were written to
   test
 - ⚠️ Judging is manual (a Claude session), not yet automated or calibrated
-- The first live model comparison (2026-07-19, gpt-4.1 → gpt-5.6-terra on the
-  same seven tasks) exercised the loop end to end and demonstrated each layer
-  earning its keep: a 3.7× latency improvement caught by measurement, one
-  false code-check failure caused by an inconsistent task allowance, one
-  reply-quality failure both models share that only the judge sees, and no
-  cost comparison possible because tokens are not yet captured
 
 ## Roadmap
 
