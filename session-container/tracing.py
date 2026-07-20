@@ -20,8 +20,8 @@ _tracer = None
 def _resource_attributes() -> dict[str, str]:
     """Build a stable OpenTelemetry resource description for the session app."""
     attrs = {
-        "service.name": os.getenv("OTEL_SERVICE_NAME", "flow-session"),
-        "service.namespace": os.getenv("OTEL_SERVICE_NAMESPACE", "flow"),
+        "service.name": os.getenv("OTEL_SERVICE_NAME", "csa-workbench-session"),
+        "service.namespace": os.getenv("OTEL_SERVICE_NAMESPACE", "csa-workbench"),
     }
 
     service_version = os.getenv("OTEL_SERVICE_VERSION") or os.getenv("SERVICE_VERSION")
@@ -105,7 +105,7 @@ def setup_tracing(app: Optional[FastAPI] = None) -> None:
             FastAPIInstrumentor.instrument_app(app)
 
         # 3. Initialize global tracer
-        _tracer = trace.get_tracer("flow.session-container")
+        _tracer = trace.get_tracer("csa-workbench.session-container")
         _enabled = True
         logger.info(
             "Tracing enabled: service=%s version=%s env=%s",

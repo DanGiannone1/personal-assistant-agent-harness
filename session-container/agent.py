@@ -4,7 +4,7 @@ Provides a streaming async generator interface for running agent turns against
 Azure OpenAI. Translates SDK session events into AG-UI protocol events.
 
 The agent operates on a per-session workspace folder. Application state (the mock
-"Personal Assistant" productivity data) lives in a JSON doc in that workspace (see appdb.py); the
+CSA Workbench data) lives in a JSON doc in that workspace (see appdb.py); the
 tools read and mutate it, and the frontend renders it via /app/state.
 """
 
@@ -13,11 +13,16 @@ import json as _json
 import logging as _logging
 import os
 import re as _re
+import sys
 import threading
 import time as _time
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from ag_ui.core.events import (
     BaseEvent,
@@ -36,6 +41,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from copilot import CopilotClient, SessionHooks, define_tool
+from copilot.tools import ToolResult
 from copilot.session import PermissionHandler
 from copilot.session_events import (
     AssistantMessageData,
@@ -53,6 +59,12 @@ from copilot.session_events import (
 import appdb
 import library
 import navsvc
+from workbench_core import EngagementService, ProductToolResult, engagement_product_result
+from workbench_core.appdb_repository import AppdbEngagementRepository
+from mvp_tool_schemas import (
+    CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
+    SetEngagementStatusCommand, ShareEngagementCommand, UpdateEngagementCommand,
+)
 
 load_dotenv()
 
@@ -80,89 +92,24 @@ def _trace(event: str, **data) -> None:
 
 
 SYSTEM_PROMPT = """\
-You are the assistant embedded in Personal Assistant — a simple personal-productivity app for managing
-**tasks**, a **calendar**, and **documents**. The app has these pages: Home (today's
-agenda — what's due, what's overdue, the next events), To-Do (tasks grouped into buckets,
-each with a status, priority, group, optional due date, and subtasks), Calendar (events —
-meetings, reminders, focus blocks — by day), and Documents (notes and drafts you read and
-write). You help by acting directly on the app through tools.
+You are the CSA Workbench assistant for shared Engagements. Use only these tools:
+`navigate`, `list_engagements`, `create_engagement`, `get_engagement`,
+`update_engagement`, `set_engagement_status`, and `share_engagement`.
 
-You operate inside the user's own session. The tools you call read and mutate the
-*real* application state, and the user sees the result in the app next to this chat.
-Only claim you did something after the tool that does it has returned successfully —
-never say a record was created/updated/deleted or that you navigated unless the tool call succeeded.
+Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
+`engagement_tasks`, `engagement_artifacts`, and `workbench`. For an Engagement destination,
+first obtain its stable ID with `list_engagements`; never pass user wording as a destination.
 
-How you work:
-- Read the request, then take the single most direct action. Do not over-plan. (Exception: a few
-  requests are explicitly multi-step routines — like a weekly review — where a skill lays out a
-  sequence of steps. For those, load the skill and complete all of its steps in the turn rather
-  than stopping after one tool.)
-- For "take me to / go to / open / show me <place>" requests, call `navigate` with the
-  user's destination words **verbatim**. Don't pre-resolve a vague phrase — pass it and
-  let `navigate` decide (it knows the user's pages, engagements, and records, and uses their
-  recent activity to pick decisively). If it returns AMBIGUOUS, list the candidates and ask
-  which one. If NOT_FOUND, say so and list the closest options. Never claim you navigated
-  unless the tool resolved a destination. Tool results may end with a `CHIPS: …` or
-  `CARD_JSON: …` trailer line — that is a wire format the app renders as clickable chips or
-  a card; never repeat those lines in your reply.
-- Engagements are shared customer-delivery workspaces with members and roles
-  (owner/editor/viewer). Use `list_engagements` to see them, `create_engagement` to add one,
-  `update_engagement` to change name/description/customer/dates, `share_engagement` to grant
-  a user access. Tasks can live in an engagement OR in the personal space: pass the task
-  tool's `engagement` argument when the user names an engagement or their current view is an
-  engagement page (see "[Current view: …]"); leave it empty for personal tasks. Events are
-  personal-calendar only. If an engagement tool returns FORBIDDEN, tell the user their role
-  doesn't allow it — do not retry.
-- Every engagement carries a status: green, yellow, or red. `set_engagement_status` sets it —
-  yellow and red REQUIRE a `note` saying why, so ask for the reason if the user didn't give
-  one; green clears the note. For engagement status questions ("how is Contoso doing",
-  "which engagements are red"), answer from `list_engagements` — never from memory.
-- Tasks: use `list_tasks` to review (it returns a computed `overdue` flag and each task's
-  subtask progress), `create_task` to add one, `update_task` to change status/priority/
-  group/due date, `add_subtask` to add a subtask, and `delete_task` to remove one.
-- Events: use `list_events` to review the calendar, `create_event` to schedule one (a date
-  is required), `update_event` to move or change it, and `delete_event` to remove one.
-- Reminders: use `create_schedule` for recurring requests the user wants to receive by email
-  ("email me a daily summary", "every Monday send me…") — capture the instruction as the
-  `prompt`, pick `daily`/`weekly`, a `time` (HH:MM), and a `timezone` if the user implies one
-  (ask only if genuinely unclear). Use `list_schedules` to review and `delete_schedule` to
-  cancel. The app runs the saved prompt on the cadence and emails whatever it produces.
-- Engagement conventions and the user's persona arrive in your context each turn — apply
-  them, with precedence: the user's current instruction beats an engagement convention,
-  which beats their persona defaults.
-- Deleting things is confirm-first: delete tools return PENDING_CONFIRM with a card the
-  user sees. Nothing is deleted until the user confirms — then call the tool again with
-  confirmed=true. Never set confirmed=true without an explicit user yes.
-- For "what's overdue", use the `overdue` flag from `list_tasks` and the "[Today: …]"
-  context — never judge dates yourself.
-- Documents come in two tiers. **Session files** are this session's uploads + drafts —
-  temporary, read them *directly* with `list_documents` then `read_workspace_file`. The
-  **Library** is the user's *persistent* knowledge base — searched with `search_documents`
-  (RAG) and persisted across all sessions.
-- To write or revise a document (a brief, notes, a summary), use `write_file` — it appears
-  in Documents as a session file and opens in the artifact canvas.
-- To make a session file permanent and searchable, use `save_to_library` (e.g. "save this
-  to my library/knowledge base"); `list_library` shows what's in it. A session file is NOT
-  in the Library until saved.
-- For "what did I decide about X", "search my library", or any question that needs grounding
-  across the persistent knowledge base, use `search_documents` — answer **only** from the
-  returned passages and cite the source filename(s). If it returns NO_RESULTS, say nothing
-  matched; if SEARCH_NOT_CONFIGURED/SEARCH_FAILED, tell the user search is unavailable —
-  never make up an answer. To *compare* an uploaded session file against the Library, read
-  the session file (`read_workspace_file`) AND `search_documents`, then contrast them.
+Engagement membership and roles are enforced by tools. Use stable Engagement IDs for get,
+update, status, and share. Yellow and red status require a reason. State a change or navigation
+only after its typed result is committed or resolved. Be concise, professional, and do not invent
+facts that tools did not return.
 
-The user's current view may be provided as context (e.g. "[Current view: To-Do]"). Use it
-to resolve "here" / "this". The current date is provided as "[Today: …]".
-
-Style:
-- Be concise and friendly. One or two sentences is usually enough.
-- State concretely what you did ("Added the high-priority task" / "Moved the design review
-  to Thursday" / "Drafted the engagement brief").
-- Don't mention tools, routes, file paths, or IDs unless asked. Don't invent data the tools
-  didn't return.
-- Stay in your lane: you're this app's assistant. For clearly off-topic requests (general
-  trivia, unrelated coding), don't answer at length — briefly redirect ("I'm focused on your
-  Personal Assistant workspace — want me to look at your tasks, calendar, or a document?").
+For questions about dates, deadlines, overdue work, or any detail of an Engagement, read the
+full record with `get_engagement` before answering; the `list_engagements` summary is an index
+and does not contain tasks, actions, milestones, or their due dates. When asked to read or show
+something, present what you found — not a confirmation that you found it. Navigate at most once
+per turn, and only when the user asked to go somewhere.
 """
 
 
@@ -219,87 +166,17 @@ def _args_to_str(args) -> str | None:
         return str(args)
 
 
-def _result_text(result) -> str:
-    """Extract the tool's returned text from the SDK result.
-
-    The SDK delivers tool results as a `ToolExecutionCompleteResult` object (or a
-    dict) carrying the tool's string under `content` — NOT a bare string. Pull the
-    text out of any of these shapes so outcome classification reads the real marker
-    (e.g. "AMBIGUOUS"), not a repr of the wrapper object.
-    """
-    if isinstance(result, str):
-        return result
-    if isinstance(result, dict):
-        for key in ("content", "text", "detailed_content"):
-            val = result.get(key)
-            if isinstance(val, str) and val:
-                return val
-        return ""
-    for attr in ("content", "text", "detailed_content"):
-        val = getattr(result, attr, None)
-        if isinstance(val, str) and val:
-            return val
-    return str(result or "")
-
-
-_NOOP_MARKERS = {"AMBIGUOUS", "NO_CHANGES", "NO_DOCUMENTS", "NO_RESULTS", "PENDING_CONFIRM"}
-_ERROR_MARKERS = {"INVALID_PATH", "FILE_NOT_FOUND", "BINARY_FILE_UNSUPPORTED", "PATH_REQUIRED", "ENCODING_UNSUPPORTED", "TITLE_REQUIRED", "TEXT_REQUIRED", "DATE_REQUIRED", "SEARCH_NOT_CONFIGURED", "SEARCH_FAILED", "QUERY_REQUIRED", "LIBRARY_FAILED", "FILENAME_REQUIRED", "UNSUPPORTED", "FORBIDDEN", "NAME_REQUIRED", "USER_REQUIRED", "BAD_ROLE", "INVALID_STATUS", "NOTE_REQUIRED"}
-
-
-def _tool_outcome(result, success) -> str:
-    """Classify a tool result as ok | noop | error so the UI trace reflects reality.
-
-    Classify ONLY on the leading status marker our tools emit (NAVIGATED / CREATED /
-    AMBIGUOUS / *_NOT_FOUND / ...). We deliberately do NOT scan the whole result body
-    — document/template content returned by read/get tools could otherwise contain a
-    marker word and flip a real success to a false error. Keeps the trace honest.
-    """
-    text = _result_text(result).strip()
-    head = text.split(None, 1)[0].rstrip(":") if text else ""
-    if head in _NOOP_MARKERS:
-        return "noop"
-    if head in _ERROR_MARKERS or head.endswith("NOT_FOUND"):
-        return "error"
-    if success is False:
-        return "error"
-    # Fail loud: an empty result with no positive marker is not a real success —
-    # don't show a green check for a tool that produced nothing.
-    if not text:
-        return "error"
-    return "ok"
-
-
-def _extract_card(result) -> dict | None:
-    """Pull a structured preview card out of a tool result (CARD_JSON trailer line).
-
-    Cards are how mutating tools SHOW what they did / propose to do — the UI renders
-    the card, so a prose claim can never stand in for the record. The trailer stays in
-    the model-visible result too (harmless, and keeps one source of truth)."""
-    text = _result_text(result)
-    for line in text.splitlines():
-        if line.startswith("CARD_JSON: "):
-            try:
-                card = _json.loads(line[len("CARD_JSON: "):])
-                return card if isinstance(card, dict) else None
-            except Exception:
-                return None
-    return None
-
-
-def _nav_candidates(result) -> list[dict]:
-    """Pull FULLY-BOUND candidates ({title, path}) from a navigate result's CHIPS line —
-    picker chips (ambiguous/not-found) and escape-hatch chips (decided-with-alternates)
-    both ride this channel; a chip click is a plain manual nav, no second resolution."""
-    text = _result_text(result)
-    if "\nCHIPS: " not in text:
-        return []
-    tail = text.rsplit("\nCHIPS: ", 1)[1].strip()
-    chips = []
-    for part in tail.split(";"):
-        title, _, path = part.strip().partition("|")
-        if title and path.startswith("/"):
-            chips.append({"title": title, "path": path})
-    return chips[:6]
+def _telemetry_result(result) -> ProductToolResult | None:
+    """Read only the SDK's native telemetry field; never inspect model-visible text."""
+    telemetry = getattr(result, "tool_telemetry", None)
+    if telemetry is None and isinstance(result, dict):
+        telemetry = result.get("tool_telemetry")
+    if not isinstance(telemetry, dict) or not isinstance(telemetry.get("product_result"), dict):
+        return None
+    try:
+        return ProductToolResult.from_dict(telemetry["product_result"])
+    except (TypeError, ValueError):
+        return None
 
 
 def _path_within_workspace(workspace: Path, candidate: Path) -> bool:
@@ -342,9 +219,8 @@ class ListDocumentsParams(BaseModel):
 
 
 class NavigateParams(BaseModel):
-    destination: str = Field(
-        description="Where to go, as the user phrased it — a page ('Home', 'To-Do', 'Calendar', 'Documents') or a task or event title (e.g. 'Draft Q3 planning doc', 'Design review')."
-    )
+    destination_id: str = Field(description="One catalog destination ID.")
+    engagement_id: str | None = Field(default=None, description="Required for engagement destinations.")
 
 
 class ListTasksParams(BaseModel):
@@ -418,22 +294,26 @@ class CreateEngagementParams(BaseModel):
 
 
 class ShareEngagementParams(BaseModel):
-    engagement: str = Field(description="Engagement name or id to share")
+    engagement_id: str = Field(description="Stable engagement ID to share")
     user: str = Field(description="Username to add, e.g. 'ava'")
     role: str = Field(default="viewer", description="Role to grant: 'viewer', 'editor', or 'owner'")
 
 
+class GetEngagementParams(BaseModel):
+    engagement_id: str = Field(description="Stable engagement ID to read")
+
+
 class UpdateEngagementParams(BaseModel):
-    engagement: str = Field(description="Engagement name or id to update")
-    name: str = Field(default="", description="New name")
-    description: str = Field(default="", description="New one-line description")
-    customer: str = Field(default="", description="New customer name")
-    start_date: str = Field(default="", description="New start date, YYYY-MM-DD")
-    target_date: str = Field(default="", description="New target date, YYYY-MM-DD")
+    engagement_id: str = Field(description="Stable engagement ID to update")
+    name: str | None = Field(default=None, description="New name (owners only; omit to leave unchanged)")
+    description: str | None = Field(default=None, description="New description (editors/owners; pass empty string to clear)")
+    customer: str | None = Field(default=None, description="New customer name (editors/owners; pass empty string to clear)")
+    start_date: str | None = Field(default=None, description="New start date YYYY-MM-DD (editors/owners; pass empty string to clear)")
+    target_date: str | None = Field(default=None, description="New target date YYYY-MM-DD (editors/owners; pass empty string to clear)")
 
 
 class SetEngagementStatusParams(BaseModel):
-    engagement: str = Field(description="Engagement name or id")
+    engagement_id: str = Field(description="Stable engagement ID")
     status: str = Field(description="'green', 'yellow', or 'red'")
     note: str = Field(default="", description="The why — REQUIRED for yellow/red (e.g. 'security review rejected the network design')")
 
@@ -470,7 +350,18 @@ class DeleteScheduleParams(BaseModel):
 
 # ── Tool builders (closures over the session workspace) ─────────────────────
 
+# The legacy parameter classes below remain for inactive tools.  Active tools use
+# this one shared contract catalog so Copilot and Deep Agents cannot drift.
+NavigateParams = NavigateCommand
+ListEngagementsParams = ListEngagementsCommand
+CreateEngagementParams = CreateEngagementCommand
+GetEngagementParams = GetEngagementCommand
+UpdateEngagementParams = UpdateEngagementCommand
+SetEngagementStatusParams = SetEngagementStatusCommand
+ShareEngagementParams = ShareEngagementCommand
+
 def _build_flow_tools(working_dir: str, user_id: str) -> list:
+    engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
     workspace_root = Path(working_dir).resolve()
 
     def _load() -> dict:
@@ -512,36 +403,54 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         return matches[0], None
 
     def _engagements() -> list[dict]:
-        return appdb.list_engagements_for(user_id)
+        return engagement_service.list(user_id).record["engagements"]
+
+    def _engagement_detail_text(record: dict) -> str:
+        """Model-visible detail for one Engagement: the facts a user would ask about.
+        The typed ProductToolResult stays the control-plane truth; this is the data."""
+        lines = [
+            f"Engagement [{record['id']}] {record.get('name', '')}",
+            f"customer={record.get('customer') or 'n/a'} | status={record.get('status', 'green')}"
+            + (f" ({record['statusNote']})" if record.get("statusNote") else "")
+            + f" | start={record.get('startDate') or 'n/a'} | target={record.get('targetDate') or 'n/a'}",
+            "members: " + (", ".join(f"{m.get('userId')}({m.get('role')})" for m in record.get("members") or []) or "none"),
+        ]
+        if record.get("description"):
+            lines.append(f"description: {record['description']}")
+        for label, key, fields in (
+            ("tasks", "tasks", ("title", "status", "priority", "dueDate")),
+            ("actions", "actions", ("title", "status", "owner", "dueDate")),
+            ("milestones", "milestones", ("title", "status", "dueDate")),
+            ("risks", "risks", ("title", "severity", "status")),
+        ):
+            items = record.get(key) or []
+            if items:
+                lines.append(f"{label}:")
+                for item in items:
+                    parts = [str(item.get(field)) for field in fields if item.get(field)]
+                    lines.append(f"- [{item.get('id')}] " + " | ".join(parts))
+        artifacts = record.get("library") or []
+        lines.append(f"artifacts: {len(artifacts)}")
+        conventions = record.get("conventions") or []
+        if conventions:
+            lines.append("conventions: " + "; ".join(c.get("text", "") for c in conventions))
+        return "\n".join(lines)
 
     def _visits() -> list[dict]:
         return appdb.load_context(user_id)["visits"]
 
     def _resolve_engagement_ref(ref: str):
-        """Resolve a engagement by id, exact name, then unique substring — members only."""
-        r = (ref or "").strip().lower()
-        engs = _engagements()
-        if not r:
+        outcome = engagement_service.resolve(user_id, ref)
+        if outcome.status in ("resolved", "succeeded"):
+            return outcome.record, None
+        if outcome.status == "ambiguous":
+            return None, f"AMBIGUOUS engagement '{ref}'. Ask which one."
+        if outcome.status == "invalid":
             return None, "NAME_REQUIRED: which engagement?"
-        by_id = [p for p in engs if p["id"].lower() == r or p["id"].lower() == f"eng-{r}"]
-        exact = by_id or [p for p in engs if p["name"].lower() == r]
-        matches = exact if exact else [p for p in engs if r in p["name"].lower()]
-        if not matches:
-            return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
-        if len(matches) > 1:
-            opts = "; ".join(f"[{p['id']}] {p['name']}" for p in matches)
-            return None, f"AMBIGUOUS engagement '{ref}': {opts}. Ask which one."
-        return matches[0], None
+        return None, f"ENGAGEMENT_NOT_FOUND: no engagement of yours matches '{ref}'. Use list_engagements."
 
-    def _set_route(path: str, title: str) -> None:
-        """Route side-effect: point the pane at a result + feed the visit log."""
-        def _mut(data):
-            data["currentRoute"] = path
-        appdb.update_state(user_id, _mut)
-        try:
-            appdb.record_visit(user_id, path, title)
-        except Exception:
-            _logging.getLogger(__name__).warning("visit log write failed", exc_info=True)
+    def _tool_result(result: ProductToolResult, text: str) -> ToolResult:
+        return ToolResult(text_result_for_llm=text, tool_telemetry={"product_result": result.to_dict()})
 
     def _confirm_card(action: str, title: str, detail: str) -> str:
         """A PENDING_CONFIRM result: nothing was mutated; the UI renders Confirm/Cancel."""
@@ -569,33 +478,10 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             return mutator(doc)
         return appdb.update_engagement(eng["id"], _outer)
 
-    def _chips(items: list[dict]) -> str:
-        """CHIPS trailer: fully-bound {title|path} pairs the UI renders as one-click
-        manual navs (no second resolution pass). Picker chips (ambiguous/not-found)
-        and escape-hatch chips (decided-with-alternates) both ride this one channel.
-        The model sees the trailer too — harmless; routes can still only be SET
-        through this tool's resolution."""
-        return "\nCHIPS: " + "; ".join(f"{c['title']}|{c['path']}" for c in items[:6])
-
-    @define_tool(name="navigate", description="Navigate the Personal Assistant app to a page, a task, a calendar event, or a engagement.")
-    def navigate(params: NavigateParams) -> str:
-        personal = _load()
-        result = navsvc.resolve(personal, _engagements(), _visits(), params.destination)
-        if result["status"] == "resolved":
-            _set_route(result["path"], result["title"])
-            alternates = result.get("alternates") or []
-            if alternates:
-                opts = "; ".join(a["title"] for a in alternates)
-                return (f"NAVIGATED to {result['title']} ({result['path']}). "
-                        f"Decided by your context — alternatives if wrong: {opts}"
-                        + _chips(alternates))
-            return f"NAVIGATED to {result['title']} ({result['path']})"
-        opts = "; ".join(c["title"] for c in result["candidates"])
-        if result["status"] == "ambiguous":
-            return (f"AMBIGUOUS: '{params.destination}' matches multiple destinations: {opts}. "
-                    f"Ask the user which one." + _chips(result["candidates"]))
-        return (f"NOT_FOUND: no destination matched '{params.destination}'. Closest options: {opts}."
-                + _chips(result["candidates"]))
+    @define_tool(name="navigate", description="Navigate to an explicit CSA Workbench catalog destination.")
+    def navigate(params: NavigateParams) -> ToolResult:
+        result = navsvc.destination_for(user_id, params.destination_id, params.engagement_id)
+        return _tool_result(result, result.message or "Navigation request processed.")
 
     @define_tool(name="list_tasks", description="List the tasks with their status, priority, group, due date, a computed overdue flag, and subtask progress.")
     def list_tasks(params: ListTasksParams) -> str:
@@ -649,7 +535,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/engagements/{eng['id']}/tasks/{out['id']}", out["title"])
             return (
                 f"CREATED task [{out['id']}] '{out['title']}' in engagement {eng['name']}, "
                 f"status {out['status']}, priority {out['priority']}, due {out['dueDate'] or 'n/a'}."
@@ -703,7 +588,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             if isinstance(out, str):
                 return out
             t, changed = out
-            _set_route(f"/engagements/{eng['id']}/tasks/{t['id']}", t["title"])
             return f"UPDATED task [{t['id']}] '{t['title']}' in {eng['name']}: {', '.join(changed)}."
         def _mut(data):
             t, err = _resolve_task_strict(data, params.task)
@@ -757,7 +641,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
             out = _mutate_engagement_scoped(eng, "editor", _pmut)
             if isinstance(out, str):
                 return out
-            _set_route(f"/engagements/{eng['id']}/tasks", out["title"])
             return f"DELETED task [{out['id']}] '{out['title']}' from {eng['name']}."
         def _mut(data):
             t, err = _resolve_task_strict(data, params.task)
@@ -940,11 +823,11 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         resolved.write_text(params.content, encoding="utf-8")
         return f"WROTE {resolved.name} ({resolved.stat().st_size} bytes)."
 
-    @define_tool(name="list_engagements", description="List the shared engagements the user belongs to: role, customer, status (with the why), open tasks, and target date. Answer engagement status questions from THIS, never from memory.")
-    def list_engagements(params: ListEngagementsParams) -> str:
+    @define_tool(name="list_engagements", description="List the shared engagements the user belongs to, including their stable IDs.")
+    def list_engagements(params: ListEngagementsParams) -> ToolResult:
         engs = _engagements()
         if not engs:
-            return "No engagements yet. Create one with create_engagement."
+            return _tool_result(ProductToolResult("succeeded", "engagement.listed", "list"), "No engagements yet.")
         lines = [f"{len(engs)} engagement(s):"]
         for p in engs:
             role = appdb.member_role(p, user_id)
@@ -955,99 +838,42 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
                 f"status={p.get('status')}{why} | open tasks={open_tasks} | "
                 f"target={p.get('targetDate') or 'n/a'} | docs: {len(p.get('library') or [])}"
             )
-        return "\n".join(lines)
+        return _tool_result(ProductToolResult("succeeded", "engagement.listed", "list"), "\n".join(lines))
 
     @define_tool(name="create_engagement", description="Create a new shared engagement (customer delivery workspace). The user becomes its owner. New engagements start green.")
-    def create_engagement(params: CreateEngagementParams) -> str:
-        name = params.name.strip()
-        if not name:
-            return "NAME_REQUIRED: the engagement needs a name."
-        existing = [p for p in _engagements() if p["name"].lower() == name.lower()]
-        if existing:
-            return f"AMBIGUOUS: you already have an engagement named '{existing[0]['name']}' [{existing[0]['id']}]. Ask the user if they want a second one or a different name."
-        eng = appdb.new_engagement(user_id, name, params.description,
-                                   customer=params.customer,
-                                   target_date=params.target_date)
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return (
-            f"CREATED engagement [{eng['id']}] '{eng['name']}' | customer={eng['customer'] or 'n/a'} | "
-            f"status={eng['status']} | target={eng['targetDate'] or 'n/a'}. You are its owner."
-        )
+    def create_engagement(params: CreateEngagementParams) -> ToolResult:
+        outcome = engagement_service.create(user_id, {"name": params.name, "description": params.description,
+                                                       "customer": params.customer, "targetDate": params.target_date})
+        result = engagement_product_result(outcome)
+        text = f"Engagement [{outcome.record['id']}] is available." if outcome.record else result.message
+        return _tool_result(result, text)
 
-    @define_tool(name="update_engagement", description="Update an engagement's name, description, customer, or dates. Requires editor access.")
-    def update_engagement(params: UpdateEngagementParams) -> str:
-        eng, err = _resolve_engagement_ref(params.engagement)
-        if err:
-            return err
-        def _pmut(doc):
-            changed = []
-            for field, value in (("name", params.name), ("description", params.description),
-                                 ("customer", params.customer),
-                                 ("startDate", params.start_date), ("targetDate", params.target_date)):
-                if value.strip():
-                    doc[field] = value.strip()
-                    changed.append(f"{field}={doc[field]}")
-            if not changed:
-                raise appdb.AbortWrite("NO_CHANGES: specify a name, description, customer, start_date, or target_date to update.")
-            appdb.log_activity(doc, user_id, "engagement.updated", ", ".join(changed))
-            return f"UPDATED engagement [{doc['id']}] '{doc['name']}': {', '.join(changed)}."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("UPDATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
+    @define_tool(name="get_engagement", description="Read one visible engagement by stable ID.")
+    def get_engagement(params: GetEngagementParams) -> ToolResult:
+        outcome = engagement_service.get(user_id, params.engagement_id)
+        result = engagement_product_result(outcome)
+        text = _engagement_detail_text(outcome.record) if outcome.record else result.message
+        return _tool_result(result, text)
+
+    @define_tool(name="update_engagement", description="Update description, customer, or dates as an editor/owner; changing name requires owner access. Omit fields to leave them unchanged; empty optional fields clear them.")
+    def update_engagement(params: UpdateEngagementParams) -> ToolResult:
+        values = {key: value for key, value in (("name", params.name), ("description", params.description),
+                  ("customer", params.customer), ("startDate", params.start_date), ("targetDate", params.target_date)) if value is not None}
+        outcome = engagement_service.update(user_id, params.engagement_id, values)
+        result = engagement_product_result(outcome)
+        return _tool_result(result, "Engagement update processed." if outcome.status == "committed" else result.message)
 
     @define_tool(name="set_engagement_status", description="Set an engagement's status (green/yellow/red). Yellow and red REQUIRE a note saying why — ask the user for the reason if they didn't give one. Requires editor access.")
-    def set_engagement_status(params: SetEngagementStatusParams) -> str:
-        status = params.status.strip().lower()
-        if status not in appdb.ENGAGEMENT_STATUSES:
-            return f"INVALID_STATUS: status must be one of {', '.join(appdb.ENGAGEMENT_STATUSES)}."
-        note = params.note.strip()
-        if status in ("yellow", "red") and not note:
-            return "NOTE_REQUIRED: yellow/red status needs a why — pass `note` (a red with no reason is noise)."
-        eng, err = _resolve_engagement_ref(params.engagement)
-        if err:
-            return err
-        def _pmut(doc):
-            if doc["status"] == status and (not note or doc["statusNote"] == note):
-                raise appdb.AbortWrite(f"NO_CHANGES: engagement [{doc['id']}] status is already {status}.")
-            doc["status"] = status
-            doc["statusNote"] = note  # green with no note clears the stale why
-            why = f" — {note}" if note else ""
-            appdb.log_activity(doc, user_id, "status.set", f"{status}{why}")
-            return f"UPDATED engagement [{doc['id']}] '{doc['name']}' status={status}{why}."
-        out = _mutate_engagement_scoped(eng, "editor", _pmut)
-        if isinstance(out, str) and not out.startswith("UPDATED"):
-            return out
-        _set_route(f"/engagements/{eng['id']}", eng["name"])
-        return out
+    def set_engagement_status(params: SetEngagementStatusParams) -> ToolResult:
+        outcome = engagement_service.update(user_id, params.engagement_id, {"status": params.status, "statusNote": params.note})
+        result = engagement_product_result(outcome)
+        return _tool_result(result, "Engagement status processed." if outcome.status == "committed" else result.message)
 
     @define_tool(name="share_engagement", description="Share a engagement with another user (grant viewer, editor, or owner access). Only a engagement owner can share.")
-    def share_engagement(params: ShareEngagementParams) -> str:
-        role = params.role.strip().lower() or "viewer"
-        if role not in appdb.ENGAGEMENT_ROLES:
-            return f"BAD_ROLE: use one of {appdb.ENGAGEMENT_ROLES}."
-        target = appdb.find_user(params.user)  # id or username — Entra users go by sign-in name
-        if target is None:
-            return f"USER_REQUIRED: no user named '{params.user}'. Known users: " + ", ".join(u.get("username") or u["id"] for u in appdb.list_users())
-        eng, err = _resolve_engagement_ref(params.engagement)
-        if err:
-            return err
-        def _pmut(doc):
-            existing = next((m for m in doc["members"] if m["userId"] == target["id"]), None)
-            if existing and existing["role"] == role:
-                raise appdb.AbortWrite(f"NO_CHANGES: {target['id']} already has {role} access on '{doc['name']}'.")
-            if existing:
-                existing["role"] = role
-            else:
-                doc["members"].append({"userId": target["id"], "role": role})
-            appdb.log_activity(doc, user_id, "member.added", f"{target['id']} as {role}")
-            return role
-        out = _mutate_engagement_scoped(eng, "owner", _pmut)
-        if isinstance(out, str) and out not in appdb.ENGAGEMENT_ROLES:
-            return out
-        _set_route(f"/engagements/{eng['id']}/settings", eng["name"])
-        return f"SHARED engagement '{eng['name']}' with {target['id']} as {role}."
+    def share_engagement(params: ShareEngagementParams) -> ToolResult:
+        outcome = engagement_service.share(user_id, params.engagement_id, params.user, params.role)
+        result = engagement_product_result(outcome)
+        return _tool_result(result, "Engagement sharing processed." if outcome.status == "committed" else result.message)
 
     @define_tool(name="search_documents", description="Semantic search (RAG) over the persistent Library — the user's saved/reference knowledge base. Returns the top matching passages, each with its source filename. Use to answer 'what did I decide about X', 'find … in my library', or 'search my docs'. Note: this searches the PERSISTENT Library only; to read a file the user just uploaded this session, use read_workspace_file instead.")
     def search_documents(params: SearchDocumentsParams) -> str:
@@ -1204,13 +1030,8 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
 
     return [
         navigate,
-        list_engagements, create_engagement, update_engagement, share_engagement,
-        set_engagement_status,
-        list_tasks, create_task, update_task, delete_task, add_subtask,
-        list_events, create_event, update_event, delete_event,
-        list_documents, read_workspace_file, write_file,
-        search_documents, save_to_library, list_library,
-        create_schedule, list_schedules, delete_schedule,
+        list_engagements, create_engagement, get_engagement, update_engagement, set_engagement_status,
+        share_engagement,
     ]
 
 
@@ -1246,6 +1067,7 @@ class AgentSession:
         self._current_message_id: str = ""
         self._message_started: bool = False
         self._reasoning_active: bool = False
+        self._navigation_version: int = 0
 
         self._raw_sdk_log_lock = threading.Lock()
         self._raw_sdk_log_path: str | None = None
@@ -1303,7 +1125,7 @@ class AgentSession:
 
         skills_dir = str(Path(__file__).parent / "skills")
         custom_tools = _build_flow_tools(self._working_dir, self._user_id)
-        available_tools = [t.name for t in custom_tools] + ["skill"]
+        available_tools = [t.name for t in custom_tools]
 
         deployment = os.environ["AZURE_DEPLOYMENT"]
         # Reasoning models (the gpt-5 family, excluding the *-chat variants) emit visible
@@ -1333,8 +1155,7 @@ class AgentSession:
             available_tools=available_tools,
             streaming=True,
             skip_custom_instructions=True,
-            enable_skills=True,
-            skill_directories=[skills_dir],
+            enable_skills=False,
             on_permission_request=PermissionHandler.approve_all,
             hooks=SessionHooks(on_pre_tool_use=self._pre_tool_use),
             on_event=self._on_event,
@@ -1346,7 +1167,7 @@ class AgentSession:
             working_dir=self._working_dir,
             model=os.environ.get("AZURE_DEPLOYMENT"),
             available_tools=available_tools,
-            skill_directories=[skills_dir],
+            skill_directories=[],
         )
         self._write_raw_sdk_record({"kind": "session_initialized", "available_tools": available_tools})
         return self
@@ -1469,24 +1290,16 @@ class AgentSession:
             self._status = "thinking"
             self._tools_called += 1
             result = getattr(data, "result", None)
-            outcome = _tool_outcome(result, getattr(data, "success", None))
+            product_result = _telemetry_result(data)
+            if product_result is None:
+                product_result = ProductToolResult("failed", "tool.missing_native_result", tool, "The tool did not return a structured result.")
             if call_id:
-                # Carry the real outcome so the UI trace reflects what happened
-                # (e.g. an ambiguous navigation is NOT shown as a success).
-                payload = {"type": "TOOL_CALL_RESULT", "tool_call_id": call_id, "outcome": outcome}
-                if tool == "navigate":
-                    # Attach chips whenever the CHIPS line exists — including on an "ok"
-                    # outcome, where they are the decided-with-alternates escape hatch
-                    # ("Did you mean"). Gating on outcome != ok silently dropped those.
-                    cands = _nav_candidates(result)
-                    if cands:
-                        payload["candidates"] = cands
-                card = _extract_card(result)
-                if card:
-                    payload["card"] = card
+                payload = {"type": "TOOL_CALL_RESULT", "tool_call_id": call_id, "result": product_result.to_dict()}
                 self._enqueue_sse(payload)
+                if product_result.status in {"resolved", "committed"} and product_result.destination:
+                    self._enqueue_sse({"type": "NAVIGATION_RESOLVED", "runId": self._run_id, "destination": dict(product_result.destination), "requestedAtNavigationVersion": self._navigation_version})
                 self._enqueue(ToolCallEndEvent(tool_call_id=call_id))
-            _trace("agent.tool_end", session_id=self._session_id, run_id=self._run_id, tool=tool, call_id=call_id, success=getattr(data, "success", None), outcome=outcome)
+            _trace("agent.tool_end", session_id=self._session_id, run_id=self._run_id, tool=tool, call_id=call_id, result=product_result.to_dict())
 
         elif isinstance(data, SkillInvokedData):
             # Surface skill loads as a lightweight step so the user-facing trace shows them.
@@ -1521,10 +1334,9 @@ class AgentSession:
                 msg = "I can't act on that request — it was flagged by the safety filter. I won't take actions that try to override my guardrails or operate outside your workspace."
             _trace("agent.error", session_id=self._session_id, run_id=self._run_id, message=msg)
             self._enqueue(RunErrorEvent(message=msg))
-            self._enqueue(RunFinishedEvent(thread_id=self._thread_id, run_id=self._run_id))
             self._finish()
 
-    async def send(self, prompt: str) -> AsyncGenerator[str, None]:
+    async def send(self, prompt: str, navigation_version: int = 0) -> AsyncGenerator[str, None]:
         """Send a prompt; yield SSE-formatted AG-UI events until the session is idle."""
         while not self._queue.empty():
             self._queue.get_nowait()
@@ -1538,6 +1350,7 @@ class AgentSession:
         self._turn_start = _time.monotonic()
         self._status = "thinking"
         self._turn_active = True
+        self._navigation_version = navigation_version
 
         _trace("agent.turn_start", session_id=self._session_id, run_id=self._run_id)
         self._write_raw_sdk_record({"kind": "turn_start", "run_id": self._run_id, "prompt": prompt})

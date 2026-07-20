@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agentic Design"
+  short_description: "Apply agent and handoff design guidance"
+  default_prompt: "Use $agentic-design to change an agent, skill, or handoff safely."

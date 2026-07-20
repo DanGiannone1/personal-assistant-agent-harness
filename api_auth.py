@@ -1,14 +1,9 @@
-"""Application-level auth for the orchestrator API.
-
-Supports either Microsoft Entra bearer tokens or a shared API key header.
-"""
+"""Application-level credential validation for the selected identity mode."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import secrets
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,58 +12,23 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from jwt import InvalidTokenError, PyJWKClient
 
+from identity_config import IdentityConfig
+
 logger = logging.getLogger(__name__)
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _csv_env(name: str) -> list[str]:
-    raw = os.getenv(name, "")
-    values = []
-    for item in raw.split(","):
-        cleaned = item.strip()
-        if cleaned:
-            values.append(cleaned)
-    return values
-
-
-def _unique(values: list[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        ordered.append(value)
-    return tuple(ordered)
 
 
 @dataclass(frozen=True, slots=True)
 class AuthConfig:
-    required: bool
-    api_key: str | None
+    identity: IdentityConfig
     tenant_id: str | None
     api_client_id: str | None
     allowed_audiences: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "AuthConfig":
-        api_client_id = os.getenv("ENTRA_API_CLIENT_ID") or os.getenv("ENTRA_CLIENT_ID") or None
-        audiences = _csv_env("ENTRA_ALLOWED_AUDIENCES") + _csv_env("ENTRA_API_AUDIENCES")
-        if api_client_id:
-            audiences = [api_client_id, f"api://{api_client_id}", *audiences]
-        return cls(
-            required=_env_flag("API_AUTH_REQUIRED", default=False),
-            api_key=os.getenv("API_KEY") or os.getenv("LOCAL_API_KEY") or None,
-            tenant_id=os.getenv("ENTRA_TENANT_ID") or None,
-            api_client_id=api_client_id,
-            allowed_audiences=_unique(audiences),
-        )
+        identity = IdentityConfig.from_env()
+        return cls(identity=identity, tenant_id=identity.tenant_id,
+                   api_client_id=identity.api_client_id, allowed_audiences=identity.allowed_audiences)
 
     @property
     def bearer_enabled(self) -> bool:
@@ -76,7 +36,7 @@ class AuthConfig:
 
     @property
     def enabled(self) -> bool:
-        return self.required or bool(self.api_key) or self.bearer_enabled
+        return True
 
 
 class APIAuthenticator:
@@ -92,25 +52,26 @@ class APIAuthenticator:
         if request.method == "OPTIONS" or request.url.path == "/health":
             return None
 
-        api_key = request.headers.get("x-api-key")
-        if api_key:
-            if self._check_api_key(api_key):
-                request.state.auth_method = "api_key"
-                return None
-            return self._unauthorized("Invalid API key.")
-
         auth_header = request.headers.get("authorization", "")
+        demo_token = request.headers.get("x-auth-token")
+        if self.config.identity.is_demo:
+            if auth_header or request.headers.get("x-api-key"):
+                return self._unauthorized()
+            return None
+
+        if demo_token or request.headers.get("x-api-key"):
+            return self._unauthorized()
         if auth_header.lower().startswith("bearer "):
             if not self._jwks_client:
-                return self._unauthorized("Bearer authentication is not configured.")
+                return self._unauthorized()
             token = auth_header.split(" ", 1)[1].strip()
             if not token:
-                return self._unauthorized("Missing bearer token.")
+                return self._unauthorized()
             try:
                 claims = await self._validate_token(token)
             except InvalidTokenError as exc:
                 logger.info("Bearer token rejected: %s", exc)
-                return self._unauthorized("Invalid bearer token.")
+                return self._unauthorized()
             except Exception:
                 logger.exception("Bearer token validation failed unexpectedly")
                 return JSONResponse(
@@ -121,13 +82,7 @@ class APIAuthenticator:
             request.state.auth_claims = claims
             return None
 
-        if self.config.required:
-            return self._unauthorized("Authentication required.")
-        return None
-
-    def _check_api_key(self, supplied: str) -> bool:
-        expected = self.config.api_key
-        return bool(expected) and secrets.compare_digest(supplied, expected)
+        return self._unauthorized()
 
     async def _validate_token(self, token: str) -> dict[str, Any]:
         assert self._jwks_client is not None
@@ -163,9 +118,9 @@ class APIAuthenticator:
         }
 
     @staticmethod
-    def _unauthorized(detail: str) -> JSONResponse:
+    def _unauthorized() -> JSONResponse:
         return JSONResponse(
             status_code=401,
-            content={"detail": detail},
+            content={"detail": "Unauthorized"},
             headers={"WWW-Authenticate": "Bearer"},
         )

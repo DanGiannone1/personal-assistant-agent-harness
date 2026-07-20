@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 import AppAuthProvider from "@/components/AppAuthProvider";
-import AuthGate from "@/components/AuthGate";
 import { SessionProvider } from "@/components/SessionProvider";
 
 const geistSans = Geist({
@@ -22,8 +21,8 @@ const serif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Personal Assistant",
-  description: "Personal Assistant — AI assistant for personal productivity",
+  title: "CSA Workbench",
+  description: "CSA Workbench — the agent-powered engagement workspace for solution architects",
   icons: {
     icon: [
       { url: "/icon.svg", type: "image/svg+xml" },
@@ -41,13 +40,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${serif.variable} font-sans antialiased`}
       >
-        {/* AuthGate + SessionProvider wrap ALL routes so the agent session is one
-            continuous session shared across the host app and the /assistant workspace. */}
-        <AuthGate>
-          <AppAuthProvider>
-            <SessionProvider>{children}</SessionProvider>
-          </AppAuthProvider>
-        </AuthGate>
+        <AppAuthProvider>
+          <SessionProvider>{children}</SessionProvider>
+        </AppAuthProvider>
       </body>
     </html>
   );

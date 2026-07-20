@@ -33,6 +33,12 @@ def _account() -> str | None:
     return os.getenv("ARTIFACTS_ACCOUNT") or None
 
 
+def assert_durable_configuration(identity_mode: str) -> None:
+    """Reject an Entra release that would silently use ephemeral local bytes."""
+    if identity_mode == "entra" and not _account():
+        raise ValueError("ARTIFACTS_ACCOUNT is required when IDENTITY_MODE=entra")
+
+
 def describe() -> str:
     account = _account()
     if account:

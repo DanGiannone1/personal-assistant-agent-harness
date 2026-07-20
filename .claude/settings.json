@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c '\nimport json,os,re,subprocess,sys\ntry:\n    if os.environ.get(\"PLAIN_ENGLISH_GATE\"): sys.exit(0)\n    d=json.load(sys.stdin)\n    if d.get(\"stop_hook_active\"): sys.exit(0)\n    root=os.environ.get(\"CLAUDE_PROJECT_DIR\") or \".\"\n    guidance=open(root+\"/.claude/communication.md\").read()\n    t=\"\"\n    for l in open(d.get(\"transcript_path\") or \"/dev/null\"):\n        try: r=json.loads(l)\n        except Exception: continue\n        if r.get(\"type\")==\"assistant\":\n            c=(r.get(\"message\") or {}).get(\"content\") or []\n            x=\"\".join(p.get(\"text\",\"\") for p in c if isinstance(p,dict) and p.get(\"type\")==\"text\")\n            if x.strip(): t=x\n    if not t.strip(): sys.exit(0)\n    p=\"Did this reply follow the communication guidance below? If it did NOT, reply '\"'\"'BLOCK: <what to fix>'\"'\"'. If it did, reply '\"'\"'OK'\"'\"'. Reply with nothing else.\\n\\n=== GUIDANCE ===\\n\"+guidance+\"\\n=== REPLY ===\\n\"+t[:6000]\n    o=subprocess.run([\"claude\",\"-p\",p],capture_output=True,text=True,timeout=45,env=dict(os.environ,PLAIN_ENGLISH_GATE=\"1\")).stdout\n    m=re.search(r\"BLOCK:\\s*([^\\n]+)\",o,re.I)\n    if m: print(json.dumps({\"decision\":\"block\",\"reason\":\"Your last reply did not follow the communication guidance (.claude/communication.md): \"+m.group(1).strip()+\". Rewrite it accordingly.\"}))\nexcept Exception:\n    pass\n'",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

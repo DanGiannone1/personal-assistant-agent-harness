@@ -1,4 +1,5 @@
 import { notifyAuthExpired, withAppAuth } from "./appAuth";
+import { STARTUP_REQUEST_TIMEOUT_MS } from "./startupRequestPolicy";
 import type { AppState, FileInfo } from "./types";
 
 const API_BASE =
@@ -30,7 +31,9 @@ export async function getAppState(sessionId: string): Promise<AppState> {
 }
 
 export async function getSession(sessionId: string): Promise<SessionMetadata | null> {
-  const res = await apiFetch(`/sessions/${sessionId}`);
+  const res = await apiFetch(`/sessions/${sessionId}`, {
+    signal: AbortSignal.timeout(STARTUP_REQUEST_TIMEOUT_MS),
+  });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Session check failed: ${res.status}`);
   return res.json();
@@ -41,6 +44,7 @@ export async function createSession(): Promise<SessionMetadata> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
+    signal: AbortSignal.timeout(STARTUP_REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Failed to create session: ${res.status}`);
   return res.json();

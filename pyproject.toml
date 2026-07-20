@@ -1,7 +1,7 @@
 [project]
-name = "flow"
+name = "csa-workbench"
 version = "0.1.0"
-description = "AI-powered RFP analysis agent with Azure OpenAI and isolated session containers"
+description = "CSA Workbench — engagement workspace with Azure OpenAI and isolated session containers"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

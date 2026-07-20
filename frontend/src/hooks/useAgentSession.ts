@@ -1,27 +1,11 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, NavCandidate, ToolCard, ToolOutcome } from "@/lib/types";
+import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, ProductToolResult } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
+import { shouldApplyAgentNavigation } from "@/lib/navigation";
 import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getContextBundle, getQuickLinks, recordVisit } from "@/lib/api";
 import type { QuickLink } from "@/lib/types";
 import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
-
-// Tools that set the server-side currentRoute when they succeed. When one of
-// these completes with an "ok" outcome, the pane should follow the route.
-const ROUTE_SETTING_TOOLS = new Set([
-  "navigate",
-  "create_task",   // lands the user on the new task's detail page
-  "update_task",   // lands the user on the updated task
-  "delete_task",   // returns the user to the to-do list
-  "add_subtask",   // lands the user on the task it added a step to
-  "create_event",  // lands the user on the calendar
-  "update_event",  // lands the user on the calendar
-  "delete_event",  // returns the user to the calendar
-  "create_engagement",       // lands the user on the new engagement
-  "update_engagement",       // lands the user on the engagement it changed
-  "share_engagement",        // lands the user on the engagement's settings
-  "set_engagement_status",   // lands the user on the engagement whose status changed
-]);
 
 type Action =
   | { type: "USER_SEND"; content: string }
@@ -33,7 +17,7 @@ type Action =
   | { type: "REASONING_DELTA"; delta: string }
   | { type: "TOOL_START"; toolCallId: string; toolCallName: string }
   | { type: "TOOL_ARGS"; toolCallId: string; delta: string }
-  | { type: "TOOL_RESULT"; toolCallId: string; outcome: ToolOutcome; candidates?: NavCandidate[]; card?: ToolCard }
+  | { type: "TOOL_RESULT"; toolCallId: string; result: ProductToolResult }
   | { type: "TOOL_END"; toolCallId: string }
   | { type: "SET_TURN_META"; steps: number; durationMs: number }
   | { type: "DONE" }
@@ -49,7 +33,8 @@ type Action =
   | { type: "SET_VIEW_ROUTE"; route: string }
   | { type: "QUICKLINKS_LOADED"; links: QuickLink[] }
   | { type: "BUNDLE_USED"; bundle: ContextBundle | null }
-  | { type: "SESSION_ERROR"; error: string | null };
+  | { type: "SESSION_ERROR"; error: string | null }
+  | { type: "WORKSPACE_REFRESH_FAILED"; error: string | null };
 
 interface State {
   messages: ChatMessage[];
@@ -65,9 +50,9 @@ interface State {
   quickLinks: QuickLink[]; // rank_destinations(context) — the no-AI quick links
   lastBundle: ContextBundle | null; // what personalized the most recent turn (inspector)
   sessionError: string | null;
+  workspaceStale: string | null;
 }
 
-const SESSION_TIMEOUT_MS = 12_000;
 const UPLOAD_TIMEOUT_MS = 180_000;
 
 function normalizeFiles(raw: AppFile[]): AppFile[] {
@@ -117,10 +102,11 @@ function reducer(state: State, action: Action): State {
     case "SET_SESSION_ID": return { ...state, sessionId: action.sessionId };
     case "SET_INITIALIZING": return { ...state, isInitializing: action.value };
     case "SESSION_ERROR": return { ...state, sessionError: action.error };
+    case "WORKSPACE_REFRESH_FAILED": return { ...state, workspaceStale: action.error };
     case "RESET_FOR_NEW_CHAT":
       return {
         ...state, messages: [], isStreaming: false, sessionId: null, currentRunId: null,
-        files: [], appState: null, viewRoute: "/home", appRoute: "/home", newRecordIds: [], sessionError: null,
+        files: [], appState: null, viewRoute: "/engagements", appRoute: "/engagements", newRecordIds: [], sessionError: null, workspaceStale: null,
       };
     case "USER_SEND":
       return {
@@ -212,7 +198,7 @@ function reducer(state: State, action: Action): State {
         messages: updateLastMessage(state.messages, (m) => ({
           ...m,
           parts: m.parts.map((p) =>
-            p.type === "tool_call" && p.toolCallId === action.toolCallId ? { ...p, outcome: action.outcome, candidates: action.candidates, card: action.card } : p,
+            p.type === "tool_call" && p.toolCallId === action.toolCallId ? { ...p, result: action.result } : p,
           ),
         })),
       };
@@ -257,7 +243,7 @@ function reducer(state: State, action: Action): State {
       return { ...state, files: [...stillPending, ...action.files] };
     }
     case "APP_STATE_LOADED": {
-      const serverRoute = action.appState.currentRoute || "/home";
+      const serverRoute = action.appState.currentRoute || "/engagements";
       // Tasks/events that appeared since the last snapshot — highlight them in the pane.
       const prevIds = new Set<string>([
         ...(state.appState?.tasks ?? []).map((t) => t.id),
@@ -269,6 +255,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         appState: action.appState,
+        workspaceStale: null,
         appRoute: serverRoute,
         // Follow the server route only when a navigation-intent tool ran this
         // turn — NOT on every value change. A human clicking back to the
@@ -287,8 +274,8 @@ function reducer(state: State, action: Action): State {
 
 const initialState: State = {
   messages: [], isStreaming: false, sessionId: null, isInitializing: true,
-  currentRunId: null, files: [], appState: null, viewRoute: "/home",
-  appRoute: "/home", newRecordIds: [], quickLinks: [], lastBundle: null, sessionError: null,
+  currentRunId: null, files: [], appState: null, viewRoute: "/engagements",
+  appRoute: "/engagements", newRecordIds: [], quickLinks: [], lastBundle: null, sessionError: null, workspaceStale: null,
 };
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -299,7 +286,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 }
 
 function viewLabel(appState: AppState | null, route: string): string {
-  if (!appState) return "Home";
+  if (!appState) return "Engagements";
+  if (route === "/engagements") return "Engagements";
+  if (route.startsWith("/engagements/")) return "Engagement";
   if (route.startsWith("/todo/")) {
     const t = appState.tasks.find((x) => x.id === route.split("/").pop());
     return t ? `the "${t.title}" task` : "Tasks";
@@ -307,7 +296,7 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (route === "/todo") return "Tasks";
   if (route === "/calendar") return "Calendar";
   if (route === "/documents") return "Documents";
-  return "Home";
+  return "Engagements";
 }
 
 export function useAgentSession() {
@@ -318,22 +307,19 @@ export function useAgentSession() {
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const streamingRef = useRef(false);
-  const viewRouteRef = useRef<string>("/home");
+  const viewRouteRef = useRef<string>("/engagements");
   const appStateRef = useRef<AppState | null>(null);
   const runStartRef = useRef<number>(0);
   const stepCountRef = useRef<number>(0);
   const inFlightRef = useRef(false);
-  // Tracks whether a navigation-intent tool succeeded during the current turn,
-  // so the pane follows the server route even when re-navigating to where the
-  // server already pointed. Keyed lookups need the tool name from TOOL_CALL_START.
-  const routeFollowRef = useRef(false);
-  const toolNamesRef = useRef<Map<string, string>>(new Map());
-  // Set when the user manually navigates (sidebar/card) after an agent nav this turn —
-  // suppresses a trailing refetch from yanking the pane back over a deliberate click.
-  const userNavSinceToolRef = useRef(false);
+  const navigationVersionRef = useRef(0);
+  const activeRunIdRef = useRef<string | null>(null);
   // Monotonic sequence so out-of-order app-state refetches can't apply a stale snapshot:
   // only the most-recently-issued refresh's result is allowed to dispatch (last-issued-wins).
   const appStateSeqRef = useRef(0);
+  // Superseded callers inherit the latest authoritative refresh outcome rather
+  // than treating an obsolete response as a successful refresh.
+  const latestAppStateRefreshRef = useRef<Promise<void> | null>(null);
   // Set on Stop so buffered events arriving after abort don't re-finalize/re-refresh a cancelled turn.
   const cancelledRef = useRef(false);
 
@@ -341,6 +327,7 @@ export function useAgentSession() {
   useEffect(() => { streamingRef.current = state.isStreaming; }, [state.isStreaming]);
   useEffect(() => { viewRouteRef.current = state.viewRoute; }, [state.viewRoute]);
   useEffect(() => { appStateRef.current = state.appState; }, [state.appState]);
+  useEffect(() => { activeRunIdRef.current = state.currentRunId; }, [state.currentRunId]);
 
   const clearAndDeleteSession = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
@@ -355,28 +342,40 @@ export function useAgentSession() {
     } catch { /* non-fatal */ }
   }, []);
 
-  const refreshAppState = useCallback(async (sessionId: string, follow = false) => {
+  const refreshAppState = useCallback((sessionId: string, follow = false): Promise<void> => {
     const seq = ++appStateSeqRef.current;
-    try {
-      const appState = await getAppState(sessionId);
-      // Drop a stale snapshot: if a newer refresh was issued while this one was in
-      // flight, only the newer one may apply (prevents an out-of-order resolve from
-      // clobbering the pane with pre-mutation state and miscomputing newRecordIds).
-      if (seq !== appStateSeqRef.current) return;
-      dispatch({ type: "APP_STATE_LOADED", appState, follow });
-      // Quick links ride along with every state refresh (non-fatal, last-wins).
+    const refreshPromise = Promise.resolve().then(async () => {
+      const awaitLatest = async () => {
+        const latest = latestAppStateRefreshRef.current;
+        if (latest && latest !== refreshPromise) await latest;
+      };
       try {
-        const links = await getQuickLinks();
-        if (seq === appStateSeqRef.current) dispatch({ type: "QUICKLINKS_LOADED", links });
-      } catch { /* non-fatal */ }
-    } catch { /* non-fatal — pane keeps last state */ }
+        const appState = await getAppState(sessionId);
+        // A superseded caller must adopt the latest request's result. This chains
+        // naturally if that request is itself superseded before it settles.
+        if (seq !== appStateSeqRef.current) return await awaitLatest();
+        dispatch({ type: "APP_STATE_LOADED", appState, follow });
+        // Quick links ride along with every state refresh (non-fatal, last-wins).
+        try {
+          const links = await getQuickLinks();
+          if (seq === appStateSeqRef.current) dispatch({ type: "QUICKLINKS_LOADED", links });
+        } catch { /* non-fatal */ }
+        if (seq !== appStateSeqRef.current) await awaitLatest();
+      } catch (err) {
+        if (seq !== appStateSeqRef.current) return await awaitLatest();
+        dispatch({ type: "WORKSPACE_REFRESH_FAILED", error: friendlyError(err, "Could not refresh the workspace. Your last saved view may be out of date.") });
+        throw err;
+      }
+    });
+    latestAppStateRefreshRef.current = refreshPromise;
+    return refreshPromise;
   }, []);
 
   const restoreStoredSession = useCallback(async (storedId: string): Promise<boolean> => {
     // Returns true if restored, false ONLY when the session is genuinely gone (404 → null).
     // Transient errors (500/timeout/network) THROW so the caller surfaces an error and
     // does NOT delete + recreate — wiping a valid session on a blip would lose the workspace.
-    const meta = await withTimeout(getSession(storedId), SESSION_TIMEOUT_MS, "Session check timed out");
+    const meta = await getSession(storedId);
     if (!meta) return false;
     dispatch({ type: "RESTORE_SESSION", sessionId: meta.session_id, messages: getStoredMessages() });
     // On reload, restore the pane to wherever the session last was (no human-click
@@ -395,7 +394,7 @@ export function useAgentSession() {
       if (storedId && (await restoreStoredSession(storedId))) return;
       // No stored session, or it's genuinely gone (404) — start fresh.
       await clearAndDeleteSession(storedId);
-      const meta = await withTimeout(createSession(), SESSION_TIMEOUT_MS, "Session creation timed out");
+      const meta = await createSession();
       storeSessionId(meta.session_id);
       dispatch({ type: "SET_SESSION_ID", sessionId: meta.session_id });
       await Promise.all([refreshAppState(meta.session_id, true), refreshFiles(meta.session_id)]);
@@ -413,19 +412,21 @@ export function useAgentSession() {
   }, [state.isStreaming, state.messages]);
 
   const navigateView = useCallback((route: string) => {
-    // A deliberate manual nav: a trailing same-turn refetch must not yank the pane back.
-    userNavSinceToolRef.current = true;
+    navigationVersionRef.current += 1;
     dispatch({ type: "SET_VIEW_ROUTE", route });
     // Every route change — manual click included — feeds the visit log (fire-and-forget).
     void recordVisit(route, "");
-  }, []);
+    // A manual destination may expose changes another member made since this tab's
+    // last read. Keep navigation immediate while reconciling the owned session.
+    if (sessionIdRef.current) void refreshAppState(sessionIdRef.current).catch(() => undefined);
+  }, [refreshAppState]);
 
   const handleAGUIEvent = useCallback((event: AGUIEvent) => {
     // Once the user hit Stop, ignore buffered events from the cancelled turn so they
     // don't re-finalize it or re-refresh state the user chose to stop watching.
     if (cancelledRef.current && event.type !== "RUN_STARTED") return;
     switch (event.type) {
-      case "RUN_STARTED": runStartRef.current = performance.now(); stepCountRef.current = 0; routeFollowRef.current = false; userNavSinceToolRef.current = false; cancelledRef.current = false; toolNamesRef.current.clear(); dispatch({ type: "RUN_STARTED", runId: event.run_id }); break;
+      case "RUN_STARTED": runStartRef.current = performance.now(); stepCountRef.current = 0; cancelledRef.current = false; activeRunIdRef.current = event.run_id; dispatch({ type: "RUN_STARTED", runId: event.run_id }); break;
       case "TEXT_MESSAGE_START": dispatch({ type: "ASSISTANT_START", messageId: event.message_id }); break;
       case "TEXT_MESSAGE_CONTENT": dispatch({ type: "DELTA", delta: event.delta }); break;
       case "TEXT_MESSAGE_END": dispatch({ type: "MESSAGE_END" }); break;
@@ -434,40 +435,33 @@ export function useAgentSession() {
       case "REASONING_END": break;
       case "TOOL_CALL_START":
         if (event.tool_call_name !== "skill") stepCountRef.current += 1;
-        toolNamesRef.current.set(event.tool_call_id, event.tool_call_name);
         dispatch({ type: "TOOL_START", toolCallId: event.tool_call_id, toolCallName: event.tool_call_name });
         break;
       case "TOOL_CALL_ARGS": dispatch({ type: "TOOL_ARGS", toolCallId: event.tool_call_id, delta: event.delta }); break;
-      case "TOOL_CALL_RESULT": {
-        // Follow the route only when a navigation-intent tool actually succeeded
-        // (an ambiguous/not-found navigate stays put). Emitted just before TOOL_CALL_END.
-        const toolName = toolNamesRef.current.get(event.tool_call_id);
-        if (event.outcome === "ok" && toolName && ROUTE_SETTING_TOOLS.has(toolName)) {
-          routeFollowRef.current = true;
-          // A fresh agent nav supersedes any earlier manual nav this turn.
-          userNavSinceToolRef.current = false;
+      case "TOOL_CALL_RESULT": dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, result: event.result }); break;
+      case "NAVIGATION_RESOLVED":
+        if (shouldApplyAgentNavigation({ activeRunId: activeRunIdRef.current, navigationVersion: navigationVersionRef.current, cancelled: cancelledRef.current, event, appState: appStateRef.current })) {
+          dispatch({ type: "SET_VIEW_ROUTE", route: event.destination.path });
         }
-        dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, outcome: event.outcome, candidates: event.candidates, card: event.card });
         break;
-      }
       case "TOOL_CALL_END":
         dispatch({ type: "TOOL_END", toolCallId: event.tool_call_id });
-        // A tool may have mutated workspace state (navigation, CRUD) — refetch so the pane reflects it live.
-        if (sessionIdRef.current) void refreshAppState(sessionIdRef.current, routeFollowRef.current && !userNavSinceToolRef.current);
+        if (sessionIdRef.current) void refreshAppState(sessionIdRef.current).catch(() => undefined);
         break;
       case "RUN_FINISHED":
         if (runStartRef.current) dispatch({ type: "SET_TURN_META", steps: stepCountRef.current, durationMs: Math.round(performance.now() - runStartRef.current) });
         dispatch({ type: "DONE" });
-        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current, routeFollowRef.current && !userNavSinceToolRef.current); void refreshFiles(sessionIdRef.current); }
+        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current).catch(() => undefined); void refreshFiles(sessionIdRef.current); }
         break;
       case "RUN_ERROR":
         dispatch({ type: "ERROR", message: event.message || "Error during generation." });
-        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current, routeFollowRef.current && !userNavSinceToolRef.current); void refreshFiles(sessionIdRef.current); }
+        if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current).catch(() => undefined); void refreshFiles(sessionIdRef.current); }
         break;
     }
   }, [refreshAppState, refreshFiles]);
 
   const handleSend = useCallback(async (content: string) => {
+    const requestedNavigationVersion = navigationVersionRef.current;
     // inFlightRef is synchronous — guards against two sends in the same tick,
     // before isStreaming/streamingRef flip on the next render.
     if (!state.sessionId || state.isStreaming || streamingRef.current || inFlightRef.current) return;
@@ -504,8 +498,7 @@ export function useAgentSession() {
         dispatch({ type: "BUNDLE_USED", bundle: null });
       }
       const prompt = `${preamble}\n\n${content}`;
-      for await (const event of streamSSE(prompt, controller.signal, state.sessionId)) { handleAGUIEvent(event); }
-      if (streamingRef.current) dispatch({ type: "DONE" });
+      for await (const event of streamSSE(prompt, controller.signal, state.sessionId, requestedNavigationVersion)) { handleAGUIEvent(event); }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") return;
       dispatch({ type: "ERROR", message: friendlyError(err, "Message failed.") });

@@ -19,6 +19,12 @@ if not (ROOT / ".env").exists():
     sys.exit(1)
 
 load_dotenv(ROOT / ".env")
+if os.environ.get("IDENTITY_MODE", "").strip().lower() != "demo":
+    print("Error: dev.py runs deterministic local stacks only; set IDENTITY_MODE=demo.")
+    sys.exit(1)
+if not os.environ.get("DEMO_PASSWORD"):
+    print("Error: DEMO_PASSWORD is required for the demo identity mode.")
+    sys.exit(1)
 os.environ["POOL_MANAGEMENT_ENDPOINT"] = "http://localhost:8080"
 os.environ["WORKSPACE"] = str(ROOT / "workspace")
 
@@ -31,6 +37,7 @@ os.environ["LOG_TRACE"] = "true"
 os.environ["LOG_TRACE_DIR"] = str(logs_dir)
 os.environ["LOG_RAW_SDK_EVENTS"] = "true"
 os.environ["LOG_RAW_SDK_EVENTS_DIR"] = str(logs_dir)
+os.environ["NEXT_PUBLIC_IDENTITY_MODE"] = "demo"
 workspace = ROOT / "workspace"
 # Clean workspace on startup so sessions don't see stale files
 if workspace.exists():

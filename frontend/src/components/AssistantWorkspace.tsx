@@ -43,14 +43,14 @@ export default function AssistantWorkspace() {
       <div className="ambient-orb-2 animate-blob" />
 
       <div className="relative z-10 flex h-full w-full gap-3">
-        {/* Host app shell rail — so the workspace reads as a page OF Personal Assistant, not a
+        {/* Host app shell rail — so the workspace reads as a page OF CSA Workbench, not a
             separate chatbot. Hidden on narrow viewports (the Back control covers returning). */}
         {!narrow && (
           <div className="flex h-full w-[210px] shrink-0 flex-col rounded-2xl border border-border-subtle bg-surface-1/70 backdrop-blur-2xl overflow-hidden">
             <div className="tw-appbar-brand px-4 h-14 flex items-center shrink-0 border-b border-border-subtle">
               <div className="tw-logo"><Home size={16} strokeWidth={2.5} /></div>
               <div className="flex flex-col leading-tight ml-2">
-                <span className="tw-appbar-title">Personal Assistant</span>
+                <span className="tw-appbar-title">CSA Workbench</span>
                 <span className="tw-appbar-sub">Assistant</span>
               </div>
             </div>
@@ -67,7 +67,7 @@ export default function AssistantWorkspace() {
                 type="button"
                 data-testid="workspace-back"
                 onClick={() => router.push("/")}
-                title="Back to Personal Assistant"
+                title="Back to CSA Workbench"
                 className="interactive-control inline-flex h-8 w-8 items-center justify-center rounded-lg bg-surface-2 border border-border-subtle text-text-secondary hover:text-text-primary hover:border-brand-primary transition-all"
               >
                 <PanelLeftClose size={14} strokeWidth={2.5} />

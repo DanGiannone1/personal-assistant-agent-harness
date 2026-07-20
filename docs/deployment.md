@@ -1,129 +1,166 @@
-# Deployment
+# Azure deployment runbook
 
-Personal Assistant deploys to Azure Container Apps: the orchestrator and frontend as Container Apps, and the agent
-as a **custom-container session pool** (one isolated container per user). The runnable source of
-truth is [`infra/deploy.sh`](../infra/deploy.sh) — this page explains its shape and the two failure
-modes that have bitten us.
+> **Purpose:** Operate the current guarded deployment; architecture authority remains in
+> [Infrastructure](capabilities/infrastructure.md).
+>
+> **Verified application revision:** `ce251fbbe03c6b99bc38e676a8be88e9f199f777`
+>
+> **Last verified:** 2026-07-19 in `csa-workbench-rg`, East US 2
 
-## What gets provisioned
+## What this runbook deploys
 
-[`infra/deploy.sh`](../infra/deploy.sh) provisions everything from scratch and is parameterised by a
-`PREFIX` environment variable (override it to name your own resources). It creates:
+The baseline creates one Container Apps Consumption environment with three apps: a public frontend,
+a public API, and an internal session runtime. Each scales from zero to one replica. Cosmos DB and
+Blob Storage disable public network access and use two private endpoints plus private DNS. Workload
+access uses managed identity.
 
-- a user-assigned **managed identity**, an **Azure Container Registry**, and an **ACA environment**;
-- the **private-networking layer** (VNets, peering, Cosmos private endpoint + private DNS — see below);
-- the **session pool** (custom container image, `--max-sessions 20`, `--cooldown-period 300`,
-  configurable `ready-sessions`, API version `2024-10-02-preview`);
-- the **orchestrator** and **frontend** Container Apps (each `0–N` replicas);
-- the **role assignments** below.
+The same resource group owns the Basic Azure Container Registry and the Azure OpenAI account with
+one 10K-TPM Standard `gpt-4.1` deployment. The registry retains its East US location while all other
+application resources use East US 2. Azure OpenAI disables local-key authentication and remains on
+identity-authenticated public TLS. Search, warm session pools, NAT Gateway, Firewall, Front Door,
+APIM, VPN, and broader private ingress are not part of this profile.
 
-App-state (Cosmos), the Library index (Azure AI Search), upload originals (ADLS), Content
-Understanding, and reminder email (ACS) are expected to exist or be configured via environment
-variables — see [`.env.example`](../.env.example) and [retrieval.md](retrieval.md).
+Azure Container Apps creates a separate `ME_...` resource group for platform-managed load-balancer
+infrastructure when the environment uses the application VNet. It is an Azure-owned implementation
+detail, not an application dependency, and must not be modified.
 
-## Private networking (Cosmos)
+Read [Infrastructure](capabilities/infrastructure.md) for the exact resource, identity, network,
+cost, and exclusion contract before changing the deployment.
 
-Everything lives in **`flow-dev-rg`** (July 2026 rebuild). Cosmos (`flow-dev-cosmos`, **serverless**
-capacity mode, AAD-only) has public network access **disabled** — an MCAPS management-group policy
-(`CosmosDB_PublicNetwork_Modify`) force-disables it anyway — so all Cosmos traffic goes through a
-**private endpoint**:
+## Prerequisites
 
-| Piece | Where | Why |
-|---|---|---|
-| `flow-dev-vnet` (10.20.0.0/16, eastus2) | `aca-infra` (10.20.0.0/23, delegated) + `private-endpoints` (10.20.2.0/24) | one VNet hosts the ACA env and the Cosmos PE (10.20.2.4 / .5) |
-| Private DNS zone `privatelink.documents.azure.com` | linked to the VNet | resolves the account to the PE IPs inside Azure |
+- Azure CLI with Bicep support and an authenticated account in the intended subscription.
+- Permission to create subscription/resource-group deployments, reconcile the three dedicated
+  Entra applications, assign the declared roles, build images, and create an Azure OpenAI model
+  deployment.
+- A clean Git worktree at the exact revision to deploy. Image tags are the full 40-character commit
+  SHA; `latest` is not used.
+- For the one-time legacy consolidation only: move `djgsharedacr` from `shared-services-rg` into
+  `csa-workbench-rg` before running the deployment. Azure changes the resource ID during a move, so
+  remove the old direct `AcrPull` assignments first; the foundation deployment recreates them at
+  the destination. A fresh deployment creates the registry directly in the target group.
 
-**No machine outside the VNet can reach Cosmos — by design, including dev laptops.** There is no
-VPN (a VpnGw1AZ gateway was provisioned and deliberately retired on 2026-07-10 — at ~$140/mo it
-only served laptop→Cosmos for local dev). The access paths are:
+The script accepts narrow environment overrides such as `LOCATION`, `RESOURCE_GROUP`, `ACR_NAME`,
+`ACR_LOCATION`, `AOAI_NAME`, and `AZURE_DEPLOYMENT`. Registry and model resources cannot be pointed
+at another resource group. Review the defaults at the top of
+[`infra/deploy.sh`](../infra/deploy.sh) before applying.
 
-- **Using the app**: the frontend/orchestrator are public + auth'd; they do the Cosmos talking.
-- **App-state access from laptops/agents** (Claude Code, schedulers): the **`flow-mcp`** Container
-  App — an MCP server over streamable HTTP ([`mcp_server.py`](../mcp_server.py), scale-to-zero)
-  that wraps `appdb` inside the VNet. Attach with:
-  `claude mcp add --transport http flow https://<flow-mcp-fqdn>/mcp --header "x-api-key: <MCP_API_KEY>"`
-- **Backend code development**: run the **Cosmos DB emulator** locally (Docker) and point
-  `COSMOS_ENDPOINT` at it — real Cosmos is never reachable from a laptop.
+## Dry run
 
-The ACA environment is **VNet-integrated** (`flow-dev-env`); an environment can NEVER be moved
-into a VNet after creation — getting this wrong means recreating the env and every app in it. The
-session containers and orchestrator reach Cosmos through the PE; everything else (Search, ADLS,
-OpenAI, ACS) is still public + AAD/keys.
-
-Moved-in vs. recreated during the July 2026 rebuild: `rfpagent-ai` (OpenAI, kept its gpt-4.1
-deployment + quota) and `djgrfpagentadls` (uploads) were **moved** across RGs; ACS email had to be
-**recreated** (`flow-dev-acs`/`flow-dev-email` — Microsoft.Communication/EmailServices does not
-support resource moves, so the sender address changed); Search was recreated as **free tier**
-(`flow-dev-srch`, $0 — eastus, since eastus2 free tier had no capacity).
-
-## Build & deploy
-
-Images are built cloud-side with `az acr build` and deployed by **git SHA tag** (see the gotcha
-below). Image and resource names derive from a `PREFIX` variable in
-[`infra/deploy.sh`](../infra/deploy.sh) — which currently defaults to the legacy `taxagent`, so
-override it — and the script is the authoritative source. The essence:
+From the repository root:
 
 ```bash
-SHA=$(git rev-parse --short HEAD)
-# Image names are <prefix>-session / -orchestrator / -frontend (see PREFIX in infra/deploy.sh)
-az acr build --registry <acr> --image <prefix>-session:$SHA      --file session-container/Dockerfile session-container/
-az acr build --registry <acr> --image <prefix>-orchestrator:$SHA --file Dockerfile .
-az acr build --registry <acr> --image <prefix>-frontend:$SHA     --build-arg NEXT_PUBLIC_API_URL=<orchestrator-url> --file frontend/Dockerfile frontend/
-
-az containerapp sessionpool update --name <pool> --resource-group <rg> --image <acr>/<prefix>-session:$SHA \
-  --cooldown-period 300 --max-sessions 20 --env-vars <ALL VARS…>
-az containerapp update --name <app>      --resource-group <rg> --image <acr>/<prefix>-orchestrator:$SHA
-az containerapp update --name <frontend> --resource-group <rg> --image <acr>/<prefix>-frontend:$SHA
+./infra/deploy.sh
 ```
 
-A session-pool update reprovisions containers (~2–3 min); the orchestrator/frontend update in ~30s.
+With `APPLY` unset or false, the script validates its tools and clean revision, validates any exact
+tenant-governance NSG pair, compiles both Bicep entrypoints, inspects any existing Container Apps
+environment, and runs the safe foundation what-if when recovery state permits. It does not reconcile
+Entra, build images, or deploy resources.
 
-## Gotchas that will silently bite you
+If the named environment exists with an incompatible network contract, dry run fails closed and
+reports that recovery requires an explicit apply. It does not delete the environment or pretend an
+invalid what-if is useful.
 
-1. **Never deploy `:latest`.** `az containerapp … --image repo:latest` is silently broken across all
-   ACA services. ACA resolves the tag to a digest at revision-creation time and caches it; if the
-   image *string* hasn't changed since the last revision, ACA no-ops — no new revision, no pull, old
-   code keeps running. **Always use a changing tag (the git SHA).**
-2. **`sessionpool update` without `--env-vars` wipes all environment variables.** Always re-specify
-   the complete env-var set when updating the pool. `infra/deploy.sh` holds the authoritative list.
-3. **`--ready-sessions 0` is no longer accepted** (since ~mid-2026, `SessionPoolInvalidReadySessionInstances`
-   at create AND via the raw ARM API). The floor is 1: one warm session is always running and billed.
-   Old pools created with 0 are grandfathered.
-4. **Managed identity is NOT available inside session containers by default.** Assigning the
-   identity to the pool only covers image pull. Code inside sessions (appdb → Cosmos etc.) gets a
-   token endpoint only when the pool's `managedIdentitySettings` has `lifecycle: "Main"` — set via
-   raw ARM PATCH (no CLI flag as of Jul 2026; `deploy.sh` does it). Without it,
-   `DefaultAzureCredential` raises `ClientAuthenticationError` on the first data call.
-5. **Dockerfile `COPY` lists drift from `import`s.** Both images enumerate the files they ship; a new
-   module (or a new cross-container import like `app.py` → `session-container/appdb.py`) crash-loops
-   the container at startup with `ModuleNotFoundError` — which surfaces from the session pool only as
-   HTTP 429 on `POST /sessions`, because crashed sessions never become ready. Check
-   `AppEnvSessionConsoleLogs_CL` in Log Analytics for the real traceback. (Bit us twice on 2026-07-10;
-   the orchestrator also needs `.dockerignore`'s `!session-container/appdb.py` exceptions.)
+## Apply
 
-## RBAC
+```bash
+APPLY=true ./infra/deploy.sh
+```
 
-The managed identity needs:
+The apply path:
 
-| Role | On | Why |
-|---|---|---|
-| AcrPull | Container Registry | Pull images |
-| Cognitive Services User | Foundry / Azure OpenAI | Model + Content Understanding |
-| Cosmos DB Built-in Data Contributor | Cosmos account | App state (AAD-only) |
-| Storage Blob Data Contributor | ADLS | Upload originals + converted markdown |
-| Search Index Data Reader · Search Service Contributor | Azure AI Search | Provisioned by `deploy.sh` |
-| Azure ContainerApps Session Executor | Session pool | Orchestrator calls the pool |
-| Email-send role *(granted manually)* | Communication Services | Scheduled-reminder email — **not** in `deploy.sh` |
+1. validates the optional tenant-governance NSG pair, existing environment, and recovery allowlist;
+2. if recovery is required, deletes only the three named apps and their named environment;
+3. runs foundation what-if and deployment, preserving the approved NSG subnet associations when
+   that exact pair already exists;
+4. reconciles the three dedicated Entra registrations;
+5. builds frontend, API, and runtime images at the same full Git SHA;
+6. runs the app what-if and deployment; and
+7. executes the live exact-inventory verifier.
 
-Two notes: (1) although Search RBAC roles are provisioned, the agent's `search_documents` currently
-authenticates with the **admin key** (`AZURE_SEARCH_KEY`), so set it. (2) The ACS email role is a
-manual prerequisite — `deploy.sh` does not grant it.
+The recovery allowlist is intentional. An unexpected app, environment, Entra shape, or resource
+inventory fails closed rather than being adopted or deleted.
 
-## Auth
+## What success means
 
-Two complementary layers, both optional and configured via [`.env.example`](../.env.example):
+The final verifier checks live Azure JSON. It requires:
 
-- **IP restriction** (`ALLOWED_IP`) locks the Container Apps to a single address.
-- **Entra app registrations** (`API_AUTH_REQUIRED`, `ENTRA_*`) require a signed-in user at the API
-  and enable browser sign-in. Two registrations are used: a backend/API app and a SPA app for the
-  frontend.
+- exactly the frontend, API, and internal runtime apps with the declared ports, resources, `0–1`
+  scale, and identical SHA tags;
+- the exact VNet, two subnets, two approved private endpoints, two private DNS zones/links/groups,
+  and private A records;
+- the Basic, admin-disabled registry and the AAD-only Azure OpenAI S0 account with exactly one
+  Standard 10K-TPM `gpt-4.1` deployment;
+- disabled Cosmos public/local-key access and disabled Storage public/shared-key/public-blob access;
+- the required resource-scoped managed-identity and Cosmos data-plane roles, with every Azure RBAC
+  scope contained by `csa-workbench-rg`; and
+- the expected resource allowlist, excluding the deferred services named above.
+
+Tenant policy may add one Defender for Storage Event Grid system topic and the exact
+`StorageAntimalwareSubscription`. The application does not require them. The verifier accepts their
+absence and validates their exact shape when present.
+
+Tenant governance may also add no NSGs or the exact East US 2 pair named in
+[Infrastructure](capabilities/infrastructure.md). Application Bicep creates no NSGs, and the guarded
+preflight never creates or deletes them. When the exact pair exists, its IDs are passed into the
+foundation deployment so the VNet update preserves the approved subnet associations. The verifier
+then requires both successful resources, no custom rules or NIC associations, and only the approved
+ACA/private-endpoint subnet attachments. Partial, extra, or mismatched policy state fails before
+foundation mutation.
+
+A successful deployment command or health endpoint alone is not acceptance. Follow
+[Testing and evals](capabilities/testing-evals.md) for real-Entra, state, typed agent, Blob, browser,
+and responsive evidence.
+
+## Verified release observation
+
+For `ce251fbbe03c6b99bc38e676a8be88e9f199f777`:
+
+- all three apps were healthy, pinned to that SHA, and retained the public frontend/API, internal
+  runtime, and `0–1` Consumption scale contract;
+- the frontend root and `/assistant` returned `200`, and API health, real-Entra `/auth/me`,
+  Engagement reads, and quick-link reads returned `200`;
+- desktop and 390px browser checks showed the Microsoft sign-in control with the intended
+  `rgb(0, 115, 234)` background, white text, 4.525:1 contrast, no horizontal overflow, and no
+  page/console errors; and
+- the sign-in action redirected to `login.microsoftonline.com`, the Next.js 16.2.10/PostCSS 8.5.20
+  dependency baseline had zero npm audit findings, and the live exact-topology verifier passed with
+  the approved tenant-governance NSG associations preserved through foundation deployment.
+
+The session-create, typed-agent, and Blob round-trip observations below were not repeated for this
+frontend-only behavior/dependency change; they remain evidence for the prior release revision.
+
+For `807a0d6766036aa88dce8dcd9f16a2aabeb187b3`:
+
+- all three apps were healthy and pinned to that SHA;
+- the frontend and API were public, the runtime was internal, and all apps were `0–1`;
+- the frontend root and `/assistant` route returned `200`, and the API health endpoint returned
+  `200`;
+- real-Entra `/auth/me`, Engagement and quick-link reads, session creation, Cosmos-backed
+  Engagement state readback, and a typed `list_engagements` Deep Agents turn succeeded;
+- Blob upload/list/byte-for-byte download/delete succeeded with Storage public access disabled;
+- the exact topology verifier passed, including the optional tenant-governance NSG pair;
+- the Basic registry and all application-managed RBAC scopes were consolidated into
+  `csa-workbench-rg`; and
+- `shared-services-rg` retained only its unrelated Fabric capacity.
+
+The application images remain stamped with the application revision above. The later verifier-only
+commit `56d1fdd` changed `infra/deploy.sh` and its tests, not the application image contents; that
+checked-in verifier was then run read-only against the deployed SHA.
+
+The running URLs for that environment are:
+
+- frontend: <https://csa-workbench-frontend.bluedesert-4d686b6f.eastus2.azurecontainerapps.io>
+- API: <https://csa-workbench-api.bluedesert-4d686b6f.eastus2.azurecontainerapps.io>
+- runtime: internal DNS only; it is not a public endpoint
+
+The repository does not contain the raw deployment transcript, inventory JSON, Blob hash record,
+timing log, or billing export. The observations above are release evidence recorded by the
+[authoritative design](design.md), not replayable artifacts committed to Git.
+
+## Workflow boundary
+
+`.github/workflows/deploy.yml` is validation-only. It runs focused infrastructure contracts and
+compiles Bicep; it has no deployment credential, image publication, Azure mutation, or release
+evidence upload. The guarded manual script is the current deployment path.

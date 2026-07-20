@@ -20,6 +20,9 @@ if str(_SC) not in sys.path:
     sys.path.insert(0, str(_SC))
 import appdb  # noqa: E402
 import library  # noqa: E402
+import navsvc  # noqa: E402
+from workbench_core import EngagementService, Outcome  # noqa: E402
+from workbench_core.appdb_repository import AppdbEngagementRepository  # noqa: E402
 
 import artifact_store
 
@@ -34,10 +37,13 @@ from pydantic import BaseModel, Field
 import auth_users
 from api_auth import APIAuthenticator, AuthConfig
 from auth_users import current_user
+from identity_config import IdentityConfig
 from session_manager import SessionManager
 from trace_logging import setup_trace_logging, trace_event
 
 logger = logging.getLogger(__name__)
+
+_engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +52,7 @@ logger = logging.getLogger(__name__)
 session_manager: SessionManager | None = None
 content_processor = None  # ContentProcessor | None
 api_authenticator: APIAuthenticator | None = None
+identity_config: IdentityConfig | None = None
 
 
 def _trace_dir() -> str | None:
@@ -153,7 +160,11 @@ def _seed_engagement_artifacts() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global session_manager, content_processor, api_authenticator
+    global session_manager, content_processor, api_authenticator, identity_config
+
+    identity_config = IdentityConfig.from_env()
+    identity_config.validate()
+    artifact_store.assert_durable_configuration(identity_config.mode)
 
     # Content Processing (optional — ADLS + Content Understanding)
     from content_processing import ContentProcessor
@@ -174,51 +185,69 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager(content_processor)
     await session_manager.start()
 
-    # Seed the account registry + per-user personal spaces (idempotent).
+    # Only a demo instance creates deterministic actors, spaces, and fixtures.
     try:
-        await asyncio.to_thread(appdb.ensure_seeded)
-        logger.info("User accounts + personal spaces seeded")
+        if identity_config.is_demo:
+            await asyncio.to_thread(appdb.ensure_seeded, identity_config.demo_password)
+            logger.info("Demo actors, personal spaces, and engagements seeded")
+        else:
+            await asyncio.to_thread(appdb.validate_identity_registry, "entra", identity_config.tenant_id)
+            logger.info("Entra actor registry ready without demo fixtures")
+    except appdb.IdentityRegistryError:
+        logger.critical("Identity registry conflicts with the selected identity mode", exc_info=True)
+        raise
     except Exception:
-        logger.error("Could not seed users/spaces — sign-in will fail until Cosmos is reachable", exc_info=True)
+        logger.critical("Could not initialize the required actor registry", exc_info=True)
+        raise
 
     # Seed one real artifact per demo engagement (idempotent, best-effort) so the
     # Documents tab always has openable content. Bytes go through artifact_store,
     # so this works identically on the local dir and Azure Blob backends.
     try:
-        seeded_artifacts = await asyncio.to_thread(_seed_engagement_artifacts)
-        if seeded_artifacts:
-            logger.info("Seeded %d engagement artifact(s) via %s",
-                        seeded_artifacts, artifact_store.describe())
+        if identity_config.is_demo:
+            seeded_artifacts = await asyncio.to_thread(_seed_engagement_artifacts)
+            if seeded_artifacts:
+                logger.info("Seeded %d demo engagement artifact(s) via %s",
+                            seeded_artifacts, artifact_store.describe())
     except Exception:
         logger.warning("Could not seed engagement artifacts", exc_info=True)
 
     # Ensure the seeded Library reference docs are actually in the Search index, so the
     # library[] list can't point at content search can't find (idempotent, best-effort).
     try:
-        seeded = await asyncio.to_thread(library.ensure_seeded_indexed, str(_SC / "seed_docs"))
-        if seeded:
-            logger.info("Indexed %d seed Library doc(s)", seeded)
+        if identity_config.is_demo:
+            seeded = await asyncio.to_thread(library.ensure_seeded_indexed, str(_SC / "seed_docs"))
+            if seeded:
+                logger.info("Indexed %d demo Library doc(s)", seeded)
     except Exception:
         logger.warning("Could not index seed Library docs (search may be unconfigured)", exc_info=True)
 
-    # Background reminder scheduler — runs due reminders and emails their output.
-    import scheduler
-    scheduler_task = asyncio.create_task(scheduler.scheduler_loop(session_manager))
+    # Schedulers keep a process warm and are excluded from the release profile.
+    scheduler_task: asyncio.Task | None = None
+    if _scheduler_enabled():
+        import scheduler
+        scheduler_task = asyncio.create_task(scheduler.scheduler_loop(session_manager))
+        logger.info("Background reminder scheduler enabled")
     logger.info("Application started")
 
     yield
 
-    scheduler_task.cancel()
-    try:
-        await scheduler_task
-    except asyncio.CancelledError:
-        pass
+    if scheduler_task is not None:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
     await session_manager.stop()
     await content_processor.close()
     logger.info("Application shut down")
 
 
-app = FastAPI(title="Personal Assistant", lifespan=lifespan)
+app = FastAPI(title="CSA Workbench", lifespan=lifespan)
+
+
+def _scheduler_enabled() -> bool:
+    return os.getenv("SCHEDULER_ENABLED", "").lower() == "true"
 
 # CORS: allow localhost only in dev, plus configurable FRONTEND_URL for production
 cors_origins = []
@@ -287,6 +316,7 @@ async def trace_requests(request: Request, call_next):
 # ---------------------------------------------------------------------------
 class SendMessageRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=50000)
+    navigation_version: int = Field(default=0, ge=0)
 
 
 class LoginRequest(BaseModel):
@@ -299,6 +329,8 @@ class LoginRequest(BaseModel):
 # ---------------------------------------------------------------------------
 @app.post("/auth/login")
 async def auth_login(req: LoginRequest) -> dict:
+    if identity_config is None or not identity_config.is_demo:
+        raise HTTPException(status_code=404, detail="Not found")
     result = await asyncio.to_thread(auth_users.login, req.username, req.password)
     trace_event("orchestrator", "auth.login", user=result["user"]["id"])
     return result
@@ -358,7 +390,7 @@ async def send_message(session_id: str, req: SendMessageRequest, uid: str = Depe
     await _require_owned_session(session_id, uid)
 
     return StreamingResponse(
-        session_manager.send_message(session_id, req.prompt, uid),
+        session_manager.send_message(session_id, req.prompt, uid, req.navigation_version),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -523,6 +555,11 @@ async def get_library_content(session_id: str, filename: str, uid: str = Depends
 class _NotFound(Exception):
     """Raised inside a mutator when the target record is absent. Propagates through
     appdb.update (which only catches AbortWrite) so _mutate can map it to a 404."""
+
+
+class _Forbidden(Exception):
+    """Raised inside a mutator when the actor lacks the required role. Propagates like
+    _NotFound so _mutate_engagement maps it to a 403 without a string sentinel."""
 
 
 async def _require_session(session_id: str, uid: str) -> None:
@@ -895,120 +932,81 @@ async def _mutate_engagement(engagement_id: str, uid: str, minimum: str, mutator
         if appdb.member_role(doc, uid) is None:
             raise _NotFound()
         if not appdb.role_at_least(doc, uid, minimum):
-            raise appdb.AbortWrite("forbidden")
+            raise _Forbidden()
         return mutator(doc)
 
     try:
-        result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _mut)
+        await asyncio.to_thread(appdb.update_engagement, engagement_id, _mut)
     except _NotFound:
         raise HTTPException(status_code=404, detail="Not found")
-    if result == "forbidden":
+    except _Forbidden:
         raise HTTPException(status_code=403, detail=f"Requires {minimum} access")
+
+
+def _raise_for_engagement_outcome(outcome: Outcome) -> None:
+    if outcome.status == "not_found":
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    if outcome.status == "forbidden":
+        raise HTTPException(status_code=403, detail=next(iter(outcome.errors.values()), "Forbidden"))
+    if outcome.status == "invalid":
+        raise HTTPException(status_code=422, detail=next(iter(outcome.errors.values()), "Invalid request"))
+    if outcome.status == "conflict":
+        raise HTTPException(status_code=409, detail="Engagement conflict")
 
 
 @app.get("/engagements")
 async def list_engagements(uid: str = Depends(current_user)) -> list[dict]:
-    return await asyncio.to_thread(appdb.list_engagements_for, uid)
+    outcome = await asyncio.to_thread(_engagement_service.list, uid)
+    return outcome.record["engagements"]
 
 
 @app.post("/engagements", status_code=201)
-async def create_engagement(req: EngagementCreate, uid: str = Depends(current_user)) -> dict:
-    _check_status_field(req.status)
-    if req.status in ("yellow", "red") and not req.statusNote.strip():
-        raise HTTPException(status_code=422, detail="yellow/red status requires statusNote (the why)")
-    engagement = await asyncio.to_thread(
-        lambda: appdb.new_engagement(uid, req.name, req.description,
-                                     customer=req.customer,
-                                     status=req.status, status_note=req.statusNote,
-                                     start_date=req.startDate, target_date=req.targetDate))
-    trace_event("orchestrator", "engagement.created", user=uid, engagement=engagement["id"])
+async def create_engagement(req: EngagementCreate, response: Response, uid: str = Depends(current_user)) -> dict:
+    outcome = await asyncio.to_thread(
+        _engagement_service.create, uid,
+        {"name": req.name, "description": req.description, "customer": req.customer,
+         "status": req.status, "statusNote": req.statusNote,
+         "startDate": req.startDate, "targetDate": req.targetDate},
+    )
+    _raise_for_engagement_outcome(outcome)
+    engagement = outcome.record
+    if outcome.status == "noop":
+        response.status_code = 200
+    else:
+        trace_event("orchestrator", "engagement.created", user=uid, engagement=engagement["id"])
     return engagement
 
 
 @app.get("/engagements/{engagement_id}")
 async def get_engagement(engagement_id: str, uid: str = Depends(current_user)) -> dict:
-    return await _load_engagement_authed(engagement_id, uid)
+    outcome = await asyncio.to_thread(_engagement_service.get, uid, engagement_id)
+    _raise_for_engagement_outcome(outcome)
+    return outcome.record
 
 
 @app.patch("/engagements/{engagement_id}")
 async def patch_engagement(engagement_id: str, req: EngagementPatch, uid: str = Depends(current_user)) -> dict:
-    _check_status_field(req.status)
-
-    def _mut(doc):
-        if req.name is not None:
-            doc["name"] = req.name.strip()
-        if req.description is not None:
-            doc["description"] = req.description.strip()
-        for field, value in (("customer", req.customer),
-                             ("status", req.status), ("statusNote", req.statusNote),
-                             ("startDate", req.startDate), ("targetDate", req.targetDate)):
-            if value is not None:
-                doc[field] = value.strip()
-        # Guard the RESULTING state, not the request shape: status "yellow"/"red" with an
-        # empty (or emptied) note must never land, whichever field this patch carried.
-        if doc.get("status") in ("yellow", "red") and not (doc.get("statusNote") or "").strip():
-            raise HTTPException(status_code=422,
-                                detail="yellow/red status requires statusNote (the why)")
-        appdb.log_activity(doc, uid, "engagement.updated", doc["name"])
-
-    # Renames stay owner-only; delivery-record fields (customer/status/dates) are
-    # editor-level, matching the tool layer.
-    minimum = "owner" if (req.name is not None or req.description is not None) else "editor"
-    await _mutate_engagement(engagement_id, uid, minimum, _mut)
-    return await _load_engagement_authed(engagement_id, uid)
+    values = req.model_dump(exclude_none=True)
+    outcome = await asyncio.to_thread(_engagement_service.update, uid, engagement_id, values)
+    _raise_for_engagement_outcome(outcome)
+    return outcome.record
 
 
 @app.post("/engagements/{engagement_id}/members", status_code=201)
-async def add_member(engagement_id: str, req: MemberAdd, uid: str = Depends(current_user)) -> dict:
-    role = req.role.strip().lower()
-    if role not in appdb.ENGAGEMENT_ROLES:
-        raise HTTPException(status_code=422, detail=f"role must be one of {appdb.ENGAGEMENT_ROLES}")
-    # Accept a user id OR username — Entra users are known by sign-in name.
-    target = await asyncio.to_thread(appdb.find_user, req.userId)
-    if target is None:
-        raise HTTPException(status_code=422, detail="No such user")
-
-    def _mut(doc):
-        existing = next((m for m in doc["members"] if m["userId"] == target["id"]), None)
-        if existing:
-            existing["role"] = role
-        else:
-            doc["members"].append({"userId": target["id"], "role": role})
-        appdb.log_activity(doc, uid, "member.added", f"{target['id']} as {role}")
-    await _mutate_engagement(engagement_id, uid, "owner", _mut)
-    return {"userId": target["id"], "role": role}
+async def add_member(engagement_id: str, req: MemberAdd, response: Response, uid: str = Depends(current_user)) -> dict:
+    outcome = await asyncio.to_thread(_engagement_service.share, uid, engagement_id, req.userId, req.role)
+    _raise_for_engagement_outcome(outcome)
+    if outcome.status == "noop":
+        response.status_code = 200
+    member = next(member for member in outcome.record["members"] if member["userId"] == outcome.target_user_id)
+    return member
 
 
 @app.delete("/engagements/{engagement_id}/members/{member_id}", status_code=204)
 async def remove_member(engagement_id: str, member_id: str, uid: str = Depends(current_user)):
-    # Pre-check like every other mutating route: unknown id / non-member → 404,
-    # non-owner member → 403 — never a 500 (and no member/non-member shape leak).
-    await _load_engagement_authed(engagement_id, uid, "owner")
-
-    def _mut(doc):
-        remaining_owners = [m for m in doc["members"]
-                            if m["role"] == "owner" and m["userId"] != member_id]
-        target = next((m for m in doc["members"] if m["userId"] == member_id), None)
-        if target is None:
-            raise _NotFound()
-        if target["role"] == "owner" and not remaining_owners:
-            raise appdb.AbortWrite("last-owner")
-        doc["members"] = [m for m in doc["members"] if m["userId"] != member_id]
-        appdb.log_activity(doc, uid, "member.removed", member_id)
-    def _outer(doc):
-        if appdb.member_role(doc, uid) is None:
-            raise _NotFound()
-        if not appdb.role_at_least(doc, uid, "owner"):
-            raise appdb.AbortWrite("forbidden")
-        return _mut(doc)
-    try:
-        result = await asyncio.to_thread(appdb.update_engagement, engagement_id, _outer)
-    except _NotFound:
-        raise HTTPException(status_code=404, detail="Not found")
-    if result == "forbidden":
-        raise HTTPException(status_code=403, detail="Requires owner access")
-    if result == "last-owner":
-        raise HTTPException(status_code=422, detail="A engagement must keep at least one owner")
+    outcome = await asyncio.to_thread(_engagement_service.remove_member, uid, engagement_id, member_id)
+    _raise_for_engagement_outcome(outcome)
+    return Response(status_code=204)
 
 
 # Engagement-scoped record CRUD — same shapes as personal, gated editor+.
@@ -1092,8 +1090,8 @@ async def delete_convention(engagement_id: str, conv_id: str, uid: str = Depends
 
 
 # ── Engagement artifacts — durable files, metadata on the doc (R9/R10) ────────
-# Bytes live in artifact_store (local dir or Azure Blob); any member can add,
-# list, and open; removing needs editor+. Non-members always see 404.
+# Bytes live in artifact_store (local dir or Azure Blob); members can list and
+# open, while editors and owners can add or remove. Non-members always see 404.
 
 _ARTIFACT_MAX_BYTES = 20 * 1024 * 1024
 _ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()-]+")
@@ -1118,7 +1116,7 @@ async def list_artifacts(engagement_id: str, uid: str = Depends(current_user)) -
 @app.post("/engagements/{engagement_id}/artifacts", status_code=201)
 async def upload_artifact(engagement_id: str, file: UploadFile,
                           uid: str = Depends(current_user)) -> dict:
-    eng = await _load_engagement_authed(engagement_id, uid)  # any member may add (R10)
+    eng = await _load_engagement_authed(engagement_id, uid, "editor")
     # Read at most cap+1 bytes so an oversized body 413s without buffering it all
     # (same idiom as session_manager upload).
     data = await file.read(_ARTIFACT_MAX_BYTES + 1)
@@ -1127,7 +1125,7 @@ async def upload_artifact(engagement_id: str, file: UploadFile,
     if not data:
         raise HTTPException(status_code=422, detail="Empty file")
     entry = {
-        "id": f"art-{secrets.token_hex(4)}",
+        "id": f"art-{secrets.token_hex(8)}",
         "name": _safe_artifact_name(file.filename),
         "size": len(data),
         "contentType": file.content_type or "application/octet-stream",
@@ -1145,7 +1143,7 @@ async def upload_artifact(engagement_id: str, file: UploadFile,
         appdb.log_activity(doc, uid, "artifact.added", entry["name"])
 
     try:
-        await _mutate_engagement(eng["id"], uid, "viewer", _mut)
+        await _mutate_engagement(eng["id"], uid, "editor", _mut)
     except Exception:
         await asyncio.to_thread(artifact_store.delete, eng["id"], entry["id"])
         raise
@@ -1202,14 +1200,13 @@ async def record_visit(req: VisitCreate, uid: str = Depends(current_user)) -> di
 @app.get("/quicklinks")
 async def quick_links(uid: str = Depends(current_user)) -> list[dict]:
     """rank_destinations(context) — the no-utterance consumer: top destinations now."""
-    import navsvc
     personal = await asyncio.to_thread(appdb.load_state, uid)
     engagements = await asyncio.to_thread(appdb.list_engagements_for, uid)
     ctx = await asyncio.to_thread(appdb.load_context, uid)
     ranked = await asyncio.to_thread(
         navsvc.rank_destinations, personal, engagements, ctx["visits"], None, None, 5
     )
-    return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked]
+    return [{"path": d["path"], "title": d["title"], "kind": d["kind"]} for d in ranked[:5]]
 
 
 

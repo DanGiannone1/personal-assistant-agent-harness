@@ -1,4 +1,4 @@
-"""Personal Assistant application data store — multi-user.
+"""CSA Workbench application data store — multi-user.
 
 App state lives in **Azure Cosmos DB** as a set of documents in one container:
 
@@ -12,9 +12,8 @@ Every mutation goes through the optimistic-ETag ``_update_doc`` path, one docume
 time — concurrent writers (agent tools, manual UI, the reminder scheduler) can never
 clobber each other. AAD-only (no key): DefaultAzureCredential.
 
-Auth here is **demo-grade by design**: seeded username/password accounts (PBKDF2), no
-self-registration, no lockout/reset/MFA. The seam to a real identity provider is the
-login handler in the orchestrator — nothing in this module would change.
+Demo accounts are seeded only by the demo-mode startup path. Entra actors are
+provisioned only from already validated tenant/object identifiers.
 """
 
 from __future__ import annotations
@@ -57,7 +56,7 @@ def _container():
                 "COSMOS_ENDPOINT is not set — Cosmos is required for app state; "
                 "refusing to silently fall back to a local file."
             )
-        database = os.getenv("COSMOS_DATABASE", "flow")
+        database = os.getenv("COSMOS_DATABASE", "csa-workbench")
         container = os.getenv("COSMOS_CONTAINER", "appstate")
         key = os.getenv("COSMOS_KEY")
         if key:
@@ -87,11 +86,7 @@ def _now_iso() -> str:
 
 
 # ── Accounts ─────────────────────────────────────────────────────────────────
-# Seeded demo users. Same demo password for all three (documented, demo-grade):
-# it keeps the sign-in demo focused on *who you are* changing the app, not on
-# credential management. PBKDF2-HMAC-SHA256 (stdlib) — no plaintext at rest.
-
-_DEMO_PASSWORD = "demo1234"
+# Passwords are deployment/test secrets. PBKDF2-HMAC-SHA256 is stdlib only.
 _PBKDF2_ITERATIONS = 200_000
 
 
@@ -112,13 +107,15 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
-def _seed_users() -> list[dict]:
+def _seed_users(demo_password: str) -> list[dict]:
     def user(uid: str, name: str, role: str, tone: str) -> dict:
         return {
             "id": uid,
             "username": uid,
-            "passwordHash": hash_password(_DEMO_PASSWORD),
+            "passwordHash": hash_password(demo_password),
             "displayName": name,
+            "identity": "demo",
+            "identitySubject": f"demo:{uid}",
             "persona": {"role": role, "tone": tone, "outputPrefs": "", "language": "English"},
         }
     return [
@@ -128,17 +125,64 @@ def _seed_users() -> list[dict]:
     ]
 
 
-def ensure_seeded() -> None:
-    """Idempotently create the users registry and every user's personal space."""
+def _ensure_user_registry() -> dict:
     container = _container()
     try:
-        users_doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+        return container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        users_doc = {"id": _USERS_DOC_ID, "sessionId": _USERS_DOC_ID, "users": _seed_users()}
+        users_doc = {"id": _USERS_DOC_ID, "sessionId": _USERS_DOC_ID, "users": []}
         try:
             container.create_item(users_doc)
         except cosmos_exceptions.CosmosResourceExistsError:
             users_doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+        return users_doc
+
+
+class IdentityRegistryError(ValueError):
+    """A registry has actors from the wrong exclusive identity mode."""
+
+
+def validate_identity_registry(mode: str, tenant_id: str | None = None) -> dict:
+    """Reject accidental reuse of a registry across exclusive identity modes."""
+    users_doc = _ensure_user_registry()
+    users = users_doc["users"]
+    if mode == "demo":
+        for user in users:
+            actor_id = user.get("id")
+            if user.get("identity") != "demo":
+                raise IdentityRegistryError("demo mode cannot use a registry containing non-demo actors")
+            if not isinstance(actor_id, str) or user.get("identitySubject") != f"demo:{actor_id}":
+                raise IdentityRegistryError("demo actors require their canonical demo identity subject")
+        return users_doc
+    if mode != "entra":
+        raise ValueError("identity mode must be demo or entra")
+
+    tenant = (tenant_id or "").strip().lower()
+    if not tenant:
+        raise IdentityRegistryError("entra mode requires a configured tenant")
+    for user in users:
+        actor_id = user.get("id")
+        oid = actor_id[2:] if isinstance(actor_id, str) and actor_id.startswith("u-") else ""
+        if (
+            user.get("identity") != "entra"
+            or not oid
+            or user.get("identitySubject") != f"{tenant}:{oid}"
+        ):
+            raise IdentityRegistryError("entra actors require the configured tenant's canonical identity subject")
+    return users_doc
+
+
+def ensure_seeded(demo_password: str) -> None:
+    """Create deterministic demo actors and fixtures only in demo mode."""
+    if not demo_password:
+        raise ValueError("demo password is required for demo seeding")
+    users_doc = validate_identity_registry("demo")
+    if not users_doc["users"]:
+        users_doc = {"id": _USERS_DOC_ID, "sessionId": _USERS_DOC_ID, "users": _seed_users(demo_password)}
+        try:
+            _container().replace_item(item=_USERS_DOC_ID, body=users_doc)
+        except cosmos_exceptions.CosmosResourceNotFoundError:
+            _container().create_item(users_doc)
     for u in users_doc["users"]:
         _ensure_space_seeded(u["id"])
     _seed_engagements()
@@ -146,12 +190,7 @@ def ensure_seeded() -> None:
 
 def list_users() -> list[dict]:
     """All user records, password hashes stripped."""
-    container = _container()
-    try:
-        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
-    except cosmos_exceptions.CosmosResourceNotFoundError:
-        ensure_seeded()
-        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    doc = _ensure_user_registry()
     return [{k: v for k, v in u.items() if k != "passwordHash"} for u in doc["users"]]
 
 
@@ -173,15 +212,14 @@ def find_user(ref: str) -> dict | None:
 
 def verify_login(username: str, password: str) -> dict | None:
     """Check credentials → sanitized user record, or None. Fail closed on any mismatch."""
-    container = _container()
-    try:
-        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
-    except cosmos_exceptions.CosmosResourceNotFoundError:
-        ensure_seeded()
-        doc = container.read_item(item=_USERS_DOC_ID, partition_key=_USERS_DOC_ID)
+    doc = _ensure_user_registry()
     uname = (username or "").strip().lower()
     for u in doc["users"]:
-        if u["username"] == uname and verify_password(password or "", u["passwordHash"]):
+        if (
+            u.get("identity") == "demo"
+            and u.get("username") == uname
+            and verify_password(password or "", u.get("passwordHash", ""))
+        ):
             return {k: v for k, v in u.items() if k != "passwordHash"}
     return None
 
@@ -196,16 +234,22 @@ def update_user(user_id: str, mutator) -> dict | None:
     return _update_raw(_USERS_DOC_ID, _mut)
 
 
-def ensure_entra_user(oid: str, username: str, display_name: str) -> dict:
+def ensure_entra_user(tid: str, oid: str, username: str, display_name: str) -> dict:
     """Idempotently provision the app user for a validated Entra principal.
 
-    Keyed `u-<oid>` so the same person always maps to the same record; no password
-    hash — this account can only ever be reached through a validated Entra token.
+    Keyed `u-<oid>` within the configured tenant; no password hash — this account
+    can only ever be reached through a validated Entra token.
     Starts with no engagement memberships (they create or get invited like anyone).
     """
+    tid = (tid or "").strip().lower()
+    oid = (oid or "").strip().lower()
+    if not tid or not oid:
+        raise ValueError("validated Entra tid and oid are required")
     uid = _valid_user(f"u-{oid}")
     existing = get_user(uid)
     if existing is not None:
+        if existing.get("identity") != "entra" or existing.get("identitySubject") != f"{tid}:{oid}":
+            raise ValueError("existing actor does not match validated Entra subject")
         return existing
 
     record = {
@@ -213,6 +257,7 @@ def ensure_entra_user(oid: str, username: str, display_name: str) -> dict:
         "username": (username or uid).strip().lower(),
         "displayName": (display_name or username or uid).strip(),
         "identity": "entra",
+        "identitySubject": f"{tid}:{oid}",
         "persona": {"role": "", "tone": "", "outputPrefs": "", "language": "English"},
     }
 
@@ -222,6 +267,7 @@ def ensure_entra_user(oid: str, username: str, display_name: str) -> dict:
         doc["users"].append(record)
         return record
 
+    _ensure_user_registry()
     _update_raw(_USERS_DOC_ID, _mut)
     _ensure_space_seeded(uid)
     return get_user(uid)
@@ -261,14 +307,16 @@ def _seed_library() -> list[dict]:
 def _seed_space() -> dict:
     """A fresh personal space — empty records, seeded Library, the static route catalog."""
     return {
-        "currentRoute": "/home",
+        # Engagements is the product's landing surface. Personal utilities remain
+        # available in the route catalog, but do not displace shared delivery work.
+        "currentRoute": "/engagements",
         "tasks": [],
         "events": [],
         "schedules": [],
         "library": _seed_library(),
-        # Catalog of navigable pages. `keywords` help the navigate tool resolve
-        # free-text destinations deterministically without a separate LLM routing pass.
+        # Static, authorized destinations used by the typed navigation contract.
         "routes": [
+            {"path": "/engagements", "title": "Engagements", "keywords": ["engagements", "engagement", "portfolio", "customers", "delivery"]},
             {"path": "/home", "title": "Home", "keywords": ["home", "today", "overview", "agenda", "start", "dashboard"]},
             {"path": "/todo", "title": "Tasks", "keywords": ["todo", "to do", "to-do", "tasks", "task", "list", "checklist"]},
             {"path": "/calendar", "title": "Calendar", "keywords": ["calendar", "schedule", "events", "event", "meetings", "agenda"]},
@@ -285,7 +333,7 @@ def _doc_to_state(doc: dict) -> dict:
         if state.get(k) is None:
             state[k] = []
     if state.get("currentRoute") is None:
-        state["currentRoute"] = "/home"
+        state["currentRoute"] = "/engagements"
     return state
 
 
@@ -469,7 +517,7 @@ def new_engagement(creator_id: str, name: str, description: str = "",
     if not name:
         raise ValueError("engagement name is required")
     container = _container()
-    pid = f"eng-{secrets.token_hex(4)}"
+    pid = f"eng-{secrets.token_hex(8)}"
     doc = {
         "id": pid, "sessionId": pid,
         "name": name, "description": (description or "").strip(),
@@ -507,17 +555,23 @@ def update_engagement(engagement_id: str, mutator):
 
 
 def list_engagements_for(user_id: str) -> list[dict]:
-    """Every engagement where the user is a member (any role), as full docs."""
+    """Every engagement where the user is a member (any role), as full docs.
+
+    The membership test runs in the query (Cosmos indexes /members/[]/userId by
+    default) so the app tier receives only this user's engagements instead of
+    scanning every engagement doc — this path runs on every app-state load.
+    """
     uid = _valid_user(user_id)
     container = _container()
     rows = container.query_items(
-        query="SELECT * FROM c WHERE STARTSWITH(c.id, 'eng-')",
+        query=(
+            "SELECT * FROM c WHERE STARTSWITH(c.id, 'eng-') "
+            "AND EXISTS(SELECT VALUE m FROM m IN c.members WHERE m.userId = @uid)"
+        ),
+        parameters=[{"name": "@uid", "value": uid}],
         enable_cross_partition_query=True,
     )
-    out = []
-    for doc in rows:
-        if member_role(doc, uid) is not None:
-            out.append(_with_domain_defaults({k: v for k, v in doc.items() if not k.startswith("_")}))
+    out = [_with_domain_defaults({k: v for k, v in doc.items() if not k.startswith("_")}) for doc in rows]
     out.sort(key=lambda d: d.get("name", "").lower())
     return out
 

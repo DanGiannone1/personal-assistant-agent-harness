@@ -10,18 +10,16 @@ interface MessageListProps {
   // Instant, client-side navigation targets — no agent turn, no LLM. The common case.
   quickNav?: { label: string; route: string }[];
   onQuickNav?: (route: string) => void;
-  // Fully-bound navigate chips (picker / "Did you mean") — a plain manual nav on click.
-  onNavigate?: (route: string) => void;
   // Overdue / needs-attention items surfaced on open, one click to the right work area.
   attention?: { label: string; sublabel: string; route: string }[];
 }
 
-// Showcase the assistant's substantive capabilities (nav + overdue are already one-click above).
+// Showcase the assistant's active Engagement capabilities (quick navigation is one-click above).
 const SUGGESTIONS = [
-  { icon: "gauge", label: "What's overdue?", description: "Review tasks past their due date", prompt: "Which tasks are overdue right now?" },
-  { icon: "strategy", label: "Add a task", description: "Create a high-priority task", prompt: "Add a high-priority task 'Draft Q3 plan' due Friday in Work." },
-  { icon: "checklist", label: "Schedule a meeting", description: "Put it on the calendar", prompt: "Schedule a 3pm team sync tomorrow." },
-  { icon: "doc", label: "Draft a doc", description: "Generate and save a draft", prompt: "Draft an engagement kickoff doc and save it as kickoff.md." },
+  { icon: "gauge", label: "Review engagements", description: "See the Engagements available to you", prompt: "List my engagements." },
+  { icon: "strategy", label: "Open an Engagement", description: "Navigate to an Engagement you can access", prompt: "Open an Engagement for me. If you need to know which one, ask me to choose." },
+  { icon: "checklist", label: "Create an Engagement", description: "Start a new Engagement workspace", prompt: "Create a new Engagement. Ask me for any details you need." },
+  { icon: "shield", label: "Update engagement status", description: "Set a status and explain why", prompt: "Update an Engagement's status. Ask me which Engagement, the new status, and the reason." },
 ];
 
 function SuggestionIcon({ icon }: { icon: string }) {
@@ -42,8 +40,7 @@ function SuggestionIcon({ icon }: { icon: string }) {
   }
 }
 
-export default function MessageList({ messages, onSuggestion, quickNav, onQuickNav, onNavigate, attention }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+export default function MessageList({ messages, onSuggestion, quickNav, onQuickNav, attention }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
   const rafRef = useRef<number>(0);
@@ -61,7 +58,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
     if (shouldAutoScroll.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: "smooth" });
         setShowJumpToLatest(false);
       });
     }
@@ -71,7 +68,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 overflow-y-auto"
+      className="flex-1 overflow-x-hidden overflow-y-auto"
       role="log"
       aria-label="Chat messages"
       aria-live="polite"
@@ -80,7 +77,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
         {messages.length === 0 ? (
           <div className="mx-auto flex min-h-[68vh] flex-col justify-center">
             <h2 className="text-3xl font-extrabold tracking-tight text-text-primary md:text-4xl">How can I help?</h2>
-            <p className="mt-4 text-lg text-text-secondary">Ask me to navigate, manage your tasks and calendar, or draft a document.</p>
+            <p className="mt-4 text-lg text-text-secondary">Ask me to review, navigate, create, or update your Engagements.</p>
 
             {onQuickNav && attention && attention.length > 0 && (
               <div className="mt-7 rounded-2xl border border-brand-warning/30 bg-brand-warning/5 p-3">
@@ -154,13 +151,12 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
                 className="animate-fade-in"
                 style={{ animationDelay: `${Math.min(index * 30, 160)}ms` }}
               >
-                <MessageBubble message={msg} onPick={onSuggestion} onNavigate={onNavigate} />
+                <MessageBubble message={msg} />
               </div>
             ))}
           </div>
         )}
 
-        <div ref={bottomRef} />
       </div>
 
       {showJumpToLatest && (
@@ -169,7 +165,7 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
           data-testid="jump-latest-button"
           onClick={() => {
             shouldAutoScroll.current = true;
-            bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+            containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight, behavior: "smooth" });
             setShowJumpToLatest(false);
           }}
           className="interactive-control animate-fade-in fixed bottom-28 left-1/2 z-20 -translate-x-1/2 flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-2/95 px-3 py-2 text-xs text-text-primary shadow-[0_10px_30px_rgba(0,0,0,.12)] backdrop-blur md:bottom-32 md:left-auto md:right-8 md:translate-x-0"

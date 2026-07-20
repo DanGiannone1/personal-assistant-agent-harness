@@ -210,6 +210,8 @@ __marimo__/
 /node_modules/
 test-results/
 playwright-report/
+evidence/mvp/local-synthetic/
+/.mvp-artifacts/
 
 # RFP agent workspace
 workspace/
@@ -257,8 +259,9 @@ logs_dev.out
 # Per-round review screenshots are bulky and redundant with screenshots/poc; keep only findings.md
 review/*/screens/
 
-# Local IDA reference material (not part of the app)
+# Local reference material (not part of the app)
 /ida-reference/
 
 # Engagement artifact bytes (local dev backend)
 /artifacts/
+.claude/settings.local.json

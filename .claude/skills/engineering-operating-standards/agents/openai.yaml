@@ -1,0 +1,4 @@
+interface:
+  display_name: "Engineering Standards"
+  short_description: "Apply safe engineering execution standards"
+  default_prompt: "Use $engineering-operating-standards to execute this repository task safely."

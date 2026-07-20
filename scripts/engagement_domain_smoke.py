@@ -25,7 +25,10 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 
 def main() -> None:
-    appdb.ensure_seeded()
+    password = os.environ.get("DEMO_PASSWORD", "")
+    if not password:
+        raise RuntimeError("DEMO_PASSWORD is required for the demo smoke")
+    appdb.ensure_seeded(password)
 
     # 1. Creation carries the domain layer; status validates loud.
     eng = appdb.new_engagement("dan", "Domain Smoke", "throwaway",

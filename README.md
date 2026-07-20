@@ -1,100 +1,151 @@
-# Personal Assistant — Agent Harness Accelerator (POC)
+# CSA Workbench — Solution Architect Engagement Workspace
 
-A proof-of-concept for embedding an AI assistant **inside** a real web app so it can actually
-operate the app — navigate it, create/read/update/delete real records, retrieve over a document
-library, and draft documents — rather than just chat beside it. Every action mutates the real
-application state the UI renders, so the assistant can only claim work it actually did.
+Run the engagement. Shape the solution. Keep the record.
 
-**The harness is the product. Personal Assistant — a small personal-productivity app — is disposable dressing**
-chosen because it's self-evident to any audience and maps cleanly onto the four capabilities we
-want to prove. (An earlier skin was a tax tracker; the domain was swapped because domain-correctness
-rabbit holes are not the point.)
+The agent-powered engagement workspace for solution architects.
 
-See the [documentation](docs/) for the product spec, architecture, and operations.
+CSA Workbench gives solution architects a personal place to organize their work and a shared place
+to run customer engagements. An embedded assistant can navigate and operate the same records the UI
+renders, so a claim cannot outrun the state that was actually read or changed.
 
-## What it is
+The application is the product; chat is one way to use it. The repository also works as an
+example of solid agent-system design: every action is tied to a verified user, the AI runtime can
+be swapped out, results are structured data rather than prose, durable data lives in the database
+rather than in the running services, and behavior is proven with real tests — without becoming a
+generic agent platform.
 
-- **Personal Assistant** — a mock productivity app: Home (today's agenda), To-Do, Calendar, Documents, Reminders,
-  and an AI Workbench.
-- **The assistant** — an embedded agent that navigates the app and acts on its data through tools.
-- Split-screen UI: chat (a docked co-pilot, or the full-screen Workbench) + the live app. Agent
-  actions visibly change the app.
+## Start here
 
-### The four capabilities
+- [Design](docs/design.md) — what the product is, what it includes and excludes, how the system is
+  built, what has been verified, and what hasn't.
+- [v1 requirements](docs/requirements.md) — what must be true to ship, the user journeys that prove
+  it, and how each is verified.
+- [Development](docs/development.md) — local prerequisites, configuration, and commands.
 
-1. **Navigation** — "take me to my calendar", "open the project brief".
-2. **CRUD** — create/update/delete real tasks and calendar events that persist in app state.
-3. **RAG** — semantic retrieval over a document library, with grounded, cited answers.
-4. **Document ops** — draft and edit markdown documents in an artifact canvas.
+The design separates what is built, what is proven, and what is deliberately postponed. The
+deployed version has been verified as recorded there, and the remaining gaps are listed by name
+instead of being hidden behind a vague disclaimer.
 
-(Plus scheduled emailed reminders and a persistent document Library — see [docs/spec.md](docs/spec.md).)
+## Product shape
 
-## Two interchangeable agent harnesses
+- **Personal CSA space** — see the Engagements that belong to the signed-in user.
+- **Shared Engagement workspace** — create, open, edit, and share role-gated Engagement records.
+- **Embedded assistant** — the same conversation in a dock or full artifact workbench.
+- **Truthful operations** — the same rules apply whether a person or the assistant makes a change,
+  every result is structured data, and the UI re-reads the confirmed state afterward instead of
+  trusting what was said.
+- **Responsive professional UX** — wide, compact, and narrow web layouts with WCAG 2.2 AA intent.
 
-A core goal of this project is to show the **agent runtime is swappable** behind the same streaming
-protocol. The session container runs either harness, selected at launch by `AGENT_BACKEND`:
+## Architecture at a glance
 
-| `AGENT_BACKEND` | Harness | Status |
-|---|---|---|
-| `copilot` (default) | GitHub Copilot SDK (`session-container/agent.py`) | Shipped — full toolset |
-| `deepagents` | LangGraph **Deep Agents** SDK (`session-container/agent_deepagents.py`) | Working POC — 14 core tools |
-
-Both expose an identical `AgentSession` interface and emit the same event stream, so the
-orchestrator, frontend, and app-state store are unchanged between them. Both pass the same **core**
-end-to-end journeys (navigation, CRUD, documents, RAG); the Schedules and Library tools are
-Copilot-only today (see [docs/harnesses.md](docs/harnesses.md) for the parity gap and the
-[A/B findings](review/2026-06-24-deepagents-poc/FINDINGS.md)).
-
-> **Direction (not built):** lift the tools into a shared **Personal Assistant MCP server** (Model Context
-> Protocol) and load the markdown skills from one place, so every harness taps the same reusable
-> substrate. See [docs/harnesses.md](docs/harnesses.md#the-reusable-substrate-direction--not-yet-built).
-
-## Architecture
-
-A Next.js **frontend** (:3000) streams from a FastAPI **orchestrator** (:8000) — a pure SSE proxy
-that never runs the agent SDK — which proxies to an isolated **session container** (:8080) that runs
-the agent against Azure OpenAI, Cosmos DB (app state), Azure AI Search (retrieval), and ADLS +
-Content Understanding (upload conversion). Full detail, including the event flow and a turn
-walkthrough, is in [docs/architecture.md](docs/architecture.md).
-
-- **App state** lives in **Azure Cosmos DB** as a single AAD-only document; the app pane renders only
-  from `GET /sessions/{id}/app/state`, so the verifiable-execution invariant holds.
-- **Documents/files** live in a per-session workspace folder; promoted documents are indexed in the
-  Azure AI Search **Library**.
-
-## Run locally
-
-```bash
-cp .env.example .env                       # fill Azure OpenAI + Cosmos (+ optional Search/ADLS) values
-az login                                   # Cosmos + Azure OpenAI auth (DefaultAzureCredential)
-uv sync                                     # orchestrator deps
-(cd session-container && uv sync)           # agent deps
-(cd frontend && npm install)                # frontend deps
-uv run dev.py                               # frontend :3000, orchestrator :8000, session container :8080
-
-AGENT_BACKEND=deepagents uv run dev.py      # …or run the Deep Agents harness
+```text
+Next.js web app
+    │ HTTPS + AG-UI/SSE
+    ▼
+FastAPI orchestrator
+    │ authentication, application APIs, session/turn coordination
+    │ Entra workload identity
+    ▼
+Internal agent session runtime
+    │ Deep Agents deployed / Copilot local portability check
+    ▼
+Shared Engagement core ── Cosmos (actors and Engagements)
+                       └── Blob (durable Engagement artifacts)
 ```
 
-Open <http://localhost:3000>. Full setup, configuration, and testing: [docs/development.md](docs/development.md).
+The frontend, orchestrator, and runtime are separate deployment boundaries. The six basic
+Engagement operations—create, list, get, update, set status, and share/change membership—use one
+application core behind REST and agent-tool adapters. Member removal, tasks, conventions, and
+artifacts remain manual application paths. Agent sessions, chat history, uploads, and local traces
+do not survive a restart in the MVP; Engagement records and artifacts do, because they live in
+Cosmos and Blob rather than in the running services.
 
-## Documentation
+## Run the current implementation locally
 
-| Doc | What it covers |
+Prerequisites: Python 3.12+, [`uv`](https://docs.astral.sh/uv/), Node.js/npm, an Azure OpenAI model
+deployment, and Cosmos DB (the local design uses the Cosmos emulator; an AAD-accessible development
+account also works where network policy permits).
+
+```bash
+cp .env.example .env
+# Set AZURE_ENDPOINT, AZURE_DEPLOYMENT, COSMOS_ENDPOINT,
+# COSMOS_DATABASE, and COSMOS_CONTAINER. Set COSMOS_KEY only for the emulator.
+# Keep IDENTITY_MODE=demo for local development and set DEMO_PASSWORD to a
+# local/test secret. Do not put that password in source control.
+
+az login
+uv sync
+(cd session-container && uv sync)
+(cd frontend && npm ci)
+uv run dev.py
+```
+
+Open <http://localhost:3000>. The development launcher starts:
+
+- frontend at `:3000`;
+- orchestrator at `:8000`; and
+- session runtime at `:8080`.
+
+Deep Agents is the current default. To exercise the secondary harness:
+
+```bash
+AGENT_BACKEND=copilot uv run dev.py
+```
+
+Local storage and optional-service boundaries are described in
+[development.md](docs/development.md). Search and document conversion remain off in the MVP profile
+and are not required for Engagement work or direct artifact access.
+
+## Documentation map
+
+### Core documents
+
+| Document | Covers |
 |---|---|
-| [docs/use-cases.md](docs/use-cases.md) | The core use cases with concrete, runnable examples — start here |
-| [docs/spec.md](docs/spec.md) | Product spec — capabilities, surfaces, data model, tools, skills, theme |
-| [docs/architecture.md](docs/architecture.md) | System design — tiers, the AG-UI/SSE flow, a turn walkthrough, state, security, limitations |
-| [docs/harnesses.md](docs/harnesses.md) | The two agent harnesses, the `AgentSession` seam, parity gap, reusable-substrate direction |
-| [docs/retrieval.md](docs/retrieval.md) | RAG (Library + Azure AI Search) and the upload/conversion pipeline |
-| [docs/development.md](docs/development.md) | Local setup, configuration, running, switching harnesses, testing |
-| [docs/deployment.md](docs/deployment.md) | Azure Container Apps deployment, RBAC, and the deploy-time gotchas |
+| [Design](docs/design.md) | High-level product and system architecture; what each capability may decide |
+| [Requirements](docs/requirements.md) | What must be true to ship v1, and how it's accepted |
 
-## Key files
+### Capability designs
 
-The **orchestrator is the repo root** (there is no `orchestrator/` directory).
-
-| Tier | Files |
+| Capability | Covers |
 |---|---|
-| Orchestrator (repo root) | `app.py`, `session_manager.py`, `content_processing.py`, `scheduler.py`, `email_acs.py`, `api_auth.py` |
-| Session container | `session-container/server.py`, `agent.py` (Copilot), `agent_deepagents.py` (Deep Agents), `appdb.py`, `library.py`, `skills/` |
-| Frontend | `frontend/src/hooks/useAgentSession.ts`, `components/workbench/WorkbenchApp.tsx`, `components/AssistantWorkspace.tsx` |
+| [UI/UX](docs/capabilities/ui-ux.md) | Information architecture, interaction, responsive behavior, accessibility |
+| [Context](docs/capabilities/context.md) | Prompt hints, live grounding, trust boundaries, precedence, and inspector |
+| [Navigation](docs/capabilities/navigation.md) | Typed navigation tools, destination validation, and route effects |
+| [CRUD](docs/capabilities/crud.md) | Engagement commands, roles, validation, outcomes, and current persistence semantics |
+| [Documents and retrieval](docs/capabilities/documents-retrieval.md) | Durable Engagement artifacts, ephemeral session files, and optional retrieval boundaries |
+| [Session and state](docs/capabilities/session-state.md) | Ephemeral conversations, durable product state, and compute boundaries |
+| [Agent harness](docs/capabilities/agent-harness.md) | Harness seam, typed tools/events, workload binding, cancellation, and ephemeral traces |
+| [Identity and access](docs/capabilities/identity-access.md) | Actors, sign-in, authorization policy and roles, privacy, and service identity |
+| [Infrastructure](docs/capabilities/infrastructure.md) | Verified local/Azure topology, private data paths, deployment, and cost boundary |
+| [Testing and evals](docs/capabilities/testing-evals.md) | Behavioral evidence, test layers, eval datasets, and release profiles |
+
+### Runbooks
+
+| Document | Purpose |
+|---|---|
+| [Development](docs/development.md) | Operate and verify the current repository locally |
+| [Deployment](docs/deployment.md) | Safety-checked dry run, the apply workflow, and post-deployment checks |
+
+This README is the starting point for the repository and its docs. Capability documents fill in
+detail under the high-level design and can't contradict it. Runbooks explain how to do things; they
+don't change what the product or architecture is.
+
+## Repository layout
+
+The orchestrator is at the repository root; there is no separate `orchestrator/` directory.
+
+| Area | Important paths |
+|---|---|
+| Orchestrator and application API | `app.py`, `session_manager.py`, `api_auth.py`, `artifact_store.py` |
+| Session runtime and harnesses | `session-container/server.py`, `agent_deepagents.py`, `agent.py`, `appdb.py` |
+| Frontend | `frontend/src/components/`, `frontend/src/hooks/useAgentSession.ts`, `frontend/src/lib/` |
+| Infrastructure | `infra/`, `.github/workflows/` |
+| Tests and check scripts | `scripts/`, `tests/` where present |
+
+## Relationship to external agent platforms
+
+CSA Workbench does not depend on any customer's agent platform, and none is needed to build, run,
+or understand the application. Teams building their own agents may reuse this repository's context,
+tool, state, outcome, trace, and harness patterns through a future authenticated adapter — one that
+gets no bypass around the product's identity or authorization rules.

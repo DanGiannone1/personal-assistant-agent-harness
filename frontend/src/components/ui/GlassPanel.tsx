@@ -10,7 +10,7 @@ interface GlassPanelProps extends HTMLMotionProps<"div"> {
 }
 
 /**
- * The foundational structural atom of the Personal Assistant design system.
+ * The foundational structural atom of the CSA Workbench design system.
  * Handles surface backgrounds, backdrop blurs, and subtle borders.
  */
 export default function GlassPanel({

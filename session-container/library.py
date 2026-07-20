@@ -27,8 +27,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAME = "flow-documents-index"
-SEMANTIC_CONFIG = "flow-semantic"
+INDEX_NAME = "csa-workbench-documents-index"
+SEMANTIC_CONFIG = "csa-workbench-semantic"
 API_VERSION = "2024-07-01"
 MAX_CONTENT_BYTES = 2_000_000   # cap a promotable doc (matches the viewer's 2MB read cap)
 MAX_CHUNKS = 800                # keep a doc under the single-query top:1000 ceiling
