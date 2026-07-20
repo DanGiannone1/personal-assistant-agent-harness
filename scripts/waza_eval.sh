@@ -51,7 +51,7 @@ install_waza() {
   checksum="${platform##* }"
   if [[ -x "${WAZA_BIN}" ]]; then
     actual="$(sha256_file "${WAZA_BIN}")"
-    if [[ "${actual}" == "${checksum}" ]] && "${WAZA_BIN}" --version | rg -q "${WAZA_VERSION}"; then
+    if [[ "${actual}" == "${checksum}" ]] && "${WAZA_BIN}" --version | grep -q "${WAZA_VERSION}"; then
       return
     fi
     echo "Pinned Waza binary failed its version/checksum check: ${WAZA_BIN}" >&2
