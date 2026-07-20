@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
 from azure.identity.aio import DefaultAzureCredential
-from upload_policy import normalize_markdown_filename
+from workbench_core.upload_policy import normalize_markdown_filename
 
 logger = logging.getLogger(__name__)
 

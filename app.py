@@ -39,7 +39,7 @@ from api_auth import APIAuthenticator, AuthConfig
 from auth_users import current_user
 from identity_config import IdentityConfig
 from session_manager import SessionManager
-from trace_logging import setup_trace_logging, trace_event
+from workbench_core.trace_logging import setup_trace_logging, trace_event
 
 logger = logging.getLogger(__name__)
 

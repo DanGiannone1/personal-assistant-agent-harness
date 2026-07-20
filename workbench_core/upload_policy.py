@@ -1,4 +1,4 @@
-"""Shared upload validation and filename normalization rules."""
+"""Upload validation and filename normalization shared by both services."""
 
 from __future__ import annotations
 

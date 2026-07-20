@@ -42,9 +42,9 @@ elif _AGENT_BACKEND == "copilot":
     from agent import AgentSession, _sse_event
 else:
     raise RuntimeError("AGENT_BACKEND must be 'deepagents' or 'copilot'")
-from trace_logging import setup_trace_logging, trace_event
 from tracing import setup_tracing
-from upload_policy import ALLOWED_UPLOAD_EXTENSIONS
+from workbench_core.trace_logging import setup_trace_logging, trace_event
+from workbench_core.upload_policy import ALLOWED_UPLOAD_EXTENSIONS
 from workload_auth import WorkloadAuthenticator
 
 logging.basicConfig(level=logging.INFO)

@@ -20,8 +20,8 @@ from fastapi import HTTPException
 from azure.identity.aio import DefaultAzureCredential
 from fastapi import UploadFile
 
-from trace_logging import trace_event
-from upload_policy import is_allowed_upload, normalize_markdown_filename
+from workbench_core.trace_logging import trace_event
+from workbench_core.upload_policy import is_allowed_upload, normalize_markdown_filename
 
 logger = logging.getLogger(__name__)
 

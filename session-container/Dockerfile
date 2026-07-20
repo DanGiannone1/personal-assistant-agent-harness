@@ -14,7 +14,7 @@ COPY session-container/pyproject.toml session-container/uv.lock ./
 RUN uv sync --frozen --no-dev --extra tracing --no-install-project
 
 # Copy application code
-COPY session-container/agent.py session-container/agent_deepagents.py session-container/appdb.py session-container/library.py session-container/mvp_tool_schemas.py session-container/navsvc.py session-container/server.py session-container/skill_runtime.py session-container/tracing.py session-container/trace_logging.py session-container/upload_policy.py session-container/workload_auth.py ./
+COPY session-container/agent.py session-container/agent_deepagents.py session-container/appdb.py session-container/library.py session-container/mvp_tool_schemas.py session-container/navsvc.py session-container/server.py session-container/skill_runtime.py session-container/tracing.py session-container/workload_auth.py ./
 COPY session-container/skills/ ./skills/
 COPY session-container/product-skills/ ./product-skills/
 COPY session-container/seed_docs/ ./seed_docs/
