@@ -55,7 +55,7 @@ def test_reset_guard_allows_only_the_dedicated_artifact_subtree() -> None:
         ("CONFIRM_DEMO_RESET", "no", "CONFIRM_DEMO_RESET=YES"),
         ("COSMOS_ENDPOINT", "https://example.documents.azure.com:443", "non-loopback"),
         ("COSMOS_ENDPOINT", "https://127.attacker.example:8081", "non-loopback"),
-        ("COSMOS_DATABASE", "flow", "local/demo"),
+        ("COSMOS_DATABASE", "production-db", "local/demo"),
         ("ARTIFACTS_ACCOUNT", "realblob", "ARTIFACTS_ACCOUNT"),
         ("ARTIFACTS_DIR", "/tmp/other-artifacts", "dedicated .mvp-artifacts subtree"),
         ("WORKSPACE", "/tmp/someone-elses-workspace", "repository-local WORKSPACE"),

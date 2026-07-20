@@ -1,5 +1,5 @@
 [project]
-name = "flow-session"
+name = "csa-workbench-session"
 version = "0.1.0"
 description = "Session container for the CSA Workbench agent — one instance per user"
 requires-python = ">=3.12"

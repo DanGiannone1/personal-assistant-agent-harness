@@ -3,7 +3,7 @@
 
 This intentionally uses only the Azure CLI's Microsoft Graph access (`az rest`)
 instead of a Graph SDK or a client secret.  It never searches for or changes the
-legacy Flow/RFP registrations: duplicate dedicated display names are a hard
+legacy pre-rename registrations: duplicate dedicated display names are a hard
 failure, and an existing dedicated registration must match this contract.
 """
 from __future__ import annotations

@@ -56,7 +56,7 @@ def _container():
                 "COSMOS_ENDPOINT is not set — Cosmos is required for app state; "
                 "refusing to silently fall back to a local file."
             )
-        database = os.getenv("COSMOS_DATABASE", "flow")
+        database = os.getenv("COSMOS_DATABASE", "csa-workbench")
         container = os.getenv("COSMOS_CONTAINER", "appstate")
         key = os.getenv("COSMOS_KEY")
         if key:
