@@ -76,12 +76,15 @@ the repository — models change on the provider's side without a commit. A
 score difference is attributable only when you know exactly which element
 changed; a difference with an unknown cause is noise, not signal.
 
+That is the machinery. The next two sections are the substance: what to
+measure, and how each measurement is graded.
+
 ## 3. What to measure
 
 This is the complete map. Not every row applies to every agent — planning
 rows only apply if the harness plans explicitly, skill rows only if it uses
-skills. Where a surface doesn't exist, mark the row not-applicable rather
-than pretending coverage.
+skills. Where the agent doesn't have the feature, mark the row
+not-applicable rather than pretending coverage.
 
 **A. Understanding**
 
@@ -169,15 +172,8 @@ decision.
     delta is the skill's entire justification: if with-skill doesn't beat
     without-skill, the skill is deleting itself.
 
-**One more subject: the tools themselves.** Eval transcripts double as tool
-evaluations. Repeated redundant calls point at pagination or verbosity
-defects; repeated invalid-argument errors point at unclear descriptions or
-parameter names; agents ignoring a tool's output point at responses that
-bury the signal. Two tool-design rules fall straight out of eval data: error
-and empty responses should tell the agent what to try next rather than
-returning an opaque code, and token-heavy tools should offer a concise and a
-detailed response mode. Some of the largest observed eval gains have come
-from rewriting tool descriptions, not changing the agent.
+Every row above names who grades it — code or a judge. That division of
+labor has rules, and they are the next section.
 
 ## 4. Grading: code and judges
 
@@ -217,9 +213,14 @@ it is diagnostic in both directions — code-fail with judge-pass usually
 means the task spec was too narrow; code-pass with judge-fail usually means
 the agent did the right thing and communicated it badly.
 
-Two final rules: score partial credit (an agent that got three of four steps
-right is better than one that failed immediately, and the scores should show
-it), except for safety, which is binary and where one failure fails the run.
+Three final rules. Score partial credit: an agent that got three of four
+steps right is better than one that failed immediately, and the scores
+should show it. Safety is the exception: binary, and one failure fails the
+run. And decide how not-applicable results aggregate before trusting any
+average — a task with no tool calls must not silently drag down a
+tool-accuracy mean.
+
+Graders are half the system. The tasks they grade are the other half.
 
 ## 5. Building the test suite
 
@@ -259,6 +260,9 @@ have large effects and small suites detect them; grow the suite as the agent
 matures and the effects you need to detect get smaller. And keep a held-out
 set that is never used while tuning prompts or tool descriptions — a suite
 you optimized against can no longer measure you.
+
+That is everything the system contains. What follows is the shape it takes
+when built.
 
 ## 6. Reference architecture
 
@@ -324,6 +328,15 @@ The design rules embedded in that picture:
   surprising. A failing task whose recording shows reasonable behavior is a
   defective task. Failures should look fair to a human reader, and a score
   nobody has looked behind is not evidence.
+- **Transcripts also grade your tools.** Repeated redundant calls point at
+  pagination or verbosity defects; repeated invalid-argument errors point at
+  unclear descriptions or parameter names; an agent ignoring a tool's output
+  points at responses that bury the signal. Two tool-design rules fall
+  straight out of eval data: error and empty responses should tell the agent
+  what to try next rather than returning an opaque code, and token-heavy
+  tools should offer a concise and a detailed response mode. Some of the
+  largest observed eval gains have come from rewriting tool descriptions,
+  not changing the agent.
 - **Ownership:** engineers own the runner, graders, and storage; the people
   closest to users — product owners, domain experts — author and review the
   tasks, which is why task files stay in plain language.
