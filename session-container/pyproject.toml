@@ -5,6 +5,9 @@ description = "Session container for the CSA Workbench agent — one instance pe
 requires-python = ">=3.12"
 dependencies = [
     "ag-ui-protocol>=0.1.13",
+    # aiohttp is not imported directly: it is the transport azure-core loads at
+    # runtime for the azure.identity.aio credential in both agent adapters.
+    "aiohttp>=3.11.0",
     "azure-cosmos>=4.16.1",
     "azure-identity>=1.25.2",
     "deepagents>=0.6.11",

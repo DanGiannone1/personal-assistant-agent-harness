@@ -5,6 +5,9 @@ description = "CSA Workbench — engagement workspace with Azure OpenAI and isol
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # aiohttp is not imported directly: it is the transport azure-core loads at
+    # runtime for the azure.identity.aio / azure.storage aio clients used here.
+    "aiohttp>=3.11.0",
     "azure-ai-contentunderstanding>=1.0.0",
     "azure-communication-email>=1.0.0",
     "azure-cosmos>=4.16.1",
