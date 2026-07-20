@@ -1,254 +1,361 @@
-# Evaluating AI Agents — A Reference
+# Evaluating AI Agents — A Technical Walkthrough
 
-This document explains how to evaluate an AI agent: an assistant that uses
-tools to read and change real data on a user's behalf. It is a general guide.
-It does not describe any specific product, and it contains no status or
-roadmap. How one team applies it is always a separate, smaller document.
+A one-hour session for engineers who build or operate tool-using agents. It
+covers the concepts and the reference architecture, not any specific product
+or vendor SDK. It assumes you know what an agent harness is; it does not
+assume you have run evaluations before.
 
-Four words used throughout:
+**Agenda**
 
-- A **task** is one test: a request plus a definition of success.
-- A **trial** is one attempt at a task.
-- A **grader** is whatever scores an attempt.
-- A **transcript** is the complete recording of one attempt: the tools the
-  agent used, the data before and after, what it said, and how long it took.
+| # | Section | ~Minutes |
+|---|---|---|
+| 1 | Why agents break normal testing | 5 |
+| 2 | The evaluation loop | 5 |
+| 3 | What to measure | 12 |
+| 4 | Grading: code and judges | 10 |
+| 5 | Building the test suite | 8 |
+| 6 | Reference architecture | 7 |
+| 7 | Running it day to day | 5 |
+| — | Going deeper, sources | Q&A |
 
-One more, because it matters more than people expect: the **harness** is the
-code that connects the AI model to the tools and the application. Test
-results belong to the model *and* the harness together — swapping the harness
-around the same model measurably changes results, which is why public
-leaderboards now score them as a pair. Always record both, and if you have
-more than one harness, run the same tasks against each and compare.
+---
 
-## What to evaluate
+## 1. Why agents break normal testing
 
-Six things, continuously:
-
-1. **Capability** — can the agent do the jobs users ask of it?
-2. **Truthfulness** — does what it *says* match what actually *happened*? It
-   must never claim an action it didn't complete, deny or omit one it did, or
-   state facts its tools never returned.
-3. **Safety** — does it refuse everything it must refuse, without leaking
-   anything in the process?
-4. **Consistency** — does it behave the same way when asked the same thing
-   again?
-5. **Performance** — is it fast enough and cheap enough?
-6. **Change impact** — did the latest change make things better or worse, and
-   by how much? Improvements need proof just as much as regressions do.
-
-Every run scores all six and leaves a permanent scorecard, so any change — a
-new prompt, a new model, new tools — can be compared against the last known
-good state, number by number.
-
-## Why agents can't be tested like normal software
-
-Each way agents differ from ordinary software forces one piece of the
-method. The method isn't a style choice — it's what's left once you take
-these five facts seriously:
+Conventional testing assumes the same input produces the same output, and
+that the output can be checked mechanically. Agents violate every part of
+that assumption. Five properties matter, and each one forces a piece of the
+evaluation method:
 
 | What's different about agents | What it forces |
 |---|---|
-| The same request produces different behavior each run | Run important tasks several times; measure consistency, never assume it |
-| There are many valid ways to do a job correctly | Define success by the outcome — how the data ends up and what lines weren't crossed — never by one required sequence of steps |
-| The output is part action, part language | Code grades the facts; an AI judge grades the words; neither grades the other's territory |
-| It can be confidently wrong | Always check the reply against the recorded facts, so a fluent claim of success can't pass on confidence alone |
-| It acts on real systems | Test in a controlled environment with known data, reset before every attempt — never against real users' data |
+| The same request produces different behavior each run | Run important tests several times; measure consistency, never assume it |
+| There are many valid ways to do a job correctly | Define success by the outcome — the end state of the data, the boundaries respected — never by one required sequence of steps |
+| The output is part action, part language | Facts are graded by code; language is graded by an LLM judge; neither grades the other's territory |
+| The agent can be confidently wrong | Every reply is checked against what actually happened, so a fluent claim of success cannot pass on confidence alone |
+| It acts on real systems | Evaluation runs in a controlled environment with known, resettable data — never against production |
 
-Those five facts produce a four-part loop:
+The rest of this session is what remains once these five facts are taken
+seriously. None of the method is a style preference.
+
+## 2. The evaluation loop
+
+Four terms, used throughout: a **task** is one test — a request plus success
+criteria. A **trial** is one attempt at a task. A **grader** is whatever
+scores a trial. A **transcript** is the complete recording of a trial: every
+tool call with its arguments and results, the state of the data before and
+after, the reply, and all timings.
+
+The loop has four steps:
 
 1. **Define success before running.** Every task states in advance what must
-   be true afterward: how the data should look, what the agent must never do,
-   and what a good reply must say. Success defined after the fact is opinion.
-2. **Run and record.** The agent attempts the task while everything is
-   captured: every tool call and its inputs, every data change, the full
-   reply, all timings. This recording is the one thing every grader reads —
-   and because grading works from a recording, it can be redone, improved,
-   and applied to old runs at any time.
-3. **Grade the recording, three ways.**
-   - **Code checks the facts.** Did the data end up right? Did anything
-     change that shouldn't have? Did a forbidden action run? No AI involved.
-   - **An AI judge checks the words.** Is the reply accurate, based on what
-     the tools actually returned, and safe to say? Some failures exist only
-     in wording — a refusal phrased as "you don't have access to X" confirms
-     that X exists, which can itself be a leak. No code check can catch
-     that. This class of failure is why a judge is part of the method at all.
-   - **Measurements are taken, not judged:** total time, time until the
-     reply starts, tokens, cost, and how many tool calls it took.
+   be true afterward: the expected end state of the data, the actions the
+   agent must never take, and the questions a judge will answer about the
+   reply. Success defined after looking at the output is opinion.
+2. **Run and record.** The agent attempts the task in a controlled
+   environment while everything is captured. The transcript is the single
+   source every grader reads. Because grading works from recordings, graders
+   can be improved later and re-applied to historical runs without
+   re-executing anything.
+3. **Grade the recording** — three ways, covered in section 4: code checks
+   for facts, an LLM judge for language, and measurements that are taken
+   rather than judged.
 4. **Score, keep, compare.** Each run produces a small permanent scorecard.
    Nothing is declared better or worse by impression — only by comparing
    scorecards, in both directions: regressions must be caught, and claimed
-   improvements must show up.
+   improvements must actually show up.
 
-## What you need before you can start
+One rule makes the comparisons meaningful: **the unit under test is the
+whole configuration, not the model.** Swapping the harness around an
+unchanged model measurably shifts results — public leaderboards now score
+harness-and-model pairs for exactly this reason. Every scorecard therefore
+records a configuration fingerprint: model and version, sampling parameters,
+system prompt, tool schemas, harness revision, fixture version, and the
+judge model and rubric version. Capture it from the running system, not from
+the repository — models change on the provider's side without a commit. A
+score difference is attributable only when you know exactly which element
+changed; a difference with an unknown cause is noise, not signal.
 
-Six things. If one is missing, the results can't be trusted or compared.
+## 3. What to measure
 
-| # | You need | Why |
-|---|---|---|
-| 1 | Test questions | You can only measure what you test. Write questions users would really ask. Don't write them from the tool list — that only tests what you already built. |
-| 2 | The right answer for each question | How should the data look after? What must the agent never do? What should a good reply say? If this isn't written down, grading is opinion. Writing questions is fast; writing right answers is the real work. |
-| 3 | The same starting data every time | If every run starts from different data, "the right answer" means nothing. |
-| 4 | A script that asks the questions and records everything | The recording is what gets graded. Anything not recorded can never be graded. |
-| 5 | Graders | Code for the facts, an AI judge for the words. Each catches problems the other can't see. |
-| 6 | A place to keep the scores | One run tells you nothing. Comparing this week's run to last week's is the entire point. |
+This is the complete map. Not every row applies to every agent — planning
+rows only apply if the harness plans explicitly, skill rows only if it uses
+skills. Where a surface doesn't exist, mark the row not-applicable rather
+than pretending coverage.
 
-## How one run works
+**A. Understanding**
 
-1. Pick which tests to run (see "Three kinds of test suites" below).
-2. For each task: reset the data, snapshot it, send the question exactly as a
-   user would, record everything, snapshot again.
-3. Code grading runs immediately: data outcomes, forbidden actions, nothing
-   else changed, plus the measurements.
-4. Judge grading runs on the recordings: each task's judge questions get a
-   verdict and a one-sentence reason.
-5. Write the scorecard: pass rates, safety result, speed, cost — plus which
-   harness, model, and code version produced it.
-6. Compare against the previous accepted scorecard, both directions.
-7. **Read some recordings.** Never take scores at face value. When a task
-   fails, the recording shows whether the agent truly failed or a grader
-   rejected a valid answer. Failures should look fair when a person reads
-   them. If they don't, fix the test, not the score.
+1. **Intent resolution** — did it correctly identify what the user actually
+   wants, including underspecified asks. Judged.
 
-## The grading rules
+**B. Planning** *(only for harnesses that plan explicitly)*
 
-1. **Grade what the agent produced, not the path it took.** The data outcome
-   and the forbidden-action list are hard pass/fail. The exact tool sequence
-   is recorded and reported, but never pass/fail — agents regularly find
-   valid approaches the test author didn't anticipate, and rigid
-   step-checking fails correct behavior.
-2. **The judge only grades words.** It can never overrule a code check — the
-   database beats any opinion about wording. But the two graders can
-   disagree, in both directions, and both disagreements are useful: code
-   fails but the judge passes usually means the test was too narrow; code
-   passes but the judge fails means the agent did the right thing and
-   communicated it badly. Review disagreements — don't average them away.
-3. **Code never grades wording.** No keyword matching on what the agent
-   said, ever. Words belong to the judge.
-4. **Keep partial credit.** Report the fraction of checks each task passed,
-   not just pass/fail — an agent that got three of four steps right is
-   better than one that failed immediately, and the scores should show it.
-   The exception is safety: safety tasks are all-or-nothing, always.
+2. **Plan quality** — was the proposed route complete, realistic, efficient,
+   before execution. Judged.
+3. **Plan adherence** — did it stick to the plan and constraints once tool
+   outputs arrived, or drift out of scope. Judged.
 
-## Writing good test questions
+**C. Tool use, per step**
 
-- **The two-expert test.** A question is well written when two people who
-  know the product would independently agree on pass or fail — and could
-  pass it themselves. Vague questions become noisy numbers.
-- **Every task needs one proven-good answer on file** — a recording that
-  passes every grader. It proves the task is solvable and the graders work.
-  If nothing can pass a task after many tries, the task is almost certainly
-  broken, not the agent.
-- **Write questions the way people actually talk.** "Use the navigation tool
-  to open my portfolio" tests plumbing, not behavior.
-- **Test both directions.** For every behavior, include questions where it
-  should happen and questions where it shouldn't (change vs. refuse; act vs.
-  ask first). One-sided tests train one-sided agents.
-- **Accept every legitimate behavior — consistently.** If refusing outright
-  and asking a clarifying question are both correct, say so in the task. And
-  if one task accepts a harmless extra step (like reading before refusing),
-  every similar task must accept it too, or a style change in the model
-  turns into false failures.
-- **Questions come from the job, not the tool list.** Write them from what
-  users actually need — including things the agent can't do yet. A test that
-  fails because a capability is missing is information about the product.
-  Keep it and report it; don't delete it to make the numbers look good.
+4. **Tool selection** — right tool called. Deterministic: compare against the
+   expected set.
+5. **Argument correctness** — right inputs into that tool. Deterministic
+   where arguments have one right answer; judged where they don't.
+6. **Tool output utilization** — did it actually use what the tool returned,
+   or ignore it. Judged.
+7. **Tool call success** — did calls execute without errors, and did it
+   recover from failures. Deterministic.
 
-## Three kinds of test suites
+**D. Trajectory — the path as a whole**
 
-- **Capability** — "what can it do well?" *Supposed to start with a low pass
-  rate.* It aims at what the agent struggles with, including features you
-  plan to build — write the tests before the feature, and when a new model
-  or prompt lands, the suite instantly shows which bets paid off.
-- **Regression** — "does it still handle everything it used to?" Should sit
-  near 100%; any drop means something broke. Capability tasks that become
-  reliably passable move into regression.
-- **Safety** — refusals, leak prevention, resistance to instructions hidden
-  in messages. Zero tolerance, runs every time, never moves out.
+8. **Efficiency and wandering** — was the route sane. This one is judged, and
+   deliberately so: deterministic proxies (redundant-call percentages, step
+   thresholds) break down as soon as trajectories branch. Give the judge the
+   goal, the full tool sequence, and the tool catalog, and ask whether the
+   route was efficient. That catches loops, retry spirals, and irrelevant
+   detours. The split that makes this workable: *sequence membership is
+   code* ("were these the right tools"), *route sanity is judge* ("was this
+   a reasonable way through them"), and you hard-code ordering only when
+   order is semantic — verify identity before issuing the refund.
+9. **Reasoning relevancy** — intermediate decisions tie back to the request.
+   Judged, where the harness exposes reasoning.
+10. **Reasoning coherence** — the chain of thinking follows step to step.
+    Judged, same caveat.
 
-When a capability suite passes everything, it has stopped teaching you
-anything — add harder tasks.
+**E. Outcome**
 
-## The AI judge
+11. **Task completion** — was the goal actually achieved. Deterministic
+    end-state check wherever ground truth exists — read the data and compare;
+    this is the strongest oracle in the whole system because it cannot be
+    talked into anything. Judged only for genuinely open-ended tasks.
+12. **Task adherence** — did the behavior respect system instructions and
+    policy, independent of whether the user is satisfied. The canonical
+    example: approving a refund the policy forbids satisfies the user and
+    fails adherence.
 
-- One question per topic — accuracy, leakage, tone are asked separately, not
-  scored as one blob.
-- Every verdict comes with a one-sentence reason, written *before* the
-  verdict.
-- "Unknown" is always an allowed answer. If the recording doesn't contain
-  enough to decide, the judge must say so instead of guessing.
-- The judge model must be different from the model being tested — a broken
-  model must never grade itself.
-- **The judge earns trust before it blocks anything.** Compare its verdicts
-  against human spot-checks on real recordings; keep it advisory until the
-  agreement is good, and keep spot-checking occasionally forever.
-- The judge questions live with the task. The thing that asks them — a
-  person today, an automated judge tomorrow — can change; the questions
-  don't.
+**F. The final answer**
 
-## What to measure
+13. **Groundedness** — the reply claims only what tool results support.
+14. **Relevance** — it actually addresses the question.
+15. **Completeness and transparency** — it includes what matters: checked
+    alternatives, surfaced failures. An agent that fails silently and reports
+    success is a worse system than one that fails loudly.
 
-| Measure | Plain meaning | Blocks a release? |
-|---|---|---|
-| Check pass rate | Of all individual checks across all tasks, how many passed | Yes — must not drop against the baseline |
-| Task pass rate | How many tasks fully passed | Yes — regression suite stays near 100% |
-| Safety | Did every safety task pass | Yes — one failure fails the run |
-| Truthfulness | No reply contradicted the recorded facts | Treat like safety once the judge is trusted |
-| Judge pass rate | How many judge questions passed | Advisory until the judge is trusted |
-| At-least-once rate (often written "pass@k") | Try a task k times: the chance at least one try succeeds — "can it do this at all?" | Reported |
-| Every-time rate (often written "pass^k") | The chance all k tries succeed — "can users rely on it?" This is the customer-experience number | Reported |
-| Speed | Seconds per answer — typical and worst case, plus time until the reply starts | Reported; alert on big jumps |
-| Effort | Tool calls per task compared to the proven-good answer — catches flailing | Reported |
-| Cost | Tokens per answer, money per run — always shown next to accuracy | Reported and trended |
+**G. Safety** — refusal correctness, refusal leakage ("you don't have access
+to X" confirms X exists), resistance to instructions embedded in content the
+agent reads, and content safety. Binary, zero tolerance, runs every time.
 
-Every scorecard records which harness, model, code version, test-data
-version, and environment produced it, so comparisons are always
-like-for-like.
+**H. Reliability** — run the same task k times. **pass@k** is the chance at
+least one trial succeeds: can it do this at all. **pass^k** is the chance
+every trial succeeds: can users depend on it. They diverge fast — a task
+with a 75% per-trial rate has a pass^3 near 42% — and pass^k is the number
+that matches what users actually experience.
 
-## Where to keep things
+**I. Tracked, not graded** — tokens, cost, latency, time to first token,
+tool-call counts. Always report cost next to accuracy: accuracy gains are
+frequently purchased with tokens, and that trade should be a visible
+decision.
 
-Three different homes, because the data has three different jobs:
+**J. Skills** *(only for harnesses that load skills)*
 
-| Data | Keep it in | Why |
-|---|---|---|
-| Full recordings | Cheap file storage, one folder per run | Must stay complete and exact forever — this is the only thing graders and judges read |
-| Scorecards | Version control, next to the tests | Small, permanent, and comparable across time |
-| Timing and cost numbers | A telemetry dashboard | Good for trends and alerts |
+16. **Skill selection** — did the right skill load. Deterministic, same
+    shape as tool selection.
+17. **Skill triggering** — does it trigger when it should and stay quiet when
+    it shouldn't. Build should-trigger and should-not-trigger queries; the
+    negatives must be near-misses from adjacent domains, not strawmen. Run
+    each several times for a trigger rate.
+18. **Skill value** — pair every with-skill run against a baseline run
+    without it, and report the delta in pass rate, time, and tokens. The
+    delta is the skill's entire justification: if with-skill doesn't beat
+    without-skill, the skill is deleting itself.
 
-The rule that keeps this honest: dashboards trim, sample, and expire data by
-design — fine for trends, disqualifying for evidence. **Graders and judges
-read only the recordings.** Give recordings and dashboard entries the same
-run ID so a slow blip on a chart can be traced to its exact recording.
+**One more subject: the tools themselves.** Eval transcripts double as tool
+evaluations. Repeated redundant calls point at pagination or verbosity
+defects; repeated invalid-argument errors point at unclear descriptions or
+parameter names; agents ignoring a tool's output point at responses that
+bury the signal. Two tool-design rules fall straight out of eval data: error
+and empty responses should tell the agent what to try next rather than
+returning an opaque code, and token-heavy tools should offer a concise and a
+detailed response mode. Some of the largest observed eval gains have come
+from rewriting tool descriptions, not changing the agent.
 
-Label every result with the environment it came from, and never compare
-results across environments as if they were the same thing. And never, in
-any environment, run evals against real users' data.
+## 4. Grading: code and judges
 
-## When to run
+Two graders, with a strict division of labor.
 
-- **Before any change ships** that could affect behavior — prompt, model,
-  tools, harness: regression and safety suites, compared to the baseline.
-- **Safety: every run**, no exceptions.
-- **Capability and repeat-trials: nightly or on demand** — they're slow and
-  cost money.
-- **When the underlying model changes** — including when a provider updates
-  a model you didn't choose to change. That is precisely the moment the
-  scorecard history pays for itself.
+**Code grades facts.** End-state comparison against the data store,
+forbidden-action checks, error handling, sequence membership. Deterministic,
+cheap, reproducible, immune to persuasion.
 
-Evals are one leg of understanding an agent. Watching production, listening
-to users, and reading recordings are the others. A test suite that drifts
-away from what users actually do creates false confidence — once real usage
-data exists, real failures become the best source of new test questions.
+**An LLM judge grades language and routes.** Groundedness, leakage, refusal
+quality, route sanity — properties that exist only in text or in the shape
+of the whole path. Judge design rules:
+
+- The judge runs in a **separate context** from the agent under test —
+  a different deployment at minimum. The same model family is acceptable;
+  what is never acceptable is the agent's own conversation grading itself.
+- One rubric per dimension. Accuracy, leakage, and tone are separate
+  questions, not one blended score.
+- The judge writes its reasoning before its verdict, and "unknown" is always
+  an allowed answer. A judge forced to decide will guess.
+- Calibrate against human judgments on a sample of real transcripts before
+  judge results block anything, and keep spot-checking after.
+- The judge model and rubric version are part of the configuration
+  fingerprint: changing either shifts scores with zero agent change, and
+  that must never read as an agent regression.
+
+**Why judged metrics advise and code gates.** This is a measured finding,
+not a preference. Run two capable judge models over identical transcripts
+and they will disagree — including flipping pass to fail on the same
+recording. Worse, judges systematically penalize correct refusals: given a
+transcript where the agent rightly declined a policy-violating request, a
+judge grading "did the agent do what the user asked" scores the refusal as
+failure. A judged metric that gated releases would push the agent toward
+violating its own guardrails. So: deterministic outcome checks gate; judged
+metrics inform; and grader disagreement is reviewed, never averaged, because
+it is diagnostic in both directions — code-fail with judge-pass usually
+means the task spec was too narrow; code-pass with judge-fail usually means
+the agent did the right thing and communicated it badly.
+
+Two final rules: score partial credit (an agent that got three of four steps
+right is better than one that failed immediately, and the scores should show
+it), except for safety, which is binary and where one failure fails the run.
+
+## 5. Building the test suite
+
+**Writing good tasks:**
+
+- A task is well specified when two people who know the domain would
+  independently reach the same pass/fail verdict on the same transcript —
+  and could pass the task themselves. Ambiguous tasks become noisy metrics.
+- Every task ships with a reference solution: one recording that provably
+  passes all of its graders. It proves the task is solvable and the graders
+  are wired correctly. With capable models, a near-0% pass rate over many
+  trials almost always means a broken task, not a broken agent.
+- Phrase requests the way users actually talk. A request that names the tool
+  to use tests wiring, not behavior.
+- Cover both directions of every behavior: act and refuse, answer and
+  clarify. One-sided suites optimize one-sided agents.
+- Where multiple behaviors are acceptable — refusing outright versus asking
+  a clarifying question — say so explicitly, and consistently across similar
+  tasks, or a model's style change shows up as a cluster of false failures.
+- Write tasks from the job users need done, including things the agent
+  cannot do yet. A task that fails for a missing capability is product
+  information; keep it and report it.
+
+**Three suites, three jobs:**
+
+- **Capability** — targets current failures; a low pass rate is its purpose.
+  Write tasks for planned features before building them, and a new model or
+  prompt immediately shows which bets paid off.
+- **Regression** — everything known to work; holds near 100%; any decline is
+  a defect. Capability tasks graduate here once reliably passed. A suite
+  passing everything has saturated and teaches nothing — add harder tasks.
+- **Safety** — runs in full every time, never graduates, zero tolerance.
+
+**Practical sizing:** start with 20–50 tasks drawn from real failures and
+the manual checks you already perform before releases. Early on, changes
+have large effects and small suites detect them; grow the suite as the agent
+matures and the effects you need to detect get smaller. And keep a held-out
+set that is never used while tuning prompts or tool descriptions — a suite
+you optimized against can no longer measure you.
+
+## 6. Reference architecture
+
+```
+                 ┌──────────────────────────────┐
+   runner ──────►│  agent under test            │
+   (no AI;       │  (harness + model + tools)   │
+   plays the     └──────────────┬───────────────┘
+   user, resets                 │ acts on
+   fixtures)     ┌──────────────▼───────────────┐
+                 │  environment: seeded, known  │
+                 │  data — reset every trial    │
+                 └──────────────┬───────────────┘
+                                │ everything recorded
+                 ┌──────────────▼───────────────┐
+                 │  transcript store            │  immutable, one bundle per
+                 │  (object storage)            │  run — the ONLY grader input
+                 └──────┬───────────────┬───────┘
+                        │               │
+              ┌─────────▼─────┐  ┌──────▼────────┐
+              │ code graders  │  │ LLM judge(s)  │  separate deployment,
+              └─────────┬─────┘  └──────┬────────┘  own rubrics
+                        └───────┬───────┘
+                 ┌──────────────▼───────────────┐
+                 │  scorecards (version control)│  small, permanent,
+                 └──────────────┬───────────────┘  the comparison baseline
+                                │ joined by run ID
+                 ┌──────────────▼───────────────┐
+                 │  telemetry / APM dashboards  │  trends and alerts only
+                 └──────────────────────────────┘
+```
+
+The design rules embedded in that picture:
+
+- **The runner contains no AI.** It plays the user, resets fixtures between
+  trials, records, and applies the code graders. Trial isolation is not
+  optional: leftover state causes correlated false failures, and it leaks —
+  agents have been observed mining artifacts from previous trials.
+- **Transcripts are immutable and complete**, in cheap object storage, and
+  they are the only thing graders and judges ever read.
+- **Scorecards live in version control** next to the tests: small, diffable,
+  permanent. This is the memory that makes "did the change help?" answerable.
+- **Telemetry dashboards are for trends, never for evidence.** APM systems
+  sample and truncate by design — right for latency charts and alerts,
+  disqualifying for grading. Share run IDs so a blip on a chart can be
+  traced to its exact transcript.
+- **Environments:** local with synthetic fixtures for iteration; a staging
+  clone with the same fixtures for pre-release confirmation; production
+  never — evals do not touch real user data in any environment.
+
+## 7. Running it day to day
+
+- **Before any behavior-affecting change ships** — prompt, model, tools,
+  harness — the regression and safety suites run, and the decision is made
+  on the scorecard diff against the last accepted run.
+- **Repeat-trial runs are scheduled**, not per-commit: reliability numbers
+  are slow and cost real money.
+- **One trigger is unscheduled and non-negotiable:** the model underneath
+  the agent changed — including a provider-side update nobody asked for. This
+  is the scenario the entire scorecard history exists for, because it answers
+  in minutes what would otherwise be discovered from users.
+- **People read transcripts.** Regularly, and always when a score is
+  surprising. A failing task whose recording shows reasonable behavior is a
+  defective task. Failures should look fair to a human reader, and a score
+  nobody has looked behind is not evidence.
+- **Ownership:** engineers own the runner, graders, and storage; the people
+  closest to users — product owners, domain experts — author and review the
+  tasks, which is why task files stay in plain language.
+- **Evals precede features.** Writing the eval first forces the success
+  criteria to be concrete, and it is the cheapest moment to discover they
+  aren't.
+
+## Going deeper (beyond this session)
+
+- **Statistics of small suites** — standard errors on eval scores, paired
+  comparisons between variants, and how many tasks you need before a
+  score difference means anything.
+- **Eval awareness and gaming** — frontier models have been documented
+  detecting that they are inside a benchmark, locating its public dataset,
+  and decrypting answer keys. Grader and task design is an adversarial
+  problem, and safety suites never retire.
+- **Continuous evaluation of production traffic** — sampling live
+  interactions into the same graders, via standardized trace formats
+  (OpenTelemetry GenAI conventions). Requires durable production tracing
+  first.
+- **Simulated users** — for multi-turn agents, a second model plays the
+  user, with its own tools and goals (the τ²-bench pattern).
 
 ## Sources
 
-Checked against current published practice (reviewed 2026-07-19):
-
-- Anthropic, *Demystifying evals for AI agents* (January 2026) — grader
-  types, capability vs. regression suites, question-writing rules, "grade
-  the product, not the path," partial credit, judge calibration, reading
-  recordings, the at-least-once and every-time rates.
-- Princeton, *HAL: Holistic Agent Leaderboard* (2026) — cost shown beside
-  accuracy, harness effects on scores, reliability as the current frontier.
+- Anthropic, *Demystifying evals for AI agents* (2026) — grader taxonomy,
+  suite lifecycle, task-writing rules, partial credit, judge calibration.
+- Anthropic, *Writing tools for agents* (2025) — evaluating and improving
+  tools from eval transcripts.
+- τ-bench / τ²-bench — end-state grading for conversational agents,
+  simulated users, pass^k.
+- Princeton HAL (2026) — cost beside accuracy; harness effects on scores.
 - Terminal-Bench — harness + model pairs as the unit on the leaderboard.
-- τ-bench / τ²-bench — grading conversational agents by the end state of a
-  database; simulated users; the every-time rate.
+- Azure AI Foundry agent evaluators; Microsoft Waza — worked examples of
+  the judged-metric and skill-evaluation catalogs described here.
