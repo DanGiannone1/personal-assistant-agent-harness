@@ -264,3 +264,4 @@ review/*/screens/
 
 # Engagement artifact bytes (local dev backend)
 /artifacts/
+.claude/settings.local.json
