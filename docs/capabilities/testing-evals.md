@@ -35,7 +35,8 @@ not turn wording, static inspection, or a runner's own `pass` field into proof.
 |---|---|---|
 | Unit and contract | Deterministic assertions for domain rules, identity and workload boundaries, tool/event schemas, evidence utilities, and infrastructure inventory logic | No browser, model, data service, Entra redirect, or live Azure proof |
 | Local deterministic users | Guarded `demo` fixtures for Dan, Ava, and Sam; compare personal portfolios, roles, sharing, denial, and exact state effects in a dedicated local Cosmos emulator | Synthetic actors are not tenant identities; local storage and networking are not Azure |
-| Live local model | Deep Agents calls a real configured model; score only typed results, correlated events, and normalized state effects for the versioned seven-case set | Model selection is exercised, but Entra, managed workload identity, and deployed private paths are not |
+| Live local model | Deep Agents calls a real configured model; the versioned suite contains seven atomic cases plus one three-turn workflow, graded by typed results, correlated events, raw model-visible tool outputs, and normalized state | Model selection is exercised, but Entra, managed workload identity, deployed private paths, and general workflow reliability are not |
+| Waza skill laboratory | The same versioned meeting-prep skill runs through Waza/Copilot against hermetic CSA MCP mocks; routing and tool constraints are hard checks, with optional advisory prompt graders | It is not Deep Agents product-runtime, Cosmos, AG-UI, authorization, commit, or navigation evidence |
 | Playwright and responsive captures | A real browser drives the frontend/API at 1440, 1024, and 390 CSS px; DOM behavior, overflow, focus, state, and structured SSE evidence are asserted and six representative screenshots are reviewed | Captures support the asserted host journey; they are not broad visual, accessibility, or `/assistant` proof |
 | Deployed real Entra | The identified immutable revision exercises tenant auth, actor-bound state, API-to-runtime workload identity, private Cosmos/Blob paths, and a typed live turn | Run-specific deployment evidence does not become proof for another revision, tenant actor, or journey |
 
@@ -55,7 +56,8 @@ inventory verifier. The source-controlled checks are:
 PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest \
   pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py \
   tests/test_engagement_core.py tests/test_structured_control.py \
-  tests/test_infra_entra_contract.py tests/test_release_boundaries.py
+  tests/test_infra_entra_contract.py tests/test_release_boundaries.py \
+  tests/test_skill_runtime.py
 npm run test:mvp-evidence
 (cd frontend && npm run test:contract && npm run lint && npm run build)
 ```
@@ -104,6 +106,35 @@ change and nothing false happened — they don't prove the typed invalid/not-fou
 The marker case requires zero tool results, no navigation, and unchanged state. Exact prose, token
 timing, and hidden reasoning are deliberately left ungraded.
 
+### Evals MVP source and Waza observation
+
+Issue [#22](https://github.com/DanGiannone1/csa-workbench/issues/22) adds the minimum demonstrable
+workflow and skill-evaluation architecture without replacing the accepted historical evidence above.
+The source-controlled additions are:
+
+- [`tests/evals/mvp-workflows.json`](../../tests/evals/mvp-workflows.json), which drives meeting prep,
+  an exact Yellow-status mutation, and “Open it” through one actor/session after one reset;
+- complete raw product-tool execution records, including exact arguments, the output visible to the
+  model, and native `ProductToolResult` metadata;
+- native Deep Agents progressive disclosure of the one approved meeting-prep skill, recorded by
+  exact name and SHA-256 only in diagnostic eval evidence;
+- per-atomic-case fixture reset and wrong-target/forbidden-tool checks; and
+- a compact scorecard that keeps Deep Agents product-runtime and Waza/Copilot laboratory provenance
+  separate, requires the pinned Waza runner/schema/engine/four-task gate and matching skill hash,
+  binds an optional human grounding record to the exact run/revision/fixture/skill hash, and never
+  self-accepts a baseline.
+
+The Waza v0.38.3 readiness check validates the skill, eval, and six task schemas. The current ignored
+local routing/tool gate ran four tasks with Claude Sonnet 4.6 through Copilot: direct and paraphrased
+meeting prep invoked the skill, while plain listing and direct status update did not; all four passed.
+That observation consumed model/premium requests and is run-specific, not checked-in evidence. The
+two language-quality Waza tasks remain advisory and were not needed for the hard gate.
+
+The new Deep Agents three-turn workflow has deterministic oracle tests but no clean-worktree live
+model bundle or human grounding approval at this revision. Its baseline is therefore
+**NOT_ACCEPTED / UNVERIFIED**. See the [Evals MVP reference architecture](../evals-reference-architecture.md)
+for the lane diagram, acceptance boundary, and demo sequence.
+
 ### Final deployed release observation
 
 Application revision `ce251fbbe03c6b99bc38e676a8be88e9f199f777` repeated frontend root,
@@ -150,13 +181,18 @@ counts. Refusal is the expected outcome when any guard is missing.
 Both live runners additionally require `MVP_RESET_BEFORE_RUN=1` and refuse source changes reported by
 `git status`; only generated files under `evidence/mvp/local-synthetic/` are exempt. This prevents a
 committed SHA from labeling uncommitted runner or product code. It also means a documentation edit in
-progress correctly prevents a new accepted bundle. The runners then supply the reset acknowledgement,
-verify loopback app/API targets, reset the fixture, and write run-scoped results beneath:
+progress correctly prevents a new accepted bundle. The agent runner resets before every atomic trial,
+then resets once before the multi-turn workflow and reuses exactly one session for its three turns.
+The browser runner keeps its own journey-scoped reset. Both supply the reset acknowledgement, verify
+loopback app/API targets, and write run-scoped results beneath:
 
 ```text
 evidence/mvp/local-synthetic/agent-evals/<run-id>/results.json
+evidence/mvp/local-synthetic/agent-evals/<run-id>/scorecard.json
+evidence/mvp/local-synthetic/agent-evals/<run-id>/scorecard.md
 evidence/mvp/local-synthetic/playwright/<run-id>/results.json
 evidence/mvp/local-synthetic/playwright/<run-id>/*.png
+evidence/mvp/local-synthetic/waza/<waza-run>/*.json
 ```
 
 With the emulator and all three services already running, the live commands are:
@@ -173,6 +209,9 @@ export ARTIFACTS_DIR='.mvp-artifacts'
 CONFIRM_DEMO_RESET=YES uv run python scripts/reset_demo_state.py
 MVP_RESET_BEFORE_RUN=1 npm run eval:mvp
 MVP_RESET_BEFORE_RUN=1 npm run playwright:mvp
+npm run eval:waza:check
+# External Copilot/model calls; on demand only:
+npm run eval:waza:gate
 ```
 
 The password and emulator key stay in the local environment and must not enter source or browser
@@ -187,13 +226,17 @@ services and must never be pointed at Entra or a remote store.
 | R2 and S5 | Final-SHA deployment plus live topology verifier, health, identity, private data paths, exact inventory, scale, and latency record; raw transcript and cost export remain absent |
 | R3–R5 and S1–S2 | Focused role/identity contracts, deterministic multi-user browser state reconciliation, and real-Entra confirmation; the second real tenant actor remains absent |
 | R6 and S4 | Reviewed real-frontend Playwright journey and six captures at wide, compact, and 390 px; narrow standalone `/assistant` remains absent |
-| R7 and S3 | Tool/schema/event contracts, adversarial inert-text cases, live local model results, and the final typed deployed turn; prose never supplies control or commit evidence |
+| R7 and S3 | Tool/schema/event contracts, adversarial inert-text cases, a versioned three-turn workflow, Waza skill-routing/tool constraints, live local model results, and the final typed deployed turn; prose never supplies control or commit evidence |
 | R8 | One record per requirement that names the revision, the kind of evidence, the fixture/configuration, what it checked against, the results, screenshots where applicable, and gaps |
 
 ## Open evidence gaps
 
 - The clean-worktree browser and agent-eval bundles are ignored local evidence rather than portable
   artifacts committed to Git.
+- The new three-turn workflow has no accepted clean-worktree live result or human grounding approval;
+  no new baseline is accepted.
+- Waza's latest ignored local four-task gate observation is not durable checked-in evidence; its
+  language-quality graders remain advisory.
 - No second real tenant actor proves deployed collaboration or isolation.
 - No interactive Entra browser record proves redirect/return, rendered portfolio, collaboration, and
   sign-out.

@@ -81,9 +81,24 @@ The focused deterministic checks do not require a running browser stack:
 PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest \
   pytest -q tests/test_reset_demo_state.py tests/test_identity_modes.py \
   tests/test_engagement_core.py tests/test_structured_control.py \
-  tests/test_infra_entra_contract.py tests/test_release_boundaries.py
+  tests/test_infra_entra_contract.py tests/test_release_boundaries.py \
+  tests/test_skill_runtime.py
 npm run test:mvp-evidence
 (cd frontend && npm run test:contract && npm run lint && npm run build)
+```
+
+The Waza readiness check installs the repository-pinned v0.38.3 binary under the ignored local
+evidence tree, verifies its release checksum, and validates the product skill and eval schemas:
+
+```bash
+npm run eval:waza:check
+```
+
+The on-demand Waza gate makes external Copilot/model calls and may consume premium requests. It is
+not part of the deterministic suite:
+
+```bash
+npm run eval:waza:gate
 ```
 
 Live synthetic model/browser evidence requires the emulator and all three services to be running,
@@ -104,6 +119,9 @@ MVP_RESET_BEFORE_RUN=1 npm run playwright:mvp
 ```
 
 The reset is destructive only to the explicitly guarded local fixture. The runners refuse a dirty
-source worktree and do not start or stop services. Review their state/event results and screenshots;
-a runner's `pass` field or assistant wording is not an oracle by itself. See
-[Testing and evals](capabilities/testing-evals.md) for the complete evidence contract.
+source worktree and do not start or stop services. The agent runner resets before each atomic case,
+then resets once before driving the versioned three-turn workflow through one session. Review its
+state/event/raw-tool results and the meeting-brief transcript; a runner's `pass` field or assistant
+wording is not an oracle by itself. See [Testing and evals](capabilities/testing-evals.md) for the
+complete evidence contract and the [Evals MVP reference architecture](evals-reference-architecture.md)
+for the customer-demo sequence.

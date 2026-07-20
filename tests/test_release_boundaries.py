@@ -236,6 +236,12 @@ def test_runtime_image_packages_the_shared_tool_schemas() -> None:
     assert "session-container/mvp_tool_schemas.py" in dockerfile
 
 
+def test_runtime_image_packages_the_product_skill_runtime() -> None:
+    dockerfile = (ROOT / "session-container" / "Dockerfile").read_text()
+    assert "session-container/skill_runtime.py" in dockerfile
+    assert "session-container/product-skills/" in dockerfile
+
+
 def test_api_image_packages_navsvc_for_manual_quick_links() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert "session-container/navsvc.py" in dockerfile

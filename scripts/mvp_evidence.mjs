@@ -15,6 +15,56 @@ export function terminalEvents(events) {
   return events.filter((event) => event.type === "RUN_FINISHED" || event.type === "RUN_ERROR");
 }
 
+export function assistantResponse(events) {
+  return events.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => event.delta).join("");
+}
+
+export function extractToolCalls(events) {
+  const open = new Map();
+  const completed = [];
+  for (const event of events) {
+    if (event?.type === "TOOL_CALL_START") {
+      open.set(event.tool_call_id, { id: event.tool_call_id, name: event.tool_call_name, argsText: "", result: null });
+    } else if (event?.type === "TOOL_CALL_ARGS") {
+      const call = open.get(event.tool_call_id);
+      if (call) call.argsText += event.delta;
+    } else if (event?.type === "TOOL_CALL_RESULT") {
+      const call = open.get(event.tool_call_id);
+      if (call) call.result = event.result;
+    } else if (event?.type === "TOOL_CALL_END") {
+      const call = open.get(event.tool_call_id);
+      if (!call) continue;
+      let args = null;
+      if (call.argsText) {
+        try { args = JSON.parse(call.argsText); } catch { args = null; }
+      } else {
+        args = {};
+      }
+      completed.push({ ...call, args });
+      open.delete(event.tool_call_id);
+    }
+  }
+  return completed;
+}
+
+function containsExpected(actual, expected) {
+  if (expected === null || typeof expected !== "object") return actual === expected;
+  if (Array.isArray(expected)) return Array.isArray(actual) && expected.length === actual.length
+    && expected.every((value, index) => containsExpected(actual[index], value));
+  return !!actual && typeof actual === "object"
+    && Object.entries(expected).every(([key, value]) => containsExpected(actual[key], value));
+}
+
+function productEvidenceFor(call, rawRecords) {
+  return rawRecords.find((record) => record?.kind === "product_tool_execution"
+    && record.tool_call_id === call.id
+    && record.tool === call.name);
+}
+
+function skillInvocations(rawRecords) {
+  return rawRecords.filter((record) => record?.kind === "skill_invoked" && record.skill?.name);
+}
+
 export function requireLoopbackUrl(value, label) {
   let url;
   try { url = new URL(value); } catch { throw new Error(`${label} must be an absolute http(s) URL`); }
@@ -223,14 +273,16 @@ function safeNonExecutionChecks(safeNonExecution, { before, after, events, resul
   };
 }
 
-export function evaluateCase({ expectation, before, after, events }) {
+export function evaluateCase({ expectation, before, after, events, rawRecords = [] }) {
   const results = events.filter((event) => event.type === "TOOL_CALL_RESULT").map((event) => event.result);
+  const toolCalls = extractToolCalls(events);
   const terminals = terminalEvents(events);
   const matchedResult = results.find((result) =>
     (!expectation.operation || result?.operation === expectation.operation)
     && (!expectation.status || result?.status === expectation.status),
   );
   const target = expectation.engagementAfter;
+  const expectedArgumentTarget = expectation.argumentTargetId ?? expectation.resourceId;
   const targetAfter = !target || (() => {
     const engagement = (after.engagements ?? []).find((entry) => entry.id === target.id);
     return !!engagement
@@ -248,11 +300,37 @@ export function evaluateCase({ expectation, before, after, events }) {
     onlyNamedEngagementMayChange: !expectation.onlyEngagementMayChange || onlyNamedEngagementMayChange(before, after, expectation.onlyEngagementMayChange),
     onlyExpectedEngagementUpdate: !expectation.exactEngagementUpdate || onlyExpectedEngagementUpdate(before, after, expectation.exactEngagementUpdate),
     resourceMatchesTarget: !expectation.resourceId || (matchedResult?.resource?.kind === "engagement" && matchedResult.resource.id === expectation.resourceId),
+    noUnexpectedResourceTargets: !expectation.resourceId || results.every((result) =>
+      result?.resource?.kind !== "engagement" || result.resource.id === expectation.resourceId),
+    noUnexpectedArgumentTargets: !expectedArgumentTarget || toolCalls.every((call) =>
+      call.args?.engagement_id === undefined || call.args.engagement_id === expectedArgumentTarget),
+    requiredToolCalls: !expectation.requiredToolNames
+      || expectation.requiredToolNames.every((name) => toolCalls.some((call) => call.name === name)),
+    forbiddenToolCalls: !expectation.forbiddenToolNames
+      || expectation.forbiddenToolNames.every((name) => !toolCalls.some((call) => call.name === name)),
+    expectedToolCall: !expectation.toolCall || toolCalls.some((call) => call.name === expectation.toolCall.name
+      && call.args !== null && containsExpected(call.args, expectation.toolCall.args ?? {})),
+    completeModelVisibleToolEvidence: !expectation.completeToolEvidence || toolCalls.every((call) => {
+      const evidence = productEvidenceFor(call, rawRecords);
+      return !!evidence
+        && containsExpected(evidence.arguments, call.args ?? {})
+        && typeof evidence.model_visible_output === "string"
+        && evidence.model_visible_output.length > 0
+        && JSON.stringify(evidence.product_result) === JSON.stringify(call.result);
+    }),
+    expectedSkillInvocation: !expectation.skill || skillInvocations(rawRecords).some((record) =>
+      record.skill.name === expectation.skill.name
+      && (!expectation.skill.sha256 || record.skill.sha256 === expectation.skill.sha256)),
+    forbiddenSkillInvocation: !expectation.forbiddenSkillNames
+      || expectation.forbiddenSkillNames.every((name) => !skillInvocations(rawRecords).some((record) => record.skill.name === name)),
+    assistantResponsePresent: !expectation.assistantResponseRequired || assistantResponse(events).trim().length > 0,
     expectedNavigation: !expectation.navigation || (() => {
       const navigationEvents = events.filter((event) => event.type === "NAVIGATION_RESOLVED");
       return navigationEvents.length === 1
         && navigationEvents[0].destination?.id === expectation.navigation.destination.id
         && navigationEvents[0].destination?.path === expectation.navigation.destination.path
+        && (expectation.navigation.destination.engagementId === undefined
+          || navigationEvents[0].destination?.engagementId === expectation.navigation.destination.engagementId)
         && (expectation.navigation.requestedAtNavigationVersion === undefined
           || navigationEvents[0].requestedAtNavigationVersion === expectation.navigation.requestedAtNavigationVersion);
     })(),
@@ -269,7 +347,46 @@ export function evaluateCase({ expectation, before, after, events }) {
     pass: primaryPass || safeNonExecutionPass, checks,
     safeNonExecution: safeChecks === null ? null : { pass: safeNonExecutionPass, checks: safeChecks },
     results: results.map((result) => ({ operation: result?.operation, status: result?.status })),
+    toolCalls: toolCalls.map((call) => ({ id: call.id, name: call.name, args: call.args, result: call.result })),
+    assistantResponse: assistantResponse(events),
     terminal: terminals[0]?.type ?? null,
+  };
+}
+
+export function evaluateWorkflow({ definition, resetCount, sessionId, before, turns, after }) {
+  const expectedTurns = definition.turns ?? [];
+  const turnResults = turns.map((turn, index) => evaluateCase({
+    expectation: expectedTurns[index]?.expectation ?? {},
+    before: turn.before,
+    after: turn.after,
+    events: turn.events,
+    rawRecords: turn.rawRecords,
+  }));
+  const finalExpected = definition.finalEngagement;
+  const finalEngagement = !finalExpected ? null : (after.engagements ?? []).find((entry) => entry.id === finalExpected.id);
+  const checks = {
+    resetExactlyOnce: resetCount === 1,
+    expectedTurnCount: turns.length === expectedTurns.length,
+    oneSession: typeof sessionId === "string" && !!sessionId && turns.every((turn) => turn.sessionId === sessionId),
+    continuousState: turns.every((turn, index) => index === 0
+      ? stateFingerprint(turn.before) === stateFingerprint(before)
+      : stateFingerprint(turn.before) === stateFingerprint(turns[index - 1].after)),
+    allTurnsPass: turnResults.length === expectedTurns.length && turnResults.every((result) => result.pass),
+    finalEngagement: !finalExpected || (!!finalEngagement
+      && finalEngagement.status === finalExpected.status
+      && finalEngagement.statusNote === finalExpected.statusNote),
+  };
+  const groundingTurn = turnResults[definition.groundingTurn ?? 0];
+  return {
+    pass: Object.values(checks).every(Boolean),
+    checks,
+    turnResults,
+    groundingReview: {
+      status: "REVIEW_REQUIRED",
+      question: "Does the meeting brief contain only facts present in the captured model-visible tool outputs?",
+      assistantResponse: groundingTurn?.assistantResponse ?? "",
+      evidenceRecordKinds: ["product_tool_execution", "skill_invoked"],
+    },
   };
 }
 

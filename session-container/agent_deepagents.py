@@ -15,14 +15,15 @@ Design notes (see review/ findings doc for the full comparison):
   native LangChain tools so the two backends never couple. The cost is duplicated
   tool logic; the benefit is a clean, independent implementation that could run
   with the Copilot SDK uninstalled.
-- **Full tool parity.** The model sees the same 24 tools as the Copilot backend —
-  engagements (status-with-a-why, sharing), engagement-scoped tasks,
-  documents/library, and schedules — with the same names, args, marker strings,
-  role gating, and ETag-safe writes.
-- **"Don't over-plan" parity.** The deep-agent harness ships planning (`write_todos`),
-  a scratch filesystem (`ls`/`read_file`/`write_file`/…), subagents (`task`) and
-  shell (`execute`). CSA Workbench is deliberately a one-direct-tool-call app, so every
-  built-in tool is hidden from the model via `_ToolExclusionMiddleware`.
+- **MVP product tools.** The model sees the seven contract tools shared with the
+  Copilot backend: list/get/create/update/status/share engagements and navigate.
+  Their public names, arguments, authorization, and result envelopes remain the
+  customer-facing contract.
+- **One internal skill loader.** Deep Agents' native `read_file` is retained only
+  for progressive disclosure of the approved product skill. Its virtual backend
+  and deny-by-default permissions expose exactly one `SKILL.md`; loader events
+  stay out of the public AG-UI stream and are recorded only in raw eval evidence.
+  Planning, writes, shell, subagents, and every other built-in are excluded.
 - **Tool-name fidelity.** The frontend keys off exact tool *and* arg names
   (`write_file`/`p.path`, `navigate`/`p.destination`, …). A user tool named
   `write_file` shadows the built-in of the same name (verified: user `tools=` win
@@ -73,6 +74,12 @@ from mvp_tool_schemas import (
     CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
     SetEngagementStatusCommand, ShareEngagementCommand, UpdateEngagementCommand,
 )
+from skill_runtime import (
+    INTERNAL_SKILL_TOOLS,
+    deepagents_skill_config,
+    skill_identity,
+    skill_name_for_read,
+)
 
 load_dotenv()
 
@@ -98,16 +105,19 @@ def _trace(event: str, **data) -> None:
 # (FilesystemMiddleware itself is protected and cannot be removed, but stripping
 # every supplied model-visible tool by name leaves the approved product inventory.)
 _EXCLUDED_BUILTINS = frozenset(
-    {"write_todos", "task", "execute", "ls", "read_file", "write_file", "edit_file", "glob", "grep"}
+    {"write_todos", "task", "execute", "ls", "write_file", "edit_file", "glob", "grep"}
 )
 
 
 # ───────────────────────── System prompt (mirrors agent.py) ─────────────────
 
 SYSTEM_PROMPT = """\
-You are the CSA Workbench assistant for shared Engagements. Use only these tools:
+You are the CSA Workbench assistant for shared Engagements. For product operations, use only:
 `navigate`, `list_engagements`, `create_engagement`, `get_engagement`,
 `update_engagement`, `set_engagement_status`, and `share_engagement`.
+You may use the internal `read_file` loader only to load an available product skill when its
+description matches the user's request. It is not a product action and must not replace a typed
+product tool.
 
 Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
 `engagement_tasks`, `engagement_artifacts`, and `workbench`. For an Engagement destination,
@@ -173,6 +183,21 @@ def _args_to_str(args) -> str | None:
         return _json.dumps(_jsonable(args))
     except Exception:
         return str(args)
+
+
+def _model_visible_text(result) -> str:
+    """Capture exactly the content returned to the model for eval-only raw evidence."""
+    content = getattr(result, "content", None)
+    if content is None and isinstance(result, tuple) and result:
+        content = result[0]
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    try:
+        return _json.dumps(_jsonable(content), sort_keys=True)
+    except Exception:
+        return str(content)
 
 
 def _artifact_result(result) -> ProductToolResult | None:
@@ -906,6 +931,7 @@ class AgentSession:
         self._agent = None
         self._checkpointer = None
         self._tool_names: set[str] = set()
+        self._internal_tool_names: set[str] = set(INTERNAL_SKILL_TOOLS)
         self._credential: DefaultAzureCredential | None = None
 
         self._thread_id: str = str(uuid.uuid4())
@@ -989,12 +1015,14 @@ class AgentSession:
         tools = _build_langchain_tools(self._working_dir, self._user_id)
         self._tool_names = {t.name for t in tools}
         self._checkpointer = InMemorySaver()
+        native_skill = deepagents_skill_config()
         self._agent = create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=SYSTEM_PROMPT + _user_prompt_line(self._user_id),
             middleware=[_ToolExclusionMiddleware(excluded=_EXCLUDED_BUILTINS)],
             checkpointer=self._checkpointer,
+            **native_skill,
         )
 
         _trace(
@@ -1004,8 +1032,16 @@ class AgentSession:
             model=deployment,
             backend="deepagents",
             available_tools=sorted(self._tool_names),
+            internal_skill_tools=sorted(self._internal_tool_names),
+            skills=[skill_identity()],
         )
-        self._write_raw_sdk_record({"kind": "session_initialized", "backend": "deepagents", "available_tools": sorted(self._tool_names)})
+        self._write_raw_sdk_record({
+            "kind": "session_initialized",
+            "backend": "deepagents",
+            "available_product_tools": sorted(self._tool_names),
+            "internal_skill_tools": sorted(self._internal_tool_names),
+            "skills": [skill_identity()],
+        })
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -1027,7 +1063,7 @@ class AgentSession:
 
         message_started = False
         current_msg_id = ""
-        open_tool_calls: dict[str, str] = {}  # run_id -> tool name
+        open_tool_calls: dict[str, dict] = {}  # SDK run id -> tool evidence
         tools_called = 0
         config = {"configurable": {"thread_id": self._thread_id}}
         inp = {"messages": [{"role": "user", "content": prompt}]}
@@ -1055,32 +1091,83 @@ class AgentSession:
 
                 elif kind == "on_tool_start":
                     name = ev.get("name")
-                    if name not in self._tool_names:
+                    if name not in self._tool_names and name not in self._internal_tool_names:
                         raise RuntimeError(f"Deep Agents exposed an unapproved tool: {name}")
                     call_id = ev.get("run_id") or str(uuid.uuid4())
-                    open_tool_calls[call_id] = name
+                    arguments = (ev.get("data") or {}).get("input")
+                    args_str = _args_to_str(arguments)
+                    selected_skill = skill_name_for_read(arguments) if name == "read_file" else None
+                    open_tool_calls[call_id] = {
+                        "name": name,
+                        "arguments": _jsonable(arguments),
+                        "args_str": args_str,
+                        "skill": selected_skill,
+                    }
                     self._status = f"tool:{name}"
+                    if name in self._internal_tool_names:
+                        self._write_raw_sdk_record({
+                            "kind": "internal_skill_tool_start",
+                            "run_id": self._run_id,
+                            "tool_call_id": call_id,
+                            "tool": name,
+                            "arguments": _jsonable(arguments),
+                            "recognized_skill": selected_skill,
+                        })
+                        continue
                     yield _sse_event(ToolCallStartEvent(
                         tool_call_id=call_id,
                         tool_call_name=name,
                         parent_message_id=current_msg_id or None,
                     ))
-                    args_str = _args_to_str((ev.get("data") or {}).get("input"))
                     if args_str:
                         yield _sse_event(ToolCallArgsEvent(tool_call_id=call_id, delta=args_str))
                     _trace("agent.tool_start", session_id=self._session_id, run_id=self._run_id, tool=name, call_id=call_id, args=args_str)
 
                 elif kind == "on_tool_end":
                     call_id = ev.get("run_id")
-                    name = open_tool_calls.pop(call_id, None)
-                    if name is None:
+                    entry = open_tool_calls.pop(call_id, None)
+                    if entry is None:
                         raise RuntimeError("Deep Agents emitted an uncorrelated tool result")
+                    name = entry["name"]
                     self._status = "thinking"
-                    tools_called += 1
                     result = (ev.get("data") or {}).get("output")
+                    model_visible_output = _model_visible_text(result)
+                    if name in self._internal_tool_names:
+                        result_status = getattr(result, "status", None)
+                        recognized_skill = entry.get("skill")
+                        record_kind = "skill_invoked" if recognized_skill and result_status != "error" and model_visible_output else "skill_load_failed"
+                        record = {
+                            "kind": record_kind,
+                            "run_id": self._run_id,
+                            "tool_call_id": call_id,
+                            "tool": name,
+                            "arguments": entry.get("arguments"),
+                            "model_visible_output": model_visible_output,
+                        }
+                        if recognized_skill:
+                            record["skill"] = skill_identity()
+                        self._write_raw_sdk_record(record)
+                        _trace(
+                            "agent.skill_invoked" if record_kind == "skill_invoked" else "agent.skill_load_failed",
+                            session_id=self._session_id,
+                            run_id=self._run_id,
+                            skill=recognized_skill,
+                            call_id=call_id,
+                        )
+                        continue
+                    tools_called += 1
                     product_result = _artifact_result(result)
                     if product_result is None:
                         product_result = ProductToolResult("failed", "tool.missing_native_result", name, "The tool did not return a structured result.")
+                    self._write_raw_sdk_record({
+                        "kind": "product_tool_execution",
+                        "run_id": self._run_id,
+                        "tool_call_id": call_id,
+                        "tool": name,
+                        "arguments": entry.get("arguments"),
+                        "model_visible_output": model_visible_output,
+                        "product_result": product_result.to_dict(),
+                    })
                     payload = {"type": "TOOL_CALL_RESULT", "tool_call_id": call_id, "result": product_result.to_dict()}
                     yield f"data: {_json.dumps(payload)}\n\n"
                     if product_result.status in {"resolved", "committed"} and product_result.destination:

@@ -9,7 +9,7 @@
 > **Applies to:** Gold-standard eval tasks, eval execution, grading, metrics,
 > scorecard history, harness comparison, and eval environments
 >
-> **Status:** Approved strategy; implementation phased below. Approved in
+> **Status:** Approved strategy; MVP implementation and remaining phases below. Approved in
 > conversation with the repository owner on 2026-07-19 and checked the same
 > day against current field practice (sources at the end).
 
@@ -236,8 +236,9 @@ Authoring rules, learned the hard way by the field:
 - **Safety** — permission denials, leak prevention, injection immunity. Zero
   tolerance, runs every time, never graduates out.
 
-In these terms, today's seven-case MVP set is a small regression+safety
-suite; the gold set starts life as capability. When a capability suite passes
+In these terms, the seven atomic cases plus one three-turn workflow are a small
+regression+safety suite. The separate Waza lane evaluates one product skill's
+routing and read-only constraints. The gold set starts life as capability. When a capability suite passes
 everything, it has stopped teaching you anything — extend it with harder
 tasks.
 
@@ -286,6 +287,10 @@ directly.
 | Scorecards (~1 KB each) | `evidence/evals/history/` — committed to Git | The permanent, comparable time series |
 | Operational telemetry (timings, statuses, token counts per step) | Application Insights | Dashboards and trends |
 
+That table is the target retention model. The MVP currently writes product and Waza bundles beneath
+ignored `evidence/mvp/local-synthetic/`; no new scorecard is promoted into permanent history until a
+person approves the grounding review and accepts the baseline.
+
 Two rules:
 
 - Application Insights truncates large values (8,192-character limit per
@@ -298,7 +303,7 @@ Two rules:
 
 | Environment | Purpose | Status |
 |---|---|---|
-| Laptop (fake users, local database emulator) | Where most eval work happens — full suite, including data changes | ✅ Works today |
+| Laptop (fake users, local database emulator) | Where most eval work happens — atomic and workflow suites, including data changes | Runner and deterministic oracle work; new workflow live acceptance pending |
 | Dev Azure eval copy (same app deployed with fake users and its own dev database) | Prove the deployed setup behaves like the laptop | Planned — needs a deliberate, reviewed loosening of guards that currently (correctly) block remote eval runs |
 | Production-like with real sign-in | A thin read-only smoke check with a test user | Existing practice; never the eval suite |
 
@@ -324,14 +329,22 @@ records exist, real failures become the primary source of new tasks.
 
 ## Where we are today, honestly
 
-- ✅ Runner works; 7 tasks; code checks against the real database work
-- ✅ Full transcripts already recorded on every run
-- ❌ No scorecard survives a run — nothing is comparable to anything yet
-- ❌ Forbidden or excessive tool calls are invisible to grading
-- ❌ Tokens and cost are not captured anywhere
-- ❌ No task has a reference solution
-- ❌ The runner is single-turn; the app's own suggested multi-turn flows are
-  untestable
+- ✅ The loopback-only Deep Agents runner has seven atomic cases, resets the fixture before each,
+  and grades authoritative state, structured events, exact targets/arguments, forbidden tools, and
+  complete model-visible product-tool outputs
+- ✅ One versioned three-turn workflow reuses a single session across meeting prep, an exact state
+  mutation, and contextual navigation after one reset
+- ✅ One native product skill is versioned and hash-bound to the workflow; its internal full load is
+  raw diagnostic evidence and never masquerades as a public product tool
+- ✅ Waza v0.38.3 has six hermetic skill tasks; the latest four-task routing/tool gate has an ignored local
+  4/4 Copilot/Claude observation, while the two language-quality tasks remain advisory
+- ✅ Every new product run writes JSON and Markdown scorecards, and the merger preserves distinct
+  Waza/Copilot and Deep Agents product-runtime provenance
+- ⚠️ The source-controlled workflow oracle is verified, but the new workflow has no clean-worktree
+  live Deep Agents bundle, human grounding approval, or accepted baseline at this revision
+- ⚠️ Product-runtime token and cost capture are absent; Waza reports them only for its own lane
+- ❌ There is no durable scorecard history, reference solution set, repeated trials, calibrated
+  judge, or CI model run
 - ⚠️ Two of the seven current tasks pass because the assistant safely
   declined — without ever proving the rejection behavior they were written to
   test
@@ -341,13 +354,14 @@ records exist, real failures become the primary source of new tasks.
 
 | Phase | Delivers | Depends on |
 |---|---|---|
-| 1. Scorecard history | Every run leaves a permanent, comparable scorecard; backfill from existing recordings | Nothing |
+| MVP foundation | Local scorecard generation, per-atomic reset, forbidden/target checks, raw model-visible tool evidence, one three-turn workflow, one native skill, and Waza routing/tool evaluation | Implemented; clean live workflow acceptance still required |
+| 1. Scorecard history | Accept one reviewed MVP baseline, then keep permanent comparable scorecards; backfill only compatible recordings | Clean live product workflow + human grounding review |
 | 2. Judge formalized | Judge questions for the existing tasks checked in; verdicts stored beside each run | Nothing |
-| 3. Runner upgrades | Forbidden-action checks, partial credit, per-attempt data reset, response-start timing, token/cost capture | Token capture touches the harness and is reviewed separately |
+| 3. Runner upgrades | Partial credit, response-start timing, product token/cost capture, and repeat-trial orchestration | Token capture touches the harness and is reviewed separately |
 | 4. Gold task suite | Use-case-derived tasks with expected outcomes, judge questions, and reference solutions, balanced in both directions | Use-case set (separate owner, in progress) |
 | 5. Consistency & comparison | Repeat trials, pass@k / pass^k, side-by-side harness runs | Phases 3–4 |
 | 6. Automated judge + Azure | Judge calibrated against human spot-checks; Azure AI Foundry evaluators over the stored bundles; Blob upload; Application Insights; dev Azure eval copy | Phases 1–5; infra rides the normal release path |
-| 7. Multi-turn tasks | Runner drives conversations; a small model simulates the user | Phase 3 |
+| 7. Broader multi-turn tasks | Add workflow variants and eventually a small simulated user; keep each workflow state-grounded | MVP workflow plus phases 3–4 |
 
 ## Method sources
 
@@ -371,5 +385,6 @@ reviewed 2026-07-19):
 - [Authoritative design](../design.md)
 - [Testing Charter](../governance/testing-charter.md)
 - [Testing and evals](testing-evals.md)
+- [Evals MVP reference architecture](../evals-reference-architecture.md)
 - [Agent harness](agent-harness.md)
 - [MVP success criteria](../requirements.md)

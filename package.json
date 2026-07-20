@@ -7,8 +7,13 @@
   "scripts": {
     "test": "node scripts/test_all.mjs",
     "test:smoke": "node scripts/test_all.mjs smoke",
-    "test:mvp-evidence": "node --test tests/mvp_evidence.test.mjs",
+    "test:mvp-evidence": "node --test tests/mvp_evidence.test.mjs tests/mvp_workflow_evidence.test.mjs",
     "eval:mvp": "node scripts/mvp_agent_eval.mjs",
+    "eval:mvp:scorecard": "node scripts/mvp_scorecard_merge.mjs",
+    "eval:waza:check": "scripts/waza_eval.sh check",
+    "eval:waza:gate": "scripts/waza_eval.sh gate",
+    "eval:waza:advisory": "scripts/waza_eval.sh advisory",
+    "eval:waza": "scripts/waza_eval.sh run",
     "playwright:mvp": "node scripts/mvp_playwright.mjs"
   }
 }

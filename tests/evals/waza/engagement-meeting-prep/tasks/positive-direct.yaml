@@ -1,0 +1,24 @@
+id: WAZA-MP-1-direct-trigger
+name: Direct meeting-prep trigger
+description: A direct request must load the skill and use only the two read tools.
+tags: [gate, routing, positive]
+inputs:
+  prompt: Prep me for my Product Launch status meeting.
+expected:
+  behavior:
+    max_tool_calls: 8
+graders:
+  - type: skill_invocation
+    name: invokes_meeting_prep
+    config:
+      mode: exact_match
+      required_skills: [engagement-meeting-prep]
+      allow_extra: false
+  - type: tool_constraint
+    name: grounded_read_only
+    config:
+      expect_tools:
+        - { tool: ".*list_engagements$" }
+        - { tool: ".*get_engagement$" }
+      reject_tools:
+        - { tool: ".*(create_engagement|update_engagement|set_engagement_status|share_engagement|navigate)$" }

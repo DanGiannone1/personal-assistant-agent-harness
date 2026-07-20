@@ -120,6 +120,13 @@ and are not required for Engagement work or direct artifact access.
 | [Infrastructure](docs/capabilities/infrastructure.md) | Verified local/Azure topology, private data paths, deployment, and cost boundary |
 | [Testing and evals](docs/capabilities/testing-evals.md) | Behavioral evidence, test layers, eval datasets, and release profiles |
 
+### Reference architectures
+
+| Document | Covers |
+|---|---|
+| [Evals MVP](docs/evals-reference-architecture.md) | Atomic checks, a three-turn workflow, Waza skill evaluation, evidence provenance, and the demo runbook |
+| [Navigation](docs/navigation-reference-architecture.md) | Typed destination resolution and browser route application |
+
 ### Runbooks
 
 | Document | Purpose |

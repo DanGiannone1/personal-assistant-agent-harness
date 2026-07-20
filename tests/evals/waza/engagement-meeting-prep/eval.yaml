@@ -1,0 +1,143 @@
+name: engagement-meeting-prep-eval
+description: Routing, read-only behavior, grounding, and failure handling for the CSA Workbench meeting-prep skill.
+skill: engagement-meeting-prep
+schemaVersion: "1.2"
+version: "1.0.0"
+
+config:
+  trials_per_task: 1
+  timeout_seconds: 300
+  parallel: false
+  workers: 1
+  fail_fast: false
+  executor: copilot-sdk
+  model: claude-sonnet-4.6
+  inject_skill_body: false
+  required_skills:
+    - engagement-meeting-prep
+  skill_directories:
+    - ../../../../session-container/product-skills/engagement-meeting-prep
+
+mcp_mocks:
+  - name: csa
+    tools:
+      list_engagements:
+        description: List Engagements visible to the bound synthetic CSA, including stable IDs and summary fields.
+        input_schema:
+          type: object
+          additionalProperties: false
+        responses:
+          - match: {}
+            return:
+              status: succeeded
+              code: engagement.listed
+              engagements:
+                - id: eng-product-launch
+                  name: Product Launch
+                  customer: Fabrikam
+                  status: green
+                  statusNote: ""
+                  targetDate: "2026-08-28"
+                  openTasks: 1
+      get_engagement:
+        description: Read one visible Engagement by stable ID. Returns the complete authorized record.
+        input_schema:
+          type: object
+          properties:
+            engagement_id: { type: string }
+          required: [engagement_id]
+          additionalProperties: false
+        responses:
+          - match:
+              engagement_id: eng-product-launch
+            return:
+              status: succeeded
+              code: engagement.retrieved
+              engagement:
+                id: eng-product-launch
+                name: Product Launch
+                customer: Fabrikam
+                description: V2 product rollout
+                status: green
+                statusNote: ""
+                targetDate: "2026-08-28"
+                milestones:
+                  - id: m-1
+                    title: Pricing model approved
+                    dueDate: "2026-07-22"
+                    status: Planned
+                tasks:
+                  - id: t-1
+                    title: Finalize pricing tiers
+                    status: To do
+                    priority: High
+                    dueDate: "2026-07-15"
+                risks: []
+          - match_schema:
+              type: object
+              required: [engagement_id]
+            error: Engagement is unavailable to this actor.
+      set_engagement_status:
+        description: Set Green, Yellow, or Red on an Engagement by stable ID; Yellow and Red require a reason.
+        input_schema:
+          type: object
+          properties:
+            engagement_id: { type: string }
+            status: { type: string, enum: [green, yellow, red] }
+            note: { type: string }
+          required: [engagement_id, status, note]
+          additionalProperties: false
+        responses:
+          - match:
+              engagement_id: eng-product-launch
+              status: yellow
+              note: Pricing approval slipped
+            return:
+              status: committed
+              code: engagement.committed
+              resource: { kind: engagement, id: eng-product-launch }
+          - match_schema:
+              type: object
+              required: [engagement_id, status]
+            error: No matching synthetic status fixture.
+      create_engagement:
+        description: Create an Engagement. Not valid during meeting preparation.
+        input_schema: { type: object }
+        responses:
+          - match_schema: { type: object }
+            error: Writes are forbidden in this skill evaluation.
+      update_engagement:
+        description: Update Engagement fields. Not valid during meeting preparation.
+        input_schema: { type: object }
+        responses:
+          - match_schema: { type: object }
+            error: Writes are forbidden in this skill evaluation.
+      share_engagement:
+        description: Share an Engagement. Not valid during meeting preparation.
+        input_schema: { type: object }
+        responses:
+          - match_schema: { type: object }
+            error: Writes are forbidden in this skill evaluation.
+      navigate:
+        description: Navigate to an Engagement. Not valid during read-only meeting preparation.
+        input_schema: { type: object }
+        responses:
+          - match_schema: { type: object }
+            error: Navigation is outside this skill evaluation.
+
+metrics:
+  - name: routing_accuracy
+    weight: 0.5
+    threshold: 1.0
+    description: Positive prompts invoke the skill and atomic prompts do not.
+  - name: read_only_behavior
+    weight: 0.3
+    threshold: 1.0
+    description: Meeting preparation reads the complete record without mutation or navigation.
+  - name: grounding_quality
+    weight: 0.2
+    threshold: 0.8
+    description: Advisory judge assessment of factual and safe language.
+
+tasks:
+  - tasks/*.yaml

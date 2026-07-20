@@ -16,7 +16,9 @@ Engagement records. The model does not choose the actor, role, session, route, o
 
 Deep Agents is the deployed primary harness. A Copilot adapter remains available for a local,
 non-release-blocking portability check. Both fit the same operational `AgentSession` seam and expose
-the same seven model-visible tool names and schemas.
+the same seven **product** tool names and schemas. Deep Agents additionally retains one internal
+native `read_file` loader for progressive disclosure of the approved meeting-prep skill; it is not a
+public product operation or AG-UI tool event.
 
 The important result of a tool call is a structured `ProductToolResult`, not the tool label or the
 assistant's sentence. The browser renders that result, accepts navigation only from a correlated
@@ -34,9 +36,10 @@ For a normal assistant request, the implemented path is:
    internal header covered by that same call.
 3. In deployed Entra mode, the runtime validates the workload token. It then checks its write-once
    session-to-actor binding and takes the process-local lock for that session.
-4. The selected `AgentSession` sends the prompt to the model along with exactly seven typed product
-   tools. Each tool is already tied to the actor and session workspace — neither one is something the
-   model can pass in as an argument.
+4. The selected `AgentSession` sends the prompt to the model along with seven typed product tools.
+   Each tool is already tied to the actor and session workspace — neither one is something the model
+   can pass in as an argument. In Deep Agents, the model also receives the compact native skill
+   catalog and the one deny-by-default internal loader described below.
 5. Engagement tools call the runtime's instance of the shared `workbench_core.EngagementService`,
    which re-reads the current Cosmos state and applies the current membership, role, and validation
    rules.
@@ -80,9 +83,11 @@ automatic or mid-turn fallback, so a failed turn is not replayed through the oth
 ### Deep Agents primary
 
 Deep Agents uses `AzureChatOpenAI`, an in-memory LangGraph checkpointer, native LangChain tools, and
-`create_deep_agent`. The adapter excludes the framework's planning, shell, generic filesystem, and
-subagent tool names, and raises an error if a runtime event reports a tool outside the approved
-inventory.
+`create_deep_agent`. The adapter excludes the framework's planning, shell, filesystem writes and
+search, and subagent tool names. It retains native `read_file` only behind a virtual root and ordered
+permissions that allow the exact meeting-prep `SKILL.md` read and deny every other path. The adapter
+raises an error if a runtime event reports a tool outside the product inventory plus that internal
+loader.
 
 The deployed runtime uses its own managed identity for Azure OpenAI. The API deployment sets legacy
 Azure OpenAI token forwarding off, while the runtime obtains a Cognitive Services token through its
@@ -111,8 +116,9 @@ The single active Pydantic schema catalog in
 | `set_engagement_status` | Set Green, Yellow, or Red with the required reason |
 | `share_engagement` | Add a member or change a member role as an owner |
 
-Both adapters return exactly those tools, in that order, and derive their JSON schemas from the same
-Pydantic models. Actor, role, session ID, and workload credentials are absent from every schema.
+Both adapters return exactly those **product** tools, in that order, and derive their JSON schemas
+from the same Pydantic models. Actor, role, session ID, and workload credentials are absent from
+every schema. The Deep Agents skill loader is harness-local and outside this product catalog.
 Legacy task, calendar, document, and schedule helper functions remain in the large adapter modules,
 but they are not returned to the model in this release.
 
@@ -245,8 +251,19 @@ about what a cancellation actually stopped.
 ## Prompt, context, memory, and traces
 
 The two adapters currently contain separate copies of the same small static product prompt and append
-a short line naming the actor to the system prompt (actor grounding) when the harness is created. Both
-expose skills as disabled; there is no shared active skill catalog in this release.
+a short line naming the actor to the system prompt (actor grounding) when the harness is created.
+Deep Agents exposes one active product skill,
+[`engagement-meeting-prep`](../../session-container/product-skills/engagement-meeting-prep/SKILL.md),
+through the framework's native progressive-disclosure mechanism. Copilot product runtime skills
+remain disabled; Waza evaluates the same skill file through Copilot only in a hermetic laboratory
+lane.
+
+The virtual skill backend exposes no application files, session workspace, or second skill. A
+successful full skill read is recorded in the optional raw diagnostic stream with its name, SHA-256,
+and model-visible body. Failed loader reads and product tool executions are also distinguishable in
+that stream. Internal loader events are intentionally suppressed from public AG-UI, so the browser
+still observes only the seven typed product tools. This raw capture can contain prompts and skill
+content; it remains local, ephemeral, and diagnostic rather than a user-facing audit log.
 
 Per-turn display context is still assembled in the browser. The frontend fetches a context bundle,
 builds a bracketed preamble containing date, current view, display user, persona, and applicable
@@ -283,6 +300,12 @@ Focused tests at the deployed application revision cover:
 - workload-token tenant, audience, caller, role, and failure checks; and
 - Engagement authorization, validation, no-op, and resulting-state behavior.
 
+The current checkout additionally has deterministic contracts for the exact virtual skill root,
+allow-one/deny-all permissions, full-read invocation recognition, skill hashing, hidden internal
+loader inventory, three-turn workflow continuity, complete model-visible product-tool evidence, and
+runtime-image packaging. Those source checks do not prove a live model turn or update the older
+deployed-revision evidence above.
+
 The primary sources are
 [`tests/test_structured_control.py`](../../tests/test_structured_control.py),
 [`tests/test_release_boundaries.py`](../../tests/test_release_boundaries.py), and
@@ -314,7 +337,10 @@ back the current Engagement state afterward.
 - Copilot has focused schema/result contract evidence, but not a full, current live local-parity
   bundle.
 - Prompt and per-turn context sources are duplicated across adapters or assembled in the browser.
-  Skills are disabled, and there's no server-recorded copy of the context that was actually applied.
+  Only Deep Agents has the one active product skill; there is still no shared cross-harness skill
+  catalog or server-recorded copy of the complete context that was actually applied.
+- The new three-turn workflow and Deep Agents skill invocation have deterministic source contracts
+  but no accepted clean-worktree live bundle for this revision yet.
 - Stop/disconnect, a timeout during a tool call, and an unknown commit state are not covered by an
   end-to-end cancellation contract in which the server acknowledges what was actually stopped. Deep
   Agents cancellation in particular is not proven to be strict.
