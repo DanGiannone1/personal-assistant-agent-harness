@@ -280,7 +280,7 @@ if not isinstance(azure_open_ai_deployments, list) or len(azure_open_ai_deployme
     raise SystemExit('Azure OpenAI deployment inventory drifted')
 azure_open_ai_deployment = azure_open_ai_deployments[0]
 azure_open_ai_model = azure_open_ai_deployment.get('properties', {}).get('model', {})
-if azure_open_ai_deployment.get('name') != os.environ['AZURE_DEPLOYMENT'] or azure_open_ai_deployment.get('properties', {}).get('provisioningState') != 'Succeeded' or azure_open_ai_model.get('format') != 'OpenAI' or azure_open_ai_model.get('name') != 'gpt-4.1' or azure_open_ai_model.get('version') != '2025-04-14' or azure_open_ai_deployment.get('sku', {}).get('name') != 'Standard' or azure_open_ai_deployment.get('sku', {}).get('capacity') != 10:
+if azure_open_ai_deployment.get('name') != os.environ['AZURE_DEPLOYMENT'] or azure_open_ai_deployment.get('properties', {}).get('provisioningState') != 'Succeeded' or azure_open_ai_model.get('format') != 'OpenAI' or azure_open_ai_model.get('name') != 'gpt-5.6-terra' or azure_open_ai_model.get('version') != '2026-07-09' or azure_open_ai_deployment.get('sku', {}).get('name') != 'GlobalStandard' or azure_open_ai_deployment.get('sku', {}).get('capacity') != 30:
     raise SystemExit('Azure OpenAI deployment profile drifted')
 if cosmos.get('disableLocalAuth') is not True or cosmos.get('publicNetworkAccess') != 'Disabled':
     raise SystemExit('Cosmos authentication/network profile drifted')
