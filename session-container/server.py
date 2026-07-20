@@ -21,7 +21,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from ag_ui.core.events import RunErrorEvent
+from ag_ui.core.events import BaseEvent, RunErrorEvent
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -32,14 +32,14 @@ if str(ROOT) not in sys.path:
 
 import appdb
 # Agent backend is selectable so the same session container can run either the
-# standalone LangGraph Deep Agents backend (default — the primary harness per
-# docs/mvp-requirements.md R11) or the GitHub Copilot SDK agent. Both expose an
+# standalone LangGraph Deep Agents backend (the deployed primary harness) or
+# the GitHub Copilot SDK agent (local portability check). Both expose an
 # identical AgentSession interface (see agent_deepagents).
 _AGENT_BACKEND = os.getenv("AGENT_BACKEND", "deepagents").lower()
 if _AGENT_BACKEND == "deepagents":
-    from agent_deepagents import AgentSession, _sse_event
+    from agent_deepagents import AgentSession
 elif _AGENT_BACKEND == "copilot":
-    from agent import AgentSession, _sse_event
+    from agent import AgentSession
 else:
     raise RuntimeError("AGENT_BACKEND must be 'deepagents' or 'copilot'")
 from tracing import setup_tracing
@@ -51,6 +51,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info("Agent backend: %s", _AGENT_BACKEND)
 setup_trace_logging()
+
+
+def _sse_event(event: BaseEvent) -> str:
+    """Format an AG-UI event as an SSE data line (same framing as the adapters)."""
+    return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
 
 # In ACA, this is /workspace. In local dev, default to a directory relative to the project root.
 _default_ws = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
