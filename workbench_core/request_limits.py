@@ -91,7 +91,10 @@ class JsonRequestBodyLimitMiddleware:
             if not delivered:
                 delivered = True
                 return complete_message
-            return {"type": "http.disconnect"}
+            # Delegate to the real channel after the buffered body: streaming
+            # responses poll receive() for client disconnects, and answering
+            # with a synthetic http.disconnect here killed every SSE stream.
+            return await receive()
 
         await self.app(scope, bounded_receive, send)
 

@@ -498,6 +498,35 @@ def test_artifact_frontend_uses_download_anchor_without_blob_navigation() -> Non
     assert "openEngagementArtifact" not in api_source
 
 
+def test_json_body_limit_preserves_sse_streaming_responses() -> None:
+    """Regression: the bounded receive answered post-body polls with a synthetic
+    http.disconnect, which made Starlette cancel every StreamingResponse (all
+    live agent chat) behind this middleware. The buffered request must hand
+    subsequent receive() calls to the real channel."""
+    from fastapi import FastAPI
+    from fastapi.responses import StreamingResponse
+    from fastapi.testclient import TestClient
+
+    sse_app = FastAPI()
+    sse_app.add_middleware(JsonRequestBodyLimitMiddleware)
+
+    @sse_app.middleware("http")
+    async def outer(request, call_next):  # mirror the real apps: BaseHTTPMiddleware above the limiter
+        return await call_next(request)
+
+    @sse_app.post("/stream")
+    async def stream(body: dict) -> StreamingResponse:
+        async def events():
+            for index in range(3):
+                yield f"data: chunk-{index}\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    with TestClient(sse_app) as client:
+        response = client.post("/stream", json={"prompt": "hello"})
+    assert response.status_code == 200
+    assert response.text.count("data: chunk-") == 3
+
+
 def test_json_body_limit_rejects_declared_chunked_and_untyped_edit_bodies_before_app_execution() -> None:
     import server
 
