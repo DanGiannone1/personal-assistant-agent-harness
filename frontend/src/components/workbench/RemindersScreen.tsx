@@ -52,13 +52,13 @@ export default function RemindersScreen({ appState, sessionId, onRefresh }: {
                 <tr key={reminder.id} data-testid={`reminder-row-${reminder.id}`}>
                   <td className="tw-td-title">
                     {reminder.title}
-                    {reminder.message && <span className="tw-td-sub">{reminder.message}</span>}
+                    {reminder.message && <span className="tw-td-sub" style={{ display: "block" }}>{reminder.message}</span>}
                   </td>
                   <td>{cadence(reminder)}</td>
                   <td className="tw-td-mono">{when(reminder.nextDueAt)}</td>
                   <td>
                     <span className="tw-td-sub">{deliveryStatus(reminder)}</span>
-                    {reminder.lastSentAt && <span className="tw-td-mono tw-td-sub">{when(reminder.lastSentAt)}</span>}
+                    {reminder.lastSentAt && <span className="tw-td-mono tw-td-sub" style={{ display: "block" }}>{when(reminder.lastSentAt)}</span>}
                   </td>
                   <td>
                     <button
