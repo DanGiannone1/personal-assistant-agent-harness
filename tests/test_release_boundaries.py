@@ -270,6 +270,16 @@ def test_entra_requires_durable_artifact_account_but_demo_allows_local(monkeypat
     artifact_store.assert_durable_configuration("entra")
 
 
+def test_local_cors_accepts_only_the_documented_loopback_aliases() -> None:
+    assert orchestrator._cors_origins("http://127.0.0.1:13100") == [
+        "http://127.0.0.1:13100", "http://localhost:13100",
+    ]
+    assert orchestrator._cors_origins("http://localhost:13000") == [
+        "http://localhost:13000", "http://127.0.0.1:13000",
+    ]
+    assert orchestrator._cors_origins("https://demo.example.test") == ["https://demo.example.test"]
+
+
 def test_legacy_personal_scheduler_and_library_surfaces_are_absent() -> None:
     routes = {route.path for route in orchestrator.app.routes}
     assert not any(route.startswith("/sessions/{session_id}/tasks") for route in routes)

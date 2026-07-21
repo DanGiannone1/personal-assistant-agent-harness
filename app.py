@@ -213,14 +213,25 @@ app = FastAPI(title="CSA Workbench", lifespan=lifespan)
 app.add_middleware(JsonRequestBodyLimitMiddleware)
 
 
-# CORS: allow localhost only in dev, plus configurable FRONTEND_URL for production
-cors_origins = []
-frontend_url = os.getenv("FRONTEND_URL")
-if frontend_url:
-    cors_origins.append(frontend_url)
-else:
-    # No FRONTEND_URL set — assume local development
-    cors_origins.append("http://localhost:3000")
+def _cors_origins(frontend_url: str | None) -> list[str]:
+    """Return the configured frontend origin and its exact local loopback alias.
+
+    The isolated launcher binds Next to 127.0.0.1, while its documented browser
+    command uses localhost. Both spellings resolve only to the same local stack;
+    production origins never receive an alias.
+    """
+    origin = frontend_url or "http://localhost:3000"
+    origins = [origin]
+    if origin.startswith("http://127.0.0.1:"):
+        origins.append(origin.replace("127.0.0.1", "localhost", 1))
+    elif origin.startswith("http://localhost:"):
+        origins.append(origin.replace("localhost", "127.0.0.1", 1))
+    return origins
+
+
+# CORS: an explicit production frontend origin, or the two equivalent local
+# loopback spellings used by the launcher and browser-validation runbook.
+cors_origins = _cors_origins(os.getenv("FRONTEND_URL"))
 
 app.add_middleware(
     CORSMiddleware,
