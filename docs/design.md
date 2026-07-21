@@ -34,7 +34,7 @@ The product skills are `engagement-meeting-prep`, `tasks`, `calendar`, and `week
 
 A reminder can optionally deliver a deterministic email when it comes due. The design keeps the safe properties of at-most-once delivery and removes the unsafe ones of the prior unattended scheduler:
 
-- the recipient is derived only from the owning actor's authenticated identity — an Entra actor's validated sign-in address, or a demo actor's operator-configured `REMINDER_DEMO_EMAIL` — never a client-supplied or reminder-stored address;
+- the recipient is derived only from the owning actor's authenticated identity — an Entra actor's validated sign-in address, or a demo actor's operator-configured `REMINDER_DEMO_EMAIL` — never a client-supplied or reminder-stored address. The Entra address is the token's `preferred_username` claim, which this single-tenant showcase trusts as the actor's real mailbox; a multi-tenant deployment must switch to a verified-email claim first;
 - the email body is a deterministic rendering of the reminder's own title, message, and due info; dispatch never creates a session or runs an agent turn, so unattended agent-generated reminder content stays excluded (see Non-goals);
 - delivery is at-most-once via a claim-before-send update on the reminder's own record, and failures are recorded on the reminder rather than dropped silently; and
 - with Azure Communication Services (ACS) unconfigured, reminders still display in-app and creation/editing still succeeds — only the email step is skipped.
