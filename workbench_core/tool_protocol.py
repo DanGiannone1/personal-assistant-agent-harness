@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 DESTINATION_IDS = frozenset({
     "engagements", "engagement_overview", "engagement_tasks", "engagement_artifacts",
+    "home", "tasks", "calendar", "reminders",
 })
 RESULT_STATUSES = frozenset({
     "committed", "resolved", "succeeded", "noop", "needs_confirmation", "ambiguous",
@@ -106,6 +107,10 @@ def validate_destination(destination: Mapping[str, Any]) -> None:
         "engagement_overview": f"/engagements/{engagement_id}",
         "engagement_tasks": f"/engagements/{engagement_id}/tasks",
         "engagement_artifacts": f"/engagements/{engagement_id}/artifacts",
+        "home": "/home",
+        "tasks": "/todo",
+        "calendar": "/calendar",
+        "reminders": "/reminders",
     }[destination_id]
     if path != expected:
         raise ValueError("destination path does not match catalog")

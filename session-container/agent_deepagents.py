@@ -14,14 +14,16 @@ Design notes:
   Copilot path. The product tools and system prompt are implemented here as
   native LangChain tools so the two backends never couple; either can run with
   the other's SDK uninstalled.
-- **MVP product tools.** The model sees the seven contract tools shared with the
-  Copilot backend: list/get/create/update/status/share engagements and navigate.
-  Their public names, arguments, authorization, and result envelopes remain the
-  customer-facing contract.
+- **MVP product tools.** The model sees the contract tools shared with the Copilot
+  backend: list/get/create/update/status/share engagements, navigate, and the
+  actor's own private Tasks/Calendar/Reminders tools. Their public names,
+  arguments, authorization, and result envelopes remain the customer-facing
+  contract.
 - **One internal skill loader.** Deep Agents' native `read_file` is retained only
-  for progressive disclosure of the approved product skill. Its virtual backend
-  and deny-by-default permissions expose exactly one `SKILL.md`; loader events
-  stay out of the public AG-UI stream and are recorded only in raw eval evidence.
+  for progressive disclosure of the approved product skills. Its virtual backend
+  and deny-by-default permissions expose only the approved `SKILL.md` catalog
+  (`skill_runtime.SKILL_NAMES`); loader events stay out of the public AG-UI
+  stream and are recorded only in raw eval evidence.
   Planning, writes, shell, subagents, and every other built-in are excluded.
 """
 
@@ -62,16 +64,24 @@ from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 
 import appdb
 import navsvc
-from workbench_core import EngagementService, ProductToolResult, engagement_product_result
+from workbench_core import (
+    EngagementService, PersonalNotFound, PersonalWorkspaceError, PersonalWorkspaceService,
+    ProductToolResult, engagement_product_result,
+)
 from workbench_core.appdb_repository import AppdbEngagementRepository
+from workbench_core.personal_repository import AppdbPersonalWorkspaceRepository
 from workbench_core.trace_logging import trace_event
 from mvp_tool_schemas import (
-    CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
-    SetEngagementStatusCommand, ShareEngagementCommand, UpdateEngagementCommand,
+    AddSubtaskCommand, CreateEngagementCommand, CreateEventCommand, CreateReminderCommand,
+    CreateTaskCommand, DeleteEventCommand, DeleteReminderCommand, DeleteTaskCommand,
+    GetEngagementCommand, ListEngagementsCommand, ListEventsCommand, ListRemindersCommand,
+    ListTasksCommand, NavigateCommand, SetEngagementStatusCommand, ShareEngagementCommand,
+    UpdateEngagementCommand, UpdateEventCommand, UpdateReminderCommand, UpdateTaskCommand,
 )
 from skill_runtime import (
     INTERNAL_SKILL_TOOLS,
     deepagents_skill_config,
+    skill_identities,
     skill_identity,
     skill_name_for_read,
 )
@@ -97,16 +107,21 @@ _EXCLUDED_BUILTINS = frozenset(
 # ───────────────────────── System prompt (mirrors agent.py) ─────────────────
 
 SYSTEM_PROMPT = """\
-You are the CSA Workbench assistant for shared Engagements. For product operations, use only:
-`navigate`, `list_engagements`, `create_engagement`, `get_engagement`,
-`update_engagement`, `set_engagement_status`, and `share_engagement`.
+You are the CSA Workbench assistant. It covers two kinds of work: shared Engagements (customer
+delivery workspaces with other members) and the user's own private Tasks, Calendar, and
+Reminders (visible only to them, never scoped to an Engagement). For product operations, use
+only: `navigate`, `list_engagements`, `create_engagement`, `get_engagement`, `update_engagement`,
+`set_engagement_status`, `share_engagement`, `list_tasks`, `create_task`, `update_task`,
+`delete_task`, `add_subtask`, `list_events`, `create_event`, `update_event`, `delete_event`,
+`list_reminders`, `create_reminder`, `update_reminder`, and `delete_reminder`.
 You may use the internal `read_file` loader only to load an available product skill when its
 description matches the user's request. It is not a product action and must not replace a typed
 product tool.
 
 Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
-`engagement_tasks`, and `engagement_artifacts`. For an Engagement destination,
-first obtain its stable ID with `list_engagements`; never pass user wording as a destination.
+`engagement_tasks`, `engagement_artifacts`, `home`, `tasks`, `calendar`, and `reminders`. For an
+Engagement destination, first obtain its stable ID with `list_engagements`; never pass user
+wording as a destination. `home`, `tasks`, `calendar`, and `reminders` never take an Engagement ID.
 
 Engagement membership and roles are enforced by tools. Use stable Engagement IDs for get,
 update, status, and share. Yellow and red status require a reason. State a change or navigation
@@ -118,17 +133,34 @@ full record with `get_engagement` before answering; the `list_engagements` summa
 and does not contain tasks, actions, milestones, or their due dates. When asked to read or show
 something, present what you found — not a confirmation that you found it. Navigate at most once
 per turn, and only when the user asked to go somewhere.
+
+Task, event, and reminder tools take the resource's exact ID (`t-…`, `e-…`, `s-…`), never a
+title. Resolve a name the user gave in words by calling the matching `list_*` tool first and
+matching it to exactly one record; never invent an ID. Task statuses are exactly "To do",
+"In progress", "Blocked", "Done"; priorities are exactly "Low", "Medium", "High"; event types are
+exactly "Meeting", "Focus", "Personal"; reminder frequencies are exactly "once", "daily",
+"weekly", with `days_of_week` (0=Monday..6=Sunday) required for "weekly" and empty otherwise.
+Dates are YYYY-MM-DD and times are 24-hour HH:MM; resolve relative words ("today", "tomorrow",
+"Friday") against the current date rather than guessing it. A reminder is a record the user
+reviews, not an email you send — it carries no recipient and is delivered by a separate server
+process.
 """
 
 def _user_prompt_line(user_id: str) -> str:
-    """One grounding line so the assistant knows WHO it is operating for. Fail-soft to
-    the bare id: a Cosmos hiccup here must not block session start."""
+    """One grounding line so the assistant knows WHO it is operating for, and WHEN, so it can
+    resolve relative dates without guessing. Fail-soft to the bare id: a Cosmos hiccup here must
+    not block session start."""
     try:
         user = appdb.get_user(user_id)
     except Exception:
         user = None
     name = (user or {}).get("displayName") or user_id
-    return f"\n\nYou are assisting {name} (user id: {user_id}). All state you read and mutate is theirs."
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
+    return (
+        f"\n\nYou are assisting {name} (user id: {user_id}). All state you read and mutate is theirs."
+        f" Today's date is {today} (UTC)."
+    )
 
 
 # ───────────────────────── SDK-independent helpers (ported) ─────────────────
@@ -212,6 +244,7 @@ def _safe_error_message(error: object) -> str:
 
 def _build_langchain_tools(working_dir: str, user_id: str) -> list:
     engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
+    personal_service = PersonalWorkspaceService(AppdbPersonalWorkspaceRepository(appdb))
     """Port of agent._build_flow_tools as native LangChain tools (same names, args,
     marker-string returns, role gating, and ETag-safe writes). Closures over the
     session workspace + user."""
@@ -309,10 +342,183 @@ def _build_langchain_tools(working_dir: str, user_id: str) -> list:
         result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement sharing processed." if outcome.status == "committed" else result.message)
 
+    # ── Personal workspace: the actor's own private Tasks, Calendar, and Reminders ──
+
+    _DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+    def _today_iso() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).date().isoformat()
+
+    def _personal_mutation(operation: str, kind: str, fn) -> tuple[dict | None, ProductToolResult]:
+        """Run one personal-workspace write; map exceptions to a typed, client-safe result.
+
+        PersonalWorkspaceError is schema-approved-but-invalid input (never mutates state).
+        PersonalNotFound means no such resource exists for this actor -- lookups never cross
+        actors, so this can never confirm or deny that an ID belongs to someone else."""
+        try:
+            outcome = fn()
+        except PersonalWorkspaceError as exc:
+            return None, ProductToolResult("invalid", f"{kind}.invalid", operation, str(exc))
+        except PersonalNotFound:
+            return None, ProductToolResult("not_found", f"{kind}.not_found", operation, f"No {kind} found for that ID.")
+        return outcome.record, ProductToolResult(
+            "committed", f"{kind}.committed", operation, resource={"kind": kind, "id": outcome.record["id"]})
+
+    def _personal_delete(operation: str, kind: str, fn) -> ProductToolResult:
+        try:
+            fn()
+        except PersonalWorkspaceError as exc:
+            return ProductToolResult("invalid", f"{kind}.invalid", operation, str(exc))
+        except PersonalNotFound:
+            return ProductToolResult("not_found", f"{kind}.not_found", operation, f"No {kind} found for that ID.")
+        return ProductToolResult("committed", f"{kind}.committed", operation)
+
+    @tool("list_tasks", description="List the user's own private tasks, with a server-computed overdue flag and subtask progress.", args_schema=ListTasksCommand, response_format="content_and_artifact")
+    def list_tasks() -> tuple[str, dict]:
+        try:
+            state = personal_service.state(user_id)
+        except PersonalNotFound:
+            return _tool_result(ProductToolResult("succeeded", "task.listed", "list_tasks"), "No tasks yet.")
+        tasks = state.get("personalTasks") or []
+        if not tasks:
+            return _tool_result(ProductToolResult("succeeded", "task.listed", "list_tasks"), "No tasks yet.")
+        today = _today_iso()
+        lines = [f"{len(tasks)} task(s):"]
+        for t in tasks:
+            due = t.get("dueDate") or ""
+            overdue = bool(due) and due < today and t.get("status") != "Done"
+            subtasks = t.get("subtasks") or []
+            done = sum(1 for s in subtasks if s.get("done"))
+            lines.append(
+                f"- [{t['id']}] {t.get('title', '')} | status={t.get('status')} | priority={t.get('priority')} | "
+                f"group={t.get('group') or 'General'} | due={due or 'none'} | overdue={'yes' if overdue else 'no'} | "
+                f"subtasks={done}/{len(subtasks)}"
+            )
+        return _tool_result(ProductToolResult("succeeded", "task.listed", "list_tasks"), "\n".join(lines))
+
+    @tool("create_task", description="Create a private task for the user.", args_schema=CreateTaskCommand, response_format="content_and_artifact")
+    def create_task(title: str, status: str = "To do", priority: str = "Medium", group: str = "General",
+                    due_date: str = "", notes: str = "") -> tuple[str, dict]:
+        values = {"title": title, "status": status, "priority": priority, "group": group, "dueDate": due_date, "notes": notes}
+        record, result = _personal_mutation("create_task", "task", lambda: personal_service.create_task(user_id, values))
+        return _tool_result(result, f"Task [{record['id']}] created." if record else result.message)
+
+    @tool("update_task", description="Update a private task by its exact ID. Omit fields to leave them unchanged.", args_schema=UpdateTaskCommand, response_format="content_and_artifact")
+    def update_task(task_id: str, title: str | None = None, status: str | None = None, priority: str | None = None,
+                    group: str | None = None, due_date: str | None = None, notes: str | None = None) -> tuple[str, dict]:
+        values = {key: value for key, value in (
+            ("title", title), ("status", status), ("priority", priority),
+            ("group", group), ("dueDate", due_date), ("notes", notes),
+        ) if value is not None}
+        record, result = _personal_mutation("update_task", "task", lambda: personal_service.update_task(user_id, task_id, values))
+        return _tool_result(result, "Task updated." if record else result.message)
+
+    @tool("delete_task", description="Delete a private task by its exact ID.", args_schema=DeleteTaskCommand, response_format="content_and_artifact")
+    def delete_task(task_id: str) -> tuple[str, dict]:
+        result = _personal_delete("delete_task", "task", lambda: personal_service.delete_task(user_id, task_id))
+        return _tool_result(result, "Task deleted." if result.status == "committed" else result.message)
+
+    @tool("add_subtask", description="Add a subtask to a private task by its exact ID.", args_schema=AddSubtaskCommand, response_format="content_and_artifact")
+    def add_subtask(task_id: str, text: str) -> tuple[str, dict]:
+        record, result = _personal_mutation("add_subtask", "task", lambda: personal_service.add_subtask(user_id, task_id, text))
+        return _tool_result(result, "Subtask added." if record else result.message)
+
+    @tool("list_events", description="List the user's own private calendar events.", args_schema=ListEventsCommand, response_format="content_and_artifact")
+    def list_events() -> tuple[str, dict]:
+        try:
+            state = personal_service.state(user_id)
+        except PersonalNotFound:
+            return _tool_result(ProductToolResult("succeeded", "event.listed", "list_events"), "No events yet.")
+        events = sorted(state.get("calendarEvents") or [], key=lambda e: (e.get("date") or "", e.get("start") or ""))
+        if not events:
+            return _tool_result(ProductToolResult("succeeded", "event.listed", "list_events"), "No events yet.")
+        lines = [f"{len(events)} event(s):"]
+        for e in events:
+            when = e.get("date", "")
+            if e.get("start"):
+                when += f" {e['start']}" + (f"-{e['end']}" if e.get("end") else "")
+            lines.append(f"- [{e['id']}] {e.get('title', '')} | {when} | type={e.get('type')}")
+        return _tool_result(ProductToolResult("succeeded", "event.listed", "list_events"), "\n".join(lines))
+
+    @tool("create_event", description="Create a private calendar event for the user.", args_schema=CreateEventCommand, response_format="content_and_artifact")
+    def create_event(title: str, date: str, start: str = "", end: str = "", type: str = "Meeting", notes: str = "") -> tuple[str, dict]:
+        values = {"title": title, "date": date, "start": start, "end": end, "type": type, "notes": notes}
+        record, result = _personal_mutation("create_event", "event", lambda: personal_service.create_event(user_id, values))
+        return _tool_result(result, f"Event [{record['id']}] created." if record else result.message)
+
+    @tool("update_event", description="Update a private calendar event by its exact ID. Omit fields to leave them unchanged.", args_schema=UpdateEventCommand, response_format="content_and_artifact")
+    def update_event(event_id: str, title: str | None = None, date: str | None = None, start: str | None = None,
+                     end: str | None = None, type: str | None = None, notes: str | None = None) -> tuple[str, dict]:
+        values = {key: value for key, value in (
+            ("title", title), ("date", date), ("start", start), ("end", end), ("type", type), ("notes", notes),
+        ) if value is not None}
+        record, result = _personal_mutation("update_event", "event", lambda: personal_service.update_event(user_id, event_id, values))
+        return _tool_result(result, "Event updated." if record else result.message)
+
+    @tool("delete_event", description="Delete a private calendar event by its exact ID.", args_schema=DeleteEventCommand, response_format="content_and_artifact")
+    def delete_event(event_id: str) -> tuple[str, dict]:
+        result = _personal_delete("delete_event", "event", lambda: personal_service.delete_event(user_id, event_id))
+        return _tool_result(result, "Event deleted." if result.status == "committed" else result.message)
+
+    @tool("list_reminders", description="List the user's own private reminders.", args_schema=ListRemindersCommand, response_format="content_and_artifact")
+    def list_reminders() -> tuple[str, dict]:
+        try:
+            state = personal_service.state(user_id)
+        except PersonalNotFound:
+            return _tool_result(ProductToolResult("succeeded", "reminder.listed", "list_reminders"), "No reminders yet.")
+        reminders = state.get("reminders") or []
+        if not reminders:
+            return _tool_result(ProductToolResult("succeeded", "reminder.listed", "list_reminders"), "No reminders yet.")
+        lines = [f"{len(reminders)} reminder(s):"]
+        for r in reminders:
+            schedule = r.get("frequency")
+            if schedule == "weekly":
+                days = ", ".join(_DAY_NAMES[d] for d in sorted(r.get("daysOfWeek") or []))
+                schedule = f"weekly on {days}" if days else "weekly"
+            elif schedule == "once":
+                schedule = f"once on {r.get('dueDate')}"
+            lines.append(
+                f"- [{r['id']}] {r.get('title', '')} | {schedule} at {r.get('time')} {r.get('timezone')} | "
+                f"enabled={'yes' if r.get('enabled') else 'no'} | next={r.get('nextDueAt') or 'none'}"
+            )
+        return _tool_result(ProductToolResult("succeeded", "reminder.listed", "list_reminders"), "\n".join(lines))
+
+    @tool("create_reminder", description="Create a private reminder record for the user. This only creates the record; delivery happens separately.", args_schema=CreateReminderCommand, response_format="content_and_artifact")
+    def create_reminder(title: str, frequency: str, due_date: str, time: str, timezone: str, message: str = "",
+                        days_of_week: list[int] | None = None) -> tuple[str, dict]:
+        values = {
+            "title": title, "message": message, "frequency": frequency, "dueDate": due_date,
+            "time": time, "timezone": timezone, "daysOfWeek": days_of_week or [],
+        }
+        record, result = _personal_mutation("create_reminder", "reminder", lambda: personal_service.create_schedule(user_id, values))
+        return _tool_result(result, f"Reminder [{record['id']}] created." if record else result.message)
+
+    @tool("update_reminder", description="Update a private reminder by its exact ID. Omit fields to leave them unchanged.", args_schema=UpdateReminderCommand, response_format="content_and_artifact")
+    def update_reminder(reminder_id: str, title: str | None = None, message: str | None = None,
+                        frequency: str | None = None, due_date: str | None = None, time: str | None = None,
+                        timezone: str | None = None, days_of_week: list[int] | None = None,
+                        enabled: bool | None = None) -> tuple[str, dict]:
+        values = {key: value for key, value in (
+            ("title", title), ("message", message), ("frequency", frequency), ("dueDate", due_date),
+            ("time", time), ("timezone", timezone), ("daysOfWeek", days_of_week), ("enabled", enabled),
+        ) if value is not None}
+        record, result = _personal_mutation(
+            "update_reminder", "reminder", lambda: personal_service.update_schedule(user_id, reminder_id, values))
+        return _tool_result(result, "Reminder updated." if record else result.message)
+
+    @tool("delete_reminder", description="Delete a private reminder by its exact ID.", args_schema=DeleteReminderCommand, response_format="content_and_artifact")
+    def delete_reminder(reminder_id: str) -> tuple[str, dict]:
+        result = _personal_delete("delete_reminder", "reminder", lambda: personal_service.delete_schedule(user_id, reminder_id))
+        return _tool_result(result, "Reminder deleted." if result.status == "committed" else result.message)
+
     return [
         navigate,
         list_engagements, create_engagement, get_engagement, update_engagement, set_engagement_status,
         share_engagement,
+        list_tasks, create_task, update_task, delete_task, add_subtask,
+        list_events, create_event, update_event, delete_event,
+        list_reminders, create_reminder, update_reminder, delete_reminder,
     ]
 
 
@@ -483,14 +689,14 @@ class AgentSession:
             backend="deepagents",
             available_tools=sorted(self._tool_names),
             internal_skill_tools=sorted(self._internal_tool_names),
-            skills=[skill_identity()],
+            skills=skill_identities(),
         )
         self._write_raw_sdk_record({
             "kind": "session_initialized",
             "backend": "deepagents",
             "available_product_tools": sorted(self._tool_names),
             "internal_skill_tools": sorted(self._internal_tool_names),
-            "skills": [skill_identity()],
+            "skills": skill_identities(),
         })
         return self
 
@@ -597,7 +803,7 @@ class AgentSession:
                             "model_visible_output": model_visible_output,
                         }
                         if recognized_skill:
-                            record["skill"] = skill_identity()
+                            record["skill"] = skill_identity(recognized_skill)
                         self._write_raw_sdk_record(record)
                         _trace(
                             "agent.skill_invoked" if record_kind == "skill_invoked" else "agent.skill_load_failed",

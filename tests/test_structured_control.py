@@ -75,6 +75,122 @@ def test_navigation_is_catalog_only_and_checks_live_membership(monkeypatch: pyte
     assert navsvc.destination_for("outsider", "engagement_tasks", "eng-7").status == "not_found"
 
 
+def test_personal_navigation_destinations_are_static_unscoped_and_route_correctly() -> None:
+    for destination_id, path, label in (
+        ("home", "/home", "Home"), ("tasks", "/todo", "Tasks"),
+        ("calendar", "/calendar", "Calendar"), ("reminders", "/reminders", "Reminders"),
+    ):
+        result = navsvc.destination_for("dan", destination_id)
+        assert result.status == "resolved"
+        assert result.destination == {"id": destination_id, "path": path, "label": label}
+        rejected = navsvc.destination_for("dan", destination_id, "eng-7")
+        assert rejected.status == "invalid"
+
+
+def test_personal_tool_schemas_validate_enum_vocabularies_before_any_call() -> None:
+    import pydantic
+    from mvp_tool_schemas import ACTIVE_TOOL_SCHEMAS, CreateEventCommand, CreateReminderCommand, CreateTaskCommand
+
+    CreateTaskCommand(title="Draft", status="To do", priority="High")
+    with pytest.raises(pydantic.ValidationError):
+        CreateTaskCommand(title="Draft", status="Unknown")
+    with pytest.raises(pydantic.ValidationError):
+        CreateTaskCommand(title="Draft", priority="Urgent")
+
+    CreateEventCommand(title="Sync", date="2030-01-01", type="Focus")
+    with pytest.raises(pydantic.ValidationError):
+        CreateEventCommand(title="Sync", date="2030-01-01", type="Other")
+
+    CreateReminderCommand(title="Weekly", frequency="weekly", due_date="2030-01-07", time="09:00", timezone="UTC", days_of_week=[0])
+    with pytest.raises(pydantic.ValidationError):
+        CreateReminderCommand(title="Weekly", frequency="monthly", due_date="2030-01-07", time="09:00", timezone="UTC")
+    assert "recipient" not in CreateReminderCommand.model_fields
+    assert "email" not in CreateReminderCommand.model_fields
+
+    for name in (
+        "list_tasks", "create_task", "update_task", "delete_task", "add_subtask",
+        "list_events", "create_event", "update_event", "delete_event",
+        "list_reminders", "create_reminder", "update_reminder", "delete_reminder",
+    ):
+        assert name in ACTIVE_TOOL_SCHEMAS
+
+
+def test_personal_tools_bind_to_the_session_actor_and_reject_bad_enums_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from copilot.tools import ToolInvocation
+    import agent
+    import agent_deepagents
+
+    states = {
+        "dan": {"personalTasks": [], "calendarEvents": [], "reminders": []},
+        "ava": {"personalTasks": [], "calendarEvents": [], "reminders": []},
+    }
+
+    def load(actor_id: str):
+        return deepcopy(states.get(actor_id))
+
+    def update(actor_id: str, mutator):
+        return mutator(states[actor_id])
+
+    def new_id(prefix: str, values: list[dict]) -> str:
+        ids = {value["id"] for value in values}
+        number = 1
+        while f"{prefix}-{number}" in ids:
+            number += 1
+        return f"{prefix}-{number}"
+
+    for module in (agent.appdb, agent_deepagents.appdb):
+        monkeypatch.setattr(module, "load_personal_workspace", load)
+        monkeypatch.setattr(module, "update_personal_workspace", update)
+        monkeypatch.setattr(module, "new_id", new_id)
+        monkeypatch.setattr(module, "_now_iso", lambda: "2030-01-01T00:00:00+00:00")
+
+    copilot_tools = {tool.name: tool for tool in agent._build_flow_tools("/tmp", "dan")}
+    deep_tools = {tool.name: tool for tool in agent_deepagents._build_langchain_tools("/tmp", "dan")}
+
+    async def copilot_call(name: str, arguments: dict):
+        native = await copilot_tools[name].handler(ToolInvocation(arguments=arguments))
+        result = agent._telemetry_result(native)
+        assert result is not None
+        return result
+
+    def deep_call(name: str, **arguments):
+        result = agent_deepagents._artifact_result(deep_tools[name].func(**arguments))
+        assert result is not None
+        return result
+
+    # Neither adapter's schema accepts an actor argument from the model.
+    from mvp_tool_schemas import CreateTaskCommand
+    assert not {"actor", "actor_id", "user_id", "owner"} & set(CreateTaskCommand.model_fields)
+
+    copilot_created = asyncio.run(copilot_call("create_task", {"title": "Copilot task", "status": "To do", "priority": "Medium", "group": "General", "due_date": "", "notes": ""}))
+    assert copilot_created.status == "committed"
+    deep_created = deep_call("create_task", title="Deep task", status="To do", priority="Medium", group="General", due_date="", notes="")
+    assert deep_created.status == "committed"
+
+    # Both tool calls were bound to "dan" (the session actor) with no way to target "ava".
+    assert len(states["dan"]["personalTasks"]) == 2
+    assert states["ava"]["personalTasks"] == []
+
+    # A resource ID scoped to another actor's aggregate is never found -- lookups never cross actors.
+    missing = asyncio.run(copilot_call("delete_task", {"task_id": "t-999"}))
+    assert missing.status == "not_found"
+
+    # Invalid enum values are rejected by the typed schema before the tool (and therefore the
+    # service) ever runs -- no mutation occurs. The Copilot SDK's wrapped_handler swallows the
+    # pydantic ValidationError into a "failure" ToolResult with no product_result telemetry;
+    # LangChain's tool.invoke() raises the ValidationError directly. Either way, fn() never runs.
+    before = deepcopy(states)
+    bad_args = {"title": "bad", "status": "Unknown", "priority": "Medium", "group": "General", "due_date": "", "notes": ""}
+    copilot_failure = asyncio.run(copilot_tools["create_task"].handler(ToolInvocation(arguments=bad_args)))
+    assert copilot_failure.result_type == "failure"
+    assert agent._telemetry_result(copilot_failure) is None
+    with pytest.raises(Exception):
+        deep_tools["create_task"].invoke(bad_args)
+    assert states == before
+
+
 def test_copilot_telemetry_is_native_and_validated() -> None:
     from copilot.session_events import ToolExecutionCompleteData
     from copilot.tools import ToolResult

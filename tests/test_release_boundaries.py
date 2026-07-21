@@ -247,9 +247,12 @@ def test_active_sources_omit_dynamic_sessions_and_legacy_trace_tools() -> None:
         assert banned_label not in source, path
 
     trace = (ROOT / "frontend" / "src" / "components" / "ToolTrace.tsx").read_text()
+    # Tasks/Calendar tool names were restored as the T3 tranche of the issue #18
+    # recovery record (typed personal-workspace tools calling PersonalWorkspaceService);
+    # they are legitimately present in ToolTrace.tsx now. propose_memory, save_memory,
+    # delete_schedule (the public reminder tool is delete_reminder, not delete_schedule),
+    # and write_file remain genuinely dead and stay banned.
     for legacy_tool in (
-        "create_task", "update_task", "delete_task", "add_subtask", "list_tasks",
-        "create_event", "update_event", "delete_event", "list_events",
         "propose_memory", "save_memory", "delete_schedule", "write_file",
     ):
         assert legacy_tool not in trace
