@@ -14,7 +14,7 @@ function string(value: unknown, label: string): string {
 
 function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined;
-  return string(value, label);
+  return text(value, label);
 }
 
 function text(value: unknown, label: string): string {

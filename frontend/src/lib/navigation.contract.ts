@@ -63,3 +63,10 @@ decoderRejects(() => decodeFilesPayload({ files: [{ filename: "draft.md", size: 
 decoderRejects(() => decodeContextBundle({ user: {}, persona: {}, conventions: [], engagementName: null, workingContext: {}, precedence: [] }), "context decoder rejects malformed user");
 decoderRejects(() => decodeAppState({ currentRoute: "/engagements", engagements: [{ id: "eng-1", status: "blue", members: [], conventions: [], tasks: [], library: [], activity: [] }], user: { id: "u", username: "u", displayName: "U" } }), "state decoder rejects unsupported engagement status");
 decoderRejects(() => decodeEngagement({ id: "eng-1", name: "Record", description: "", customer: "", status: "green", statusNote: "", startDate: "", targetDate: "", members: [{ userId: "u", role: "admin" }], conventions: [], tasks: [], library: [], activity: [], createdAt: "now", createdBy: "u" }), "engagement decoder rejects unsupported role");
+
+const blankPersonaState = decodeAppState({
+  currentRoute: "/engagements",
+  engagements: [{ id: "eng-1", name: "Record", description: "", customer: "", status: "green", statusNote: "", startDate: "", targetDate: "", members: [], conventions: [], tasks: [], library: [], activity: [], createdAt: "now", createdBy: "u" }],
+  user: { id: "u", username: "u", displayName: "U", persona: { role: "Product lead", tone: "concise", outputPrefs: "", language: "English" } },
+});
+expect(blankPersonaState.user.persona?.outputPrefs === undefined, "state decoder accepts an empty optional persona preference");
