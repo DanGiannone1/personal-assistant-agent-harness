@@ -146,7 +146,7 @@ def test_clean_entra_registry_starts_without_demo_actors(monkeypatch: pytest.Mon
     assert set(container.items) == {"users"}
 
 
-def test_demo_seeding_creates_only_actors_and_shared_engagement_records(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_demo_seeding_creates_actors_private_workspaces_and_shared_engagement_records(monkeypatch: pytest.MonkeyPatch) -> None:
     import appdb
     from azure.cosmos import exceptions as cosmos_exceptions
 
@@ -171,7 +171,8 @@ def test_demo_seeding_creates_only_actors_and_shared_engagement_records(monkeypa
     monkeypatch.setattr(appdb, "_container", lambda: container)
     appdb.ensure_seeded("test-secret")
     assert set(container.items) == {
-        "users", "eng-website-launch", "eng-product-launch", "eng-q3-budget",
+        "users", "personal-dan", "personal-ava", "personal-sam",
+        "eng-website-launch", "eng-product-launch", "eng-q3-budget",
     }
 
 
