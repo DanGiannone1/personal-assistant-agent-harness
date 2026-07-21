@@ -128,12 +128,9 @@ not a deployed or release claim.
 1. The API authenticates the actor and validates ownership of the session.
 2. It sends the prompt and a validated navigation version to the internal session runtime.
 3. The runtime keeps the write-once actor/session binding separate from user text.
-4. The model selects one of twenty typed product tools: `navigate`; the six Engagement tools
-   (`list_engagements`, `create_engagement`, `get_engagement`, `update_engagement`,
-   `set_engagement_status`, `share_engagement`); and thirteen personal tools spanning Tasks
-   (`list_tasks`, `create_task`, `update_task`, `delete_task`, `add_subtask`), Calendar
-   (`list_events`, `create_event`, `update_event`, `delete_event`), and Reminders (`list_reminders`,
-   `create_reminder`, `update_reminder`, `delete_reminder`).
+4. The model selects one of twenty typed product tools — `navigate`, six Engagement tools, and
+   thirteen personal tools across Tasks, Calendar, and Reminders. The
+   [agent harness](capabilities/agent-harness.md#model-visible-tools) owns the exact inventory.
 5. The tool adapter binds the trusted actor and invokes the matching shared service, which re-reads
    authorized state and returns a typed outcome.
 6. The runtime emits structured tool and terminal events over SSE.
@@ -194,7 +191,7 @@ identity/RBAC contract, and recovery behavior are owned by
 
 ## Quality and evidence
 
-A local browser journey passed 41/41 checks at recovery revision `c876306` (2026-07-21), including the full page
+A local browser journey passed 41/41 checks ([current evidence record](evidence.md)), including the full page
 inventory and a live agent turn, and `npm run verify` is green. Live-model spot checks cover the
 personal tools. **Not verified:** a deployed Azure instance, a real Entra sign-in against this code,
 a real ACS email send, and a live-model eval run of the `MVP-E8`/`MVP-E9` personal-work cases. The

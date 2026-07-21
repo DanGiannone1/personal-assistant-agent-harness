@@ -8,9 +8,11 @@
 > is unaffected by the personal-workspace/reminder additions; where it references implementation
 > specifics, those have been updated to match the current MVP.
 
-## What we evaluate
+## What we evaluate (target program)
 
-Six things, continuously:
+Everything in this section through the roadmap describes the **target** program; the
+"[Where we are today, honestly](#where-we-are-today-honestly)" section below is the only part that
+describes implemented behavior. Six things, continuously:
 
 1. **Capability** — can the assistant do the jobs users ask of it?
 2. **Trustworthiness** — does what it *says* match what actually *happened*? It must never claim an
@@ -22,8 +24,9 @@ Six things, continuously:
 6. **Change impact** — did the latest change make the system better or worse, and by how much?
    Improvements are measured with the same rigor as regressions.
 
-Every eval run scores all six and leaves a permanent scorecard, so any change can be compared against
-the last known-good state, metric by metric. The unit under evaluation is the **harness + model
+In the target program, every eval run scores all six and leaves a permanent scorecard, so any change
+can be compared against the last known-good state, metric by metric — no durable scorecard history
+exists today. The unit under evaluation is the **harness + model
 pair**, not the model alone: every scorecard records harness, model deployment, and code revision,
 and the suite can run identical tasks against both Deep Agents and Copilot head-to-head.
 

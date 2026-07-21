@@ -48,7 +48,7 @@ see [development](../development.md) for the exact isolated-run procedure.
 
 ## Current evidence status
 
-A local browser journey has passed 41/41 checks at recovery revision `c876306` (2026-07-21), including the full page
+A local browser journey has passed 41/41 checks ([current evidence record](../evidence.md)), including the full page
 inventory (Engagements, My work, Assistant, Settings) and a live agent turn. Live-model spot checks
 cover the personal tools. **UNVERIFIED from this repository:** a deployed Azure instance, a real
 Entra sign-in against this code, a real Azure Communication Services email send, and a live-model

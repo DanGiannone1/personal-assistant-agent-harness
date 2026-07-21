@@ -92,7 +92,7 @@ result.
 
 ## Evidence status
 
-A local browser journey (`scripts/mvp_playwright.mjs`) passed 41/41 checks at recovery revision `c876306` (2026-07-21) at
+A local browser journey (`scripts/mvp_playwright.mjs`) passed 41/41 checks ([current evidence record](../evidence.md)) at
 1440, 1024, and 390 CSS px, covering: distinct personal portfolios and Engagement isolation; owner
 creation and sharing; editor updates and viewer affordance gating; outsider-neutral 404s; visible,
 state-preserving validation failures; a typed agent Engagement update followed by authoritative UI

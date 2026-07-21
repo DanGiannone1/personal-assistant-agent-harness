@@ -2,7 +2,7 @@
 
 > **Purpose:** Human-owned plan/apply procedure for an isolated CSA Workbench instance. It is not a claim that any deployment currently exists or is verified.
 
-Read the current [`infra/deploy.sh`](../infra/deploy.sh) before use. The script requires a clean worktree and explicit model selection; it does not silently choose a model.
+Read the current [`infra/deploy.sh`](../infra/deploy.sh) before use. The script requires a clean worktree and explicit model selection; it does not silently choose a model. For what already exists in Azure and how to reach it, see [environments](environments.md).
 
 ## What this creates
 
