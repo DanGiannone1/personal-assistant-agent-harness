@@ -1,0 +1,19 @@
+paths:
+  skills: session-container/product-skills
+  evals: tests/evals/waza
+  results: evidence/mvp/local-synthetic/waza
+
+defaults:
+  model: claude-sonnet-4.6
+  timeout: 300
+  workers: 0
+
+cache:
+  enabled: false
+
+tokens:
+  warningThreshold: 2500
+  fallbackLimit: 1000
+  limits:
+    overrides:
+      session-container/product-skills/engagement-meeting-prep/SKILL.md: 1000

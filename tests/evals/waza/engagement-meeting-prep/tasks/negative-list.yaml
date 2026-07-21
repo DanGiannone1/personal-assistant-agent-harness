@@ -1,0 +1,21 @@
+id: WAZA-MP-3-list-does-not-trigger
+name: Plain list request does not trigger
+description: Listing Engagements is an atomic operation, not meeting preparation.
+tags: [gate, routing, negative]
+inputs:
+  prompt: List my Engagements.
+expected:
+  behavior:
+    max_tool_calls: 4
+graders:
+  - type: skill_invocation
+    name: forbids_meeting_prep
+    config:
+      forbidden_skills: [engagement-meeting-prep]
+  - type: tool_constraint
+    name: list_only
+    config:
+      expect_tools:
+        - { tool: ".*list_engagements$" }
+      reject_tools:
+        - { tool: ".*(get_engagement|create_engagement|update_engagement|set_engagement_status|share_engagement|navigate)$" }

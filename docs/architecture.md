@@ -1,11 +1,5 @@
-# Architecture Path Moved
+# Architecture compatibility pointer
 
-> **Authority:** Compatibility pointer only; superseded 2026-07-14 by issue #15.
+> **Authority:** Compatibility pointer only; it defines no product or architecture rule.
 
-The canonical product and system architecture is [design.md](design.md). Detailed contracts live in
-the [capability documents](../README.md#capability-designs). Current mechanics belong in the
-[development](development.md) and [deployment](deployment.md) runbooks and do not override the
-authoritative design.
-
-The former Personal Assistant architecture remains available in Git history at
-`master@1fcaac6:docs/architecture.md`.
+Use the [MVP design](design.md) for the current high-level system boundary, [capability notes](capabilities/) for focused details, and [deployment](deployment.md) for operation. Historical architecture names and observations are not current proof.

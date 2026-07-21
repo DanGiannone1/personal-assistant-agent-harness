@@ -16,9 +16,42 @@ const KNOWN_TYPES = new Set([
   "NAVIGATION_RESOLVED", "RUN_FINISHED", "RUN_ERROR", "REASONING_START",
   "REASONING_DELTA", "REASONING_END",
 ]);
+const TOOL_STATUSES = new Set([
+  "committed", "resolved", "succeeded", "noop", "needs_confirmation", "ambiguous",
+  "invalid", "not_found", "forbidden", "conflict", "failed",
+]);
+const ENGAGEMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function requireString(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || !value) throw new Error(`Malformed assistant event: ${field}`);
+}
+
+function requireDestination(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed assistant destination");
+  const destination = value as Record<string, unknown>;
+  if (!Object.keys(destination).every((key) => ["id", "path", "engagementId", "label"].includes(key))) throw new Error("Malformed assistant destination");
+  requireString(destination.id, "destination.id");
+  requireString(destination.path, "destination.path");
+  if (destination.label !== undefined) requireString(destination.label, "destination.label");
+  if (destination.id === "engagements") {
+    if (destination.path !== "/engagements" || destination.engagementId !== undefined) throw new Error("Malformed assistant destination");
+    return;
+  }
+  if (typeof destination.engagementId !== "string" || !ENGAGEMENT_ID.test(destination.engagementId)) throw new Error("Malformed assistant destination");
+  const suffix = destination.id === "engagement_overview" ? "" : destination.id === "engagement_tasks" ? "/tasks" : destination.id === "engagement_artifacts" ? "/artifacts" : null;
+  if (suffix === null || destination.path !== `/engagements/${destination.engagementId}${suffix}`) throw new Error("Malformed assistant destination");
+}
+
+function requireProductToolResult(value: unknown): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed tool result");
+  const result = value as Record<string, unknown>;
+  requireString(result.status, "result.status");
+  if (!TOOL_STATUSES.has(result.status)) throw new Error("Malformed tool result status");
+  requireString(result.code, "result.code");
+  requireString(result.operation, "result.operation");
+  if (result.message !== undefined && typeof result.message !== "string") throw new Error("Malformed tool result message");
+  if (result.resource !== undefined && (!result.resource || typeof result.resource !== "object" || Array.isArray(result.resource))) throw new Error("Malformed tool result resource");
+  if (result.destination !== undefined) requireDestination(result.destination);
 }
 
 export type StreamState = { started: boolean; terminal: boolean; runId: string | null; threadId: string | null; messageId: string | null; tools: Map<string, { phase: "started" | "result"; result?: Record<string, unknown>; navigated: boolean }> };
@@ -42,12 +75,12 @@ export function validateEvent(event: unknown, state: StreamState): AGUIEvent {
     case "TOOL_CALL_ARGS": requireString(value.tool_call_id, "tool_call_id"); if (state.tools.get(value.tool_call_id)?.phase !== "started") throw new Error("Tool args out of order"); requireString(value.delta, "delta"); break;
     case "TOOL_CALL_RESULT": {
       requireString(value.tool_call_id, "tool_call_id"); if (state.tools.get(value.tool_call_id)?.phase !== "started") throw new Error("Tool result out of order");
-      const result = value.result as Record<string, unknown> | null;
-      if (!result || typeof result !== "object") throw new Error("Malformed tool result");
-      requireString(result.status, "result.status"); requireString(result.code, "result.code"); requireString(result.operation, "result.operation"); state.tools.set(value.tool_call_id, { phase: "result", result, navigated: false }); break;
+      const result = value.result;
+      requireProductToolResult(result);
+      state.tools.set(value.tool_call_id, { phase: "result", result, navigated: false }); break;
     }
     case "TOOL_CALL_END": requireString(value.tool_call_id, "tool_call_id"); if (state.tools.get(value.tool_call_id)?.phase !== "result") throw new Error("Tool end out of order"); state.tools.delete(value.tool_call_id); break;
-    case "NAVIGATION_RESOLVED": { requireString(value.runId, "runId"); if (value.runId !== state.runId || !value.destination || typeof value.destination !== "object" || !Number.isInteger(value.requestedAtNavigationVersion)) throw new Error("Malformed navigation event"); const matches = [...state.tools.values()].filter((tool) => tool.phase === "result" && !tool.navigated && tool.result?.status && ["resolved", "committed"].includes(tool.result.status as string) && JSON.stringify(tool.result.destination) === JSON.stringify(value.destination)); if (matches.length !== 1) throw new Error("Navigation not bound to a tool result"); matches[0].navigated = true; break; }
+    case "NAVIGATION_RESOLVED": { requireString(value.runId, "runId"); requireDestination(value.destination); if (value.runId !== state.runId || !Number.isInteger(value.requestedAtNavigationVersion)) throw new Error("Malformed navigation event"); const matches = [...state.tools.values()].filter((tool) => tool.phase === "result" && !tool.navigated && tool.result?.status && ["resolved", "committed"].includes(tool.result.status as string) && JSON.stringify(tool.result.destination) === JSON.stringify(value.destination)); if (matches.length !== 1) throw new Error("Navigation not bound to a tool result"); matches[0].navigated = true; break; }
     case "RUN_FINISHED": requireString(value.run_id, "run_id"); requireString(value.thread_id, "thread_id"); if (value.run_id !== state.runId || value.thread_id !== state.threadId || state.tools.size || state.messageId) throw new Error("Invalid terminal"); state.terminal = true; break;
     case "RUN_ERROR": requireString(value.message, "message"); if (state.tools.size || state.messageId) throw new Error("Invalid error terminal"); state.terminal = true; break;
   }

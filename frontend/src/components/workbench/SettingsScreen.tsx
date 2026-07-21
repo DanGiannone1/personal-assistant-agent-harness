@@ -1,8 +1,6 @@
 "use client";
 
-// Personal settings: persona (stored, legible, adjustable — never silently inferred).
-// Standing approvals and workspace memories are parked out of v1
-// (docs/mvp-requirements.md R7); deletes are always confirm-first.
+// Persona settings are stored, legible, and adjustable — never silently inferred.
 
 import { useState } from "react";
 import { UserCog } from "lucide-react";
@@ -31,7 +29,7 @@ export default function SettingsScreen({ appState, onRefresh }: {
   return (
     <div className="tw-screen" data-testid="settings-screen">
       <h1 className="tw-h1">Settings</h1>
-      <p className="tw-subtle">Everything stored about you is on this page — visible, editable, deletable.</p>
+      <p className="tw-subtle">Persona settings are visible and editable here.</p>
 
       <section className="tw-section">
         <h2 className="tw-h2"><UserCog size={14} /> Persona</h2>

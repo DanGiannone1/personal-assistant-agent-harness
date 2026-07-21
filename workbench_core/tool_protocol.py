@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 
 DESTINATION_IDS = frozenset({
-    "engagements", "engagement_overview", "engagement_tasks", "engagement_artifacts", "workbench",
+    "engagements", "engagement_overview", "engagement_tasks", "engagement_artifacts",
 })
 RESULT_STATUSES = frozenset({
     "committed", "resolved", "succeeded", "noop", "needs_confirmation", "ambiguous",
@@ -103,10 +103,9 @@ def validate_destination(destination: Mapping[str, Any]) -> None:
         raise ValueError("destination engagement ID is invalid")
     expected = {
         "engagements": "/engagements",
-        "workbench": "/home",
         "engagement_overview": f"/engagements/{engagement_id}",
         "engagement_tasks": f"/engagements/{engagement_id}/tasks",
-        "engagement_artifacts": f"/engagements/{engagement_id}/documents",
+        "engagement_artifacts": f"/engagements/{engagement_id}/artifacts",
     }[destination_id]
     if path != expected:
         raise ValueError("destination path does not match catalog")

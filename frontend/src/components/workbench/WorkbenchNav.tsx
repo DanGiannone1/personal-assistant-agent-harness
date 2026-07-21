@@ -2,12 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import {
-  Home,
-  CheckSquare,
-  Calendar,
-  Files,
   Sparkles,
-  Bell,
   LogOut,
   FolderKanban,
   Settings,
@@ -99,11 +94,11 @@ export default function WorkbenchNav({
     return () => query.removeEventListener("change", onChange);
   }, [drawerOpen, setDrawer]);
 
-  const navItem = (route: string, label: string, Icon: typeof Home) => {
+  const navItem = (route: string, label: string, Icon: typeof FolderKanban) => {
     const active =
       !assistantActive &&
       (viewRoute === route ||
-        (route !== "/home" && viewRoute.startsWith(route)));
+        viewRoute.startsWith(route));
     return (
       <button
         type="button"
@@ -141,16 +136,6 @@ export default function WorkbenchNav({
         </button>
       </div>
       {navItem("/engagements", "Engagements", FolderKanban)}
-      <div data-testid="personal-space">
-        <div className="tw-nav-section" data-testid="personal-nav-section">
-          My work
-        </div>
-        {navItem("/home", "Home", Home)}
-        {navItem("/todo", "Tasks", CheckSquare)}
-        {navItem("/calendar", "Calendar", Calendar)}
-        {navItem("/documents", "Documents", Files)}
-        {navItem("/reminders", "Reminders", Bell)}
-      </div>
       <div className="tw-nav-section">Assistant</div>
       <button
         type="button"

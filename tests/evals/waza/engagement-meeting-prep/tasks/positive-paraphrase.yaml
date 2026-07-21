@@ -1,0 +1,24 @@
+id: WAZA-MP-2-paraphrased-trigger
+name: Paraphrased meeting-prep trigger
+description: Natural meeting language must still load the skill and retrieve the full record.
+tags: [gate, routing, positive]
+inputs:
+  prompt: I have a Product Launch customer status call in twenty minutes. Give me a concise health brief.
+expected:
+  behavior:
+    max_tool_calls: 8
+graders:
+  - type: skill_invocation
+    name: invokes_meeting_prep
+    config:
+      mode: exact_match
+      required_skills: [engagement-meeting-prep]
+      allow_extra: false
+  - type: tool_constraint
+    name: grounded_read_only
+    config:
+      expect_tools:
+        - { tool: ".*list_engagements$" }
+        - { tool: ".*get_engagement$" }
+      reject_tools:
+        - { tool: ".*(create_engagement|update_engagement|set_engagement_status|share_engagement|navigate)$" }

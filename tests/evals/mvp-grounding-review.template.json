@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "kind": "mvp-grounding-review",
+  "productRunId": "REPLACE_WITH_PRODUCT_RUN_ID",
+  "sourceRevision": "REPLACE_WITH_FULL_SOURCE_REVISION",
+  "fixtureVersion": "REPLACE_WITH_FIXTURE_VERSION",
+  "fixtureHash": "REPLACE_WITH_FIXTURE_SHA256",
+  "skillSha256": "REPLACE_WITH_SCORECARD_SKILL_SHA256",
+  "reviewer": "REPLACE_WITH_HUMAN_REVIEWER",
+  "reviewedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+  "reviews": [
+    {
+      "workflowId": "MVP-W1-engagement-meeting-to-action",
+      "status": "APPROVED_OR_REJECTED",
+      "note": "Compare the meeting brief against the exact list/get outputs. Record any unsupported, incorrect, or materially omitted claim."
+    }
+  ]
+}

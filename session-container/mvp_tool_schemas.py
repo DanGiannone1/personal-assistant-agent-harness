@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 DestinationId = Literal[
-    "engagements", "engagement_overview", "engagement_tasks", "engagement_artifacts", "workbench",
+    "engagements", "engagement_overview", "engagement_tasks", "engagement_artifacts",
 ]
 
 

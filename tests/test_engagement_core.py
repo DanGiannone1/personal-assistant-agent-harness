@@ -132,6 +132,8 @@ class EngagementServiceTests(unittest.TestCase):
             ("editor", {"customer": "c" * 121}, "customer"),
             ("editor", {"statusNote": "s" * 301}, "statusNote"),
             ("editor", {"targetDate": "2026-01-011"}, "targetDate"),
+            ("editor", {"startDate": "20260721"}, "startDate"),
+            ("editor", {"targetDate": "20260721"}, "targetDate"),
         )
         for actor, values, field in cases:
             with self.subTest(field=field):

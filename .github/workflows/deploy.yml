@@ -13,13 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Node dependencies
+        run: |
+          npm ci
+          (cd frontend && npm ci)
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install focused test runner
-        run: python -m pip install pytest
-      - name: Run Entra and infrastructure contracts
-        run: python -m pytest -q tests/test_infra_entra_contract.py
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked Python environments
+        run: |
+          uv sync --locked
+          (cd session-container && uv sync --locked)
+      - name: Run deterministic host verification
+        run: npm run verify:ci
       - name: Build Bicep
         uses: azure/cli@v2
         with:
@@ -27,3 +38,5 @@ jobs:
             az bicep install
             az bicep build --file infra/foundation.bicep
             az bicep build --file infra/apps.bicep
+      - name: Check deploy script syntax
+        run: bash -n infra/deploy.sh

@@ -1,0 +1,37 @@
+id: WAZA-MP-5-grounded-brief
+name: Grounded meeting brief
+description: The brief must use the fixture facts, remain read-only, and avoid invented content.
+tags: [advisory, quality, functional]
+inputs:
+  prompt: Prep me for my Product Launch status meeting. Keep it concise and call out what is not recorded.
+expected:
+  behavior:
+    max_tool_calls: 8
+graders:
+  - type: skill_invocation
+    name: invokes_meeting_prep
+    config:
+      mode: exact_match
+      required_skills: [engagement-meeting-prep]
+      allow_extra: false
+  - type: tool_constraint
+    name: complete_read_only_evidence
+    config:
+      expect_tools:
+        - { tool: ".*list_engagements$" }
+        - { tool: ".*get_engagement$" }
+      reject_tools:
+        - { tool: ".*(create_engagement|update_engagement|set_engagement_status|share_engagement|navigate)$" }
+  - type: prompt
+    name: grounding_quality_advisory
+    config:
+      model: claude-sonnet-4.6
+      continue_session: false
+      prompt: |
+        Review the task transcript and tool results. This is an advisory language-quality check.
+        Pass only if the final brief accurately identifies Product Launch for Fabrikam, Green status,
+        target date 2026-08-28, the Pricing model approved milestone due 2026-07-22 in Planned status,
+        and the high-priority Finalize pricing tiers task; it must not invent a status reason, risk,
+        owner, milestone, task, or date. It should explicitly distinguish missing information from
+        recorded facts. Call set_waza_grade_pass once if every condition holds; otherwise call
+        set_waza_grade_fail once and name the unsupported, incorrect, or missing claim.

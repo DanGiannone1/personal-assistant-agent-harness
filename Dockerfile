@@ -14,10 +14,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Copy application code
 COPY *.py ./
 COPY workbench_core/ ./workbench_core/
-# app.py imports appdb/library from session-container/ (added to sys.path at startup).
-# seed_docs/ must ride along: appdb seeds the owner doc's library from it, and the
-# orchestrator can be the first seeder (POST /sessions) — without it the library seeds empty.
-COPY session-container/appdb.py session-container/library.py session-container/navsvc.py ./session-container/
+COPY session-container/appdb.py ./session-container/
 COPY session-container/seed_docs/ ./session-container/seed_docs/
 
 ENV PATH="/app/.venv/bin:$PATH"

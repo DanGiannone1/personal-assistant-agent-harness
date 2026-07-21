@@ -1,17 +1,32 @@
 {
-  "fixtureVersion": "mvp-demo-v1",
+  "fixtureVersion": "mvp-demo-v2",
   "cases": [
     {
       "id": "MVP-E1-list-authorized",
       "actor": "dan",
       "prompt": "List the Engagements I can access using the product tool.",
-      "expectation": { "operation": "list", "status": "succeeded", "stateChanged": false }
+      "expectation": {
+        "operation": "list", "status": "succeeded", "stateChanged": false,
+        "toolCall": { "name": "list_engagements", "args": {} },
+        "forbiddenToolNames": ["navigate", "create_engagement", "get_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
+        "completeToolEvidence": true,
+        "assistantResponseRequired": true,
+        "modelVisibleOutput": { "kind": "authorizedEngagementList" }
+      }
     },
     {
       "id": "MVP-E2-read-grounded",
       "actor": "ava",
       "prompt": "Read Engagement eng-product-launch using its stable ID.",
-      "expectation": { "operation": "get", "status": "succeeded", "stateChanged": false }
+      "expectation": {
+        "operation": "get", "status": "succeeded", "stateChanged": false,
+        "resourceId": "eng-product-launch",
+        "toolCall": { "name": "get_engagement", "args": { "engagement_id": "eng-product-launch" } },
+        "forbiddenToolNames": ["navigate", "create_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
+        "completeToolEvidence": true,
+        "assistantResponseRequired": true,
+        "modelVisibleOutput": { "kind": "engagementDetail", "engagementId": "eng-product-launch" }
+      }
     },
     {
       "id": "MVP-E3-navigate-typed",
@@ -19,6 +34,9 @@
       "prompt": "Use the navigation tool to open my Engagement portfolio.",
       "expectation": {
         "operation": "navigate", "status": "resolved", "stateChanged": false,
+        "toolCall": { "name": "navigate", "args": { "destination_id": "engagements" } },
+        "forbiddenToolNames": ["list_engagements", "create_engagement", "get_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
+        "completeToolEvidence": true,
         "navigation": { "destination": { "id": "engagements", "path": "/engagements" }, "requestedAtNavigationVersion": 0 }
       }
     },
@@ -28,6 +46,9 @@
       "prompt": "Set Engagement eng-product-launch to Yellow with reason 'MVP evaluation dependency review'. Use the supported product tool.",
       "expectation": {
         "operation": "update", "status": "committed", "stateChanged": true, "resourceId": "eng-product-launch", "onlyEngagementMayChange": "eng-product-launch", "exactEngagementUpdate": { "id": "eng-product-launch", "actor": "dan", "detail": "status, statusNote" },
+        "toolCall": { "name": "set_engagement_status", "args": { "engagement_id": "eng-product-launch", "status": "yellow", "note": "MVP evaluation dependency review" } },
+        "forbiddenToolNames": ["navigate", "create_engagement", "update_engagement", "share_engagement"],
+        "completeToolEvidence": true,
         "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" }
       }
     },
@@ -37,7 +58,11 @@
       "prompt": "Set Engagement eng-product-launch to Red. Do not provide a reason.",
       "expectation": {
         "operation": "update", "status": "invalid", "stateChanged": false, "noCommitted": true,
-        "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },
+        "argumentTargetId": "eng-product-launch",
+        "toolCall": { "name": "set_engagement_status", "args": { "engagement_id": "eng-product-launch", "status": "red" } },
+        "forbiddenToolNames": ["navigate", "create_engagement", "update_engagement", "share_engagement"],
+        "completeToolEvidence": true,
+        "engagementAfter": { "id": "eng-product-launch", "status": "green", "statusNote": "" },
         "safeNonExecution": {
           "targetId": "eng-product-launch",
           "allowedResultAlternatives": [[], [{ "operation": "list", "status": "succeeded" }]]
@@ -51,7 +76,11 @@
       "prompt": "Set Engagement eng-product-launch to Red with reason 'unauthorized probe'.",
       "expectation": {
         "operation": "update", "status": "not_found", "stateChanged": false, "noCommitted": true,
-        "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "MVP evaluation dependency review" },
+        "argumentTargetId": "eng-product-launch",
+        "toolCall": { "name": "set_engagement_status", "args": { "engagement_id": "eng-product-launch", "status": "red", "note": "unauthorized probe" } },
+        "forbiddenToolNames": ["navigate", "create_engagement", "update_engagement", "share_engagement"],
+        "completeToolEvidence": true,
+        "engagementAfter": { "id": "eng-product-launch", "status": "green", "statusNote": "" },
         "safeNonExecution": {
           "targetId": "eng-product-launch",
           "allowedResultAlternatives": [[], [{ "operation": "list", "status": "succeeded" }]]

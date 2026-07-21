@@ -29,7 +29,7 @@ import {
   deleteEngagementArtifact,
   deleteEngagementTask,
   listUsers,
-  openEngagementArtifact,
+  downloadEngagementArtifact,
   removeConvention,
   removeEngagementMember,
   updateEngagement,
@@ -433,11 +433,11 @@ export function EngagementScreen({
         />
       </div>
     );
-  if (sub === "documents")
+  if (sub === "artifacts")
     return (
-      <div className="tw-screen" data-testid="engagement-documents-screen">
+      <div className="tw-screen" data-testid="engagement-artifacts-screen">
         {header}
-        <EngagementDocuments
+        <EngagementArtifacts
           engagement={engagement}
           editable={editable}
           onRefresh={onRefresh}
@@ -507,7 +507,7 @@ function EngagementHeader({
   const tabs: [string, string][] = [
     ["", "Overview"],
     ["tasks", "Tasks"],
-    ["documents", "Artifacts"],
+    ["artifacts", "Artifacts"],
     ["settings", "Team & conventions"],
   ];
   return (
@@ -1212,7 +1212,7 @@ function OwnerMemberControls({ engagementId, member, busy, run }: { engagementId
   );
 }
 
-function EngagementDocuments({
+function EngagementArtifacts({
   engagement,
   editable,
   onRefresh,
@@ -1239,15 +1239,20 @@ function EngagementDocuments({
       if (fileInput.current) fileInput.current.value = "";
     }
   };
-  const open = async (artifact: Artifact) => {
+  const download = async (artifact: Artifact) => {
     setError("");
     try {
-      const blob = await openEngagementArtifact(engagement.id, artifact.id);
+      const blob = await downloadEngagementArtifact(engagement.id, artifact.id);
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = artifact.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (err) {
-      setError(friendlyError(err, "Artifact action failed."));
+      setError(friendlyError(err, "Unable to download artifact."));
     }
   };
   const remove = async (artifact: Artifact) => {
@@ -1306,11 +1311,11 @@ function EngagementDocuments({
               <button
                 type="button"
                 className="tw-btn-ghost"
-                data-testid={`artifact-open-${artifact.id}`}
-                title={`Open ${artifact.name}`}
-                onClick={() => void open(artifact)}
+                data-testid={`artifact-download-${artifact.id}`}
+                title={`Download ${artifact.name}`}
+                onClick={() => void download(artifact)}
               >
-                <Download size={13} />
+                <Download size={13} /> Download
               </button>
               {editable && (
                 <ArmedDelete

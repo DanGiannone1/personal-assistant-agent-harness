@@ -1,0 +1,79 @@
+{
+  "fixtureVersion": "mvp-demo-v2",
+  "workflows": [
+    {
+      "id": "MVP-W1-engagement-meeting-to-action",
+      "actor": "dan",
+      "description": "Prepare a grounded brief, carry the resolved target into an exact update, then navigate to it.",
+      "skillName": "engagement-meeting-prep",
+      "groundingTurn": 0,
+      "turns": [
+        {
+          "id": "prepare",
+          "prompt": "Prep me for my Product Launch status meeting.",
+          "expectation": {
+            "operation": "get",
+            "status": "succeeded",
+            "resourceId": "eng-product-launch",
+            "stateChanged": false,
+            "requiredToolNames": ["list_engagements", "get_engagement"],
+            "forbiddenToolNames": ["create_engagement", "update_engagement", "set_engagement_status", "share_engagement", "navigate"],
+            "toolCall": { "name": "get_engagement", "args": { "engagement_id": "eng-product-launch" } },
+            "completeToolEvidence": true,
+            "assistantResponseRequired": true,
+            "noNavigation": true
+          }
+        },
+        {
+          "id": "update",
+          "prompt": "Pricing approval slipped. Set its status to Yellow with the exact reason 'Pricing approval slipped'.",
+          "expectation": {
+            "operation": "update",
+            "status": "committed",
+            "resourceId": "eng-product-launch",
+            "stateChanged": true,
+            "onlyEngagementMayChange": "eng-product-launch",
+            "exactEngagementUpdate": { "id": "eng-product-launch", "actor": "dan", "detail": "status, statusNote" },
+            "engagementAfter": { "id": "eng-product-launch", "status": "yellow", "statusNote": "Pricing approval slipped" },
+            "requiredToolNames": ["set_engagement_status"],
+            "forbiddenToolNames": ["create_engagement", "update_engagement", "share_engagement", "navigate"],
+            "toolCall": { "name": "set_engagement_status", "args": { "engagement_id": "eng-product-launch", "status": "yellow", "note": "Pricing approval slipped" } },
+            "completeToolEvidence": true,
+            "assistantResponseRequired": true,
+            "forbiddenSkillNames": ["engagement-meeting-prep"],
+            "noNavigation": true
+          }
+        },
+        {
+          "id": "open",
+          "prompt": "Open it.",
+          "expectation": {
+            "operation": "navigate",
+            "status": "resolved",
+            "resourceId": "eng-product-launch",
+            "stateChanged": false,
+            "requiredToolNames": ["navigate"],
+            "forbiddenToolNames": ["create_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
+            "toolCall": { "name": "navigate", "args": { "destination_id": "engagement_overview", "engagement_id": "eng-product-launch" } },
+            "completeToolEvidence": true,
+            "assistantResponseRequired": false,
+            "forbiddenSkillNames": ["engagement-meeting-prep"],
+            "navigation": {
+              "destination": {
+                "id": "engagement_overview",
+                "path": "/engagements/eng-product-launch",
+                "engagementId": "eng-product-launch"
+              },
+              "requestedAtNavigationVersion": 0
+            }
+          }
+        }
+      ],
+      "finalEngagement": {
+        "id": "eng-product-launch",
+        "status": "yellow",
+        "statusNote": "Pricing approval slipped"
+      }
+    }
+  ]
+}

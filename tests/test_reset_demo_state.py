@@ -33,6 +33,13 @@ def test_reset_guard_accepts_explicit_local_demo_target() -> None:
     assert target["database"] == "csa_workbench_demo"
 
 
+def test_reset_fixture_version_and_summary_exclude_legacy_personal_state() -> None:
+    source = Path(reset_demo_state.__file__).read_text(encoding="utf-8")
+    assert reset_demo_state.FIXTURE_VERSION == "mvp-demo-v2"
+    assert "personalSpaces" not in source
+    assert "load_state" not in source
+
+
 def test_configure_import_paths_makes_root_orchestrator_discoverable(monkeypatch: pytest.MonkeyPatch) -> None:
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setattr(sys, "path", [str(root / "scripts")])
@@ -45,6 +52,43 @@ def test_reset_guard_allows_only_the_dedicated_artifact_subtree() -> None:
     env = valid_env()
     env["ARTIFACTS_DIR"] = str(Path(__file__).resolve().parents[1] / ".mvp-artifacts" / "run-1")
     assert reset_demo_state.reset_guard(env)["artifacts_dir"].endswith(".mvp-artifacts/run-1")
+
+
+def test_reset_guard_accepts_only_the_exact_isolated_run_targets() -> None:
+    env = valid_env()
+    env.update({
+        "CSA_LOCAL_RUN_ID": "case-7",
+        "COSMOS_DATABASE": "csa_local_case-7",
+        "COSMOS_CONTAINER": "appstate_demo_case-7",
+        "ARTIFACTS_DIR": str(Path(__file__).resolve().parents[1] / ".mvp-artifacts" / "case-7"),
+        "WORKSPACE": str(Path(__file__).resolve().parents[1] / ".local-runs" / "case-7" / "workspace"),
+    })
+    target = reset_demo_state.reset_guard(env)
+    assert target["workspace_dir"].endswith(".local-runs/case-7/workspace")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("ARTIFACTS_DIR", ".mvp-artifacts/other", "exact .mvp-artifacts"),
+        ("WORKSPACE", ".local-runs/other/workspace", "exact .local-runs"),
+        ("COSMOS_DATABASE", "csa_local_other", "include CSA_LOCAL_RUN_ID"),
+        ("COSMOS_CONTAINER", "appstate_demo_other", "include CSA_LOCAL_RUN_ID"),
+        ("CSA_LOCAL_RUN_ID", "../escape", "CSA_LOCAL_RUN_ID"),
+    ],
+)
+def test_reset_guard_refuses_isolated_target_escapes(field: str, value: str, message: str) -> None:
+    env = valid_env()
+    env.update({
+        "CSA_LOCAL_RUN_ID": "case-7",
+        "COSMOS_DATABASE": "csa_local_case-7",
+        "COSMOS_CONTAINER": "appstate_demo_case-7",
+        "ARTIFACTS_DIR": str(Path(__file__).resolve().parents[1] / ".mvp-artifacts" / "case-7"),
+        "WORKSPACE": str(Path(__file__).resolve().parents[1] / ".local-runs" / "case-7" / "workspace"),
+    })
+    env[field] = value
+    with pytest.raises(ValueError, match=message):
+        reset_demo_state.reset_guard(env)
 
 
 @pytest.mark.parametrize(

@@ -103,6 +103,13 @@ class APIAuthenticator:
         if issuer not in self._allowed_issuers():
             raise InvalidTokenError("Unexpected issuer")
 
+        # This public API accepts only delegated user access.  Application tokens
+        # carry roles rather than the delegated `scp` claim and must not be usable
+        # as a browser credential.
+        scopes = claims.get("scp")
+        if not isinstance(scopes, str) or "access_as_user" not in scopes.split():
+            raise InvalidTokenError("Missing delegated scope")
+
         return claims
 
     def _allowed_issuers(self) -> set[str]:

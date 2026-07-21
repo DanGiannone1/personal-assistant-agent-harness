@@ -212,6 +212,7 @@ test-results/
 playwright-report/
 evidence/mvp/local-synthetic/
 /.mvp-artifacts/
+/.local-runs/
 
 # RFP agent workspace
 workspace/
@@ -220,47 +221,17 @@ workspace-debug/
 # Frontend
 frontend/node_modules/
 frontend/.next/
+frontend/.next-local-runs/
 !frontend/src/lib/
 
-# Dev artifacts
-screenshots/*
-frontend/screenshots/
-sweep-results/
+# Dev artifacts (local screenshots, traces, caches)
+screenshots/
 logs/
-
-# uv local cache
 .uv-cache/
 
-# Temporary test scripts and output
-azure-verify.mjs
-capture-angles.mjs
-capture-chat.mjs
-refactor-colors.js
-verify-localhost.mjs
-test-req-extraction.mjs
-e2e_test.txt
-e2e_final.txt
-local_verify.txt
-test.txt
-test_e2e.txt
-test_rfp.txt
-verify.txt
-
-# Screenshot directories
-screenshots-test/
-screenshots-agent-a/
-screenshots-verification/
-
-# POC evidence (override screenshots/ ignore)
-!screenshots/poc/
-!screenshots/poc/**
-logs_dev.out
-
-# Per-round review screenshots are bulky and redundant with screenshots/poc; keep only findings.md
-review/*/screens/
-
-# Local reference material (not part of the app)
+# Local reference material and inbox (not part of the app)
 /ida-reference/
+/incoming/
 
 # Engagement artifact bytes (local dev backend)
 /artifacts/

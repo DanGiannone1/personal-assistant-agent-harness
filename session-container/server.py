@@ -21,7 +21,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from ag_ui.core.events import RunErrorEvent
+from ag_ui.core.events import BaseEvent, RunErrorEvent
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -30,27 +30,36 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import appdb
 # Agent backend is selectable so the same session container can run either the
-# standalone LangGraph Deep Agents backend (default — the primary harness per
-# docs/mvp-requirements.md R11) or the GitHub Copilot SDK agent. Both expose an
+# standalone LangGraph Deep Agents backend (the deployed primary harness) or
+# the GitHub Copilot SDK agent (local portability check). Both expose an
 # identical AgentSession interface (see agent_deepagents).
 _AGENT_BACKEND = os.getenv("AGENT_BACKEND", "deepagents").lower()
 if _AGENT_BACKEND == "deepagents":
-    from agent_deepagents import AgentSession, _sse_event
+    from agent_deepagents import AgentSession
 elif _AGENT_BACKEND == "copilot":
-    from agent import AgentSession, _sse_event
+    from agent import AgentSession
 else:
     raise RuntimeError("AGENT_BACKEND must be 'deepagents' or 'copilot'")
-from trace_logging import setup_trace_logging, trace_event
 from tracing import setup_tracing
-from upload_policy import ALLOWED_UPLOAD_EXTENSIONS
+from workbench_core.trace_logging import setup_trace_logging, trace_event
+from workbench_core.request_limits import (
+    MAX_EDIT_CONTENT_BYTES,
+    MAX_EDIT_FILENAME_CHARS,
+    JsonRequestBodyLimitMiddleware,
+)
+from workbench_core.upload_policy import is_allowed_upload
 from workload_auth import WorkloadAuthenticator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info("Agent backend: %s", _AGENT_BACKEND)
 setup_trace_logging()
+
+
+def _sse_event(event: BaseEvent) -> str:
+    """Format an AG-UI event as an SSE data line (same framing as the adapters)."""
+    return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
 
 # In ACA, this is /workspace. In local dev, default to a directory relative to the project root.
 _default_ws = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
@@ -68,6 +77,7 @@ async def runtime_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CSA Workbench Session", lifespan=runtime_lifespan)
+app.add_middleware(JsonRequestBodyLimitMiddleware)
 setup_tracing(app)
 
 
@@ -122,6 +132,13 @@ def _get_user(request: Request) -> str:
             raise HTTPException(status_code=400, detail="Invalid user identifier")
     sid = request.query_params.get("identifier") or ""
     known = _session_users.get(sid)
+    if not raw:
+        # Existing sessions must never inherit their stored owner when the
+        # orchestrator omitted its actor assertion.  Keep this neutral so a
+        # caller cannot distinguish a real session from an unknown one.
+        if known or _session_exists(sid):
+            raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=400, detail="Missing user identifier")
     if known and raw and raw != known:
         raise HTTPException(status_code=404, detail="Session not found")
     if known:
@@ -130,9 +147,7 @@ def _get_user(request: Request) -> str:
         # A runtime restart loses the in-memory binding. An old workspace must
         # never become claimable by the next forwarded actor.
         raise HTTPException(status_code=404, detail="Session not found")
-    if raw:
-        return raw
-    raise HTTPException(status_code=400, detail="Missing user identifier")
+    return raw
 
 
 def _workspace_for_request(request: Request) -> str:
@@ -228,34 +243,15 @@ class ChatRequest(BaseModel):
 @app.post("/session", status_code=201)
 async def create_session(request: Request) -> dict:
     session_id = _get_identifier(request)
-    raw_user_id = (request.headers.get("X-User-Id") or "").strip().lower()
-    if not _USER_ID_RE.fullmatch(raw_user_id):
-        raise HTTPException(status_code=400, detail="Invalid user identifier")
     if _session_exists(session_id) or session_id in _session_users:
         raise HTTPException(status_code=409, detail="Session already exists")
-    user_id = raw_user_id
+    user_id = _get_user(request)
     workspace = Path(_session_workspace(session_id))
     workspace.mkdir(parents=True, exist_ok=True)
     _session_users[session_id] = user_id
     _ensure_documents_seeded(str(workspace))
     trace_event("session", "session.created", session_id=session_id, user=user_id, workspace=str(workspace))
     return {"session_id": session_id, "status": "active", "user_id": user_id}
-
-
-@app.get("/app/state")
-async def app_state(request: Request) -> dict:
-    """Return the full CSA Workbench application state for this session.
-
-    Source of truth is the workspace JSON the agent's tools mutate; seeds lazily
-    if missing (e.g. after a reset or orchestrator-probed restore). Returns the
-    new shape: {currentRoute, tasks[], events[], routes[]}.
-    """
-    session_id = _get_identifier(request)
-    _require_existing_session(session_id)
-    user_id = _get_user(request)
-    workspace = _session_workspace(session_id)
-    _ensure_documents_seeded(workspace)  # lazy-seed docs for restored/reset sessions
-    return appdb.load_state(user_id)
 
 
 @app.get("/session")
@@ -358,13 +354,8 @@ async def upload(file: UploadFile, request: Request) -> dict:
     if not safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Extension allowlist
-    ext = os.path.splitext(safe_name)[1].lower()
-    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File type '{ext}' not allowed",
-        )
+    if not is_allowed_upload(safe_name):
+        raise HTTPException(status_code=415, detail="Markdown (.md) files only")
 
     os.makedirs(workspace, exist_ok=True)
     dest = os.path.join(workspace, safe_name)
@@ -395,7 +386,7 @@ async def upload(file: UploadFile, request: Request) -> dict:
         except Exception:
             # File is on disk — manifest failure is non-fatal; origin will default to "generated"
             logger.warning("Failed to update upload manifest for %s", safe_name, exc_info=True)
-    return {"path": real_dest, "filename": safe_name, "size": bytes_written}
+    return {"path": safe_name, "filename": safe_name, "size": bytes_written}
 
 
 @app.get("/files")
@@ -480,8 +471,8 @@ async def file_content(filename: str, request: Request) -> dict:
 
 
 class WriteContentBody(BaseModel):
-    filename: str
-    content: str
+    filename: str = Field(..., max_length=MAX_EDIT_FILENAME_CHARS)
+    content: str = Field(..., max_length=MAX_EDIT_CONTENT_BYTES)
 
 
 @app.put("/files/content")
@@ -507,7 +498,7 @@ async def write_file_content(body: WriteContentBody, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="File not found")
     if target.suffix.lower() not in {".md", ".txt", ".csv"}:
         raise HTTPException(status_code=415, detail="Only text artifacts are editable")
-    if len(body.content.encode("utf-8")) > 2 * 1024 * 1024:
+    if len(body.content.encode("utf-8")) > MAX_EDIT_CONTENT_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
     target.write_text(body.content, encoding="utf-8")
@@ -564,14 +555,13 @@ _SEED_DOCS_DIR = Path(__file__).parent / "seed_docs"
 def _ensure_documents_seeded(workspace: str) -> None:
     """Seed the workspace's provided source documents into a fresh workspace.
 
-    These are documents the user works *from* (a project brief, meeting notes, a 1:1
-    log, a short reference/SOP). They are registered in the upload manifest so they
-    read as provided documents (origin 'uploaded') in the host Documents view and are
-    retrievable by the agent for reading/summarizing — but NOT shown as generated
-    artifacts in the assistant canvas.
+    These are Markdown documents the user works *from* (a project brief, meeting
+    notes, a 1:1 log, a short reference/SOP). They are registered in the upload
+    manifest for agent reading and summarizing, but remain ephemeral session files,
+    not durable Engagement artifacts.
     """
     if not _SEED_DOCS_DIR.is_dir():
-        # Fail loud (packaging error): the documents capability depends on these.
+        # Fail loud (packaging error): the session workspace depends on these.
         logger.warning("Seed documents directory missing: %s", _SEED_DOCS_DIR)
         return
     ws = Path(workspace)

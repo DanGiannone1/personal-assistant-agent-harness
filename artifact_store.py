@@ -3,7 +3,7 @@
 Metadata (name, size, uploader) lives on the engagement doc's `library[]`; this
 module only moves bytes, keyed by (engagement_id, artifact_id). Backend selection:
 `ARTIFACTS_ACCOUNT` set → Azure Blob via DefaultAzureCredential (managed identity
-in prod), container `ARTIFACTS_CONTAINER` (default "artifacts"); otherwise a local
+in prod), container `ARTIFACTS_CONTAINER` (default "engagement-artifacts"); otherwise a local
 directory (`ARTIFACTS_DIR`, default ./artifacts) for dev and tests. No shared
 keys, no SAS — access goes through the orchestrator, which enforces membership.
 """
@@ -18,6 +18,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+DEFAULT_CONTAINER = "engagement-artifacts"
 
 _blob_service = None  # cached BlobServiceClient (created once, thread-safe SDK)
 
@@ -42,7 +43,7 @@ def assert_durable_configuration(identity_mode: str) -> None:
 def describe() -> str:
     account = _account()
     if account:
-        return f"azure-blob:{account}/{os.getenv('ARTIFACTS_CONTAINER', 'artifacts')}"
+        return f"azure-blob:{account}/{os.getenv('ARTIFACTS_CONTAINER', DEFAULT_CONTAINER)}"
     return f"local-dir:{os.getenv('ARTIFACTS_DIR', './artifacts')}"
 
 
@@ -67,7 +68,7 @@ def _container_client():
             account_url=f"https://{account}.blob.core.windows.net",
             credential=DefaultAzureCredential(),
         )
-    client = _blob_service.get_container_client(os.getenv("ARTIFACTS_CONTAINER", "artifacts"))
+    client = _blob_service.get_container_client(os.getenv("ARTIFACTS_CONTAINER", DEFAULT_CONTAINER))
     try:
         client.create_container()
     except ResourceExistsError:

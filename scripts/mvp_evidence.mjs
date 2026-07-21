@@ -1,6 +1,33 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
+export const MVP_EVAL_SCOPES = Object.freeze(["all", "atomic", "workflow"]);
+
+export function parseMvpEvalScope(value) {
+  const scope = value === undefined ? "all" : value;
+  if (!MVP_EVAL_SCOPES.includes(scope)) {
+    throw new Error(`MVP_EVAL_SCOPE must be one of: ${MVP_EVAL_SCOPES.join(", ")}`);
+  }
+  return scope;
+}
+
+export function selectMvpEvalScope(scopeValue, atomicSuite, workflowSuite) {
+  const scope = parseMvpEvalScope(scopeValue);
+  const runsAtomic = scope === "all" || scope === "atomic";
+  const runsWorkflow = scope === "all" || scope === "workflow";
+  if (runsAtomic && !Array.isArray(atomicSuite?.cases)) throw new Error("atomic MVP suite must define cases");
+  if (runsWorkflow && !Array.isArray(workflowSuite?.workflows)) throw new Error("workflow MVP suite must define workflows");
+  if (scope === "all" && workflowSuite.fixtureVersion !== atomicSuite.fixtureVersion) {
+    throw new Error("atomic and workflow fixture versions must match");
+  }
+  return {
+    scope,
+    fixtureVersion: runsWorkflow ? workflowSuite.fixtureVersion : atomicSuite.fixtureVersion,
+    atomicCases: runsAtomic ? atomicSuite.cases : [],
+    workflowDefinitions: runsWorkflow ? workflowSuite.workflows : [],
+  };
+}
+
 export function parseSse(text) {
   const frames = text.split(/\r?\n\r?\n/).filter((frame) => frame.trim());
   return frames.map((frame) => {
@@ -13,6 +40,192 @@ export function parseSse(text) {
 
 export function terminalEvents(events) {
   return events.filter((event) => event.type === "RUN_FINISHED" || event.type === "RUN_ERROR");
+}
+
+export function assistantResponse(events) {
+  return events.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => event.delta).join("");
+}
+
+export function extractToolCalls(events) {
+  const open = new Map();
+  const completed = [];
+  for (const event of events) {
+    if (event?.type === "TOOL_CALL_START") {
+      open.set(event.tool_call_id, { id: event.tool_call_id, name: event.tool_call_name, argsText: "", result: null });
+    } else if (event?.type === "TOOL_CALL_ARGS") {
+      const call = open.get(event.tool_call_id);
+      if (call) call.argsText += event.delta;
+    } else if (event?.type === "TOOL_CALL_RESULT") {
+      const call = open.get(event.tool_call_id);
+      if (call) call.result = event.result;
+    } else if (event?.type === "TOOL_CALL_END") {
+      const call = open.get(event.tool_call_id);
+      if (!call) continue;
+      let args = null;
+      if (call.argsText) {
+        try { args = JSON.parse(call.argsText); } catch { args = null; }
+      } else {
+        args = {};
+      }
+      completed.push({ ...call, args });
+      open.delete(event.tool_call_id);
+    }
+  }
+  return completed;
+}
+
+function containsExpected(actual, expected) {
+  if (expected === null || typeof expected !== "object") return actual === expected;
+  if (Array.isArray(expected)) return Array.isArray(actual) && expected.length === actual.length
+    && expected.every((value, index) => containsExpected(actual[index], value));
+  return !!actual && typeof actual === "object"
+    && Object.entries(expected).every(([key, value]) => containsExpected(actual[key], value));
+}
+
+function productEvidenceFor(call, rawRecords) {
+  return rawRecords.find((record) => record?.kind === "product_tool_execution"
+    && record.tool_call_id === call.id
+    && record.tool === call.name);
+}
+
+function skillInvocations(rawRecords) {
+  return rawRecords.filter((record) => record?.kind === "skill_invoked" && record.skill?.name);
+}
+
+function normalizeModelVisibleLineEndings(value) {
+  return typeof value === "string" ? value.replace(/\r\n/g, "\n") : null;
+}
+
+function actorIdFromState(before) {
+  const actorId = before?.user?.id;
+  return typeof actorId === "string" && actorId.trim() ? actorId.trim().toLowerCase() : null;
+}
+
+function memberRoleForActor(engagement, actorId) {
+  if (!Array.isArray(engagement?.members) || !actorId) return null;
+  const member = engagement.members.find((entry) => entry?.userId === actorId);
+  return typeof member?.role === "string" ? member.role : null;
+}
+
+function isStringOrAbsent(value) {
+  return value === undefined || typeof value === "string";
+}
+
+function isAuthoritativeEngagement(engagement, actorId) {
+  if (!engagement || typeof engagement !== "object"
+    || typeof engagement.id !== "string" || typeof engagement.name !== "string"
+    || !isStringOrAbsent(engagement.customer) || typeof engagement.status !== "string"
+    || !isStringOrAbsent(engagement.statusNote) || !isStringOrAbsent(engagement.startDate)
+    || !isStringOrAbsent(engagement.targetDate) || !isStringOrAbsent(engagement.description)
+    || !Array.isArray(engagement.members) || !Array.isArray(engagement.tasks)
+    || !Array.isArray(engagement.actions) || !Array.isArray(engagement.milestones)
+    || !Array.isArray(engagement.risks) || !Array.isArray(engagement.library)
+    || !Array.isArray(engagement.conventions)) return false;
+  if (!memberRoleForActor(engagement, actorId)) return false;
+  return engagement.members.every((member) => member && typeof member.userId === "string" && typeof member.role === "string")
+    && engagement.conventions.every((convention) => convention && typeof convention.text === "string")
+    && [
+      [engagement.tasks, ["id", "title", "status", "priority", "dueDate"]],
+      [engagement.actions, ["id", "title", "status", "owner", "dueDate"]],
+      [engagement.milestones, ["id", "title", "status", "dueDate"]],
+      [engagement.risks, ["id", "title", "severity", "status"]],
+    ].every(([items, fields]) => items.every((item) => item && typeof item.id === "string"
+      && fields.every((field) => isStringOrAbsent(item[field]))));
+}
+
+function authoritativeEngagements(before) {
+  const actorId = actorIdFromState(before);
+  if (!actorId || !Array.isArray(before?.engagements)) return null;
+  if (!before.engagements.every((engagement) => isAuthoritativeEngagement(engagement, actorId))) return null;
+  return { actorId, engagements: before.engagements };
+}
+
+function renderAuthorizedEngagementList(before) {
+  const state = authoritativeEngagements(before);
+  if (!state) return null;
+  const { actorId, engagements } = state;
+  if (!engagements.length) return "No engagements yet.";
+  const lines = [`${engagements.length} engagement(s):`];
+  for (const engagement of engagements) {
+    const role = memberRoleForActor(engagement, actorId);
+    const openTasks = engagement.tasks.filter((task) => task.status !== "Done").length;
+    const statusNote = engagement.statusNote ? ` (${engagement.statusNote})` : "";
+    lines.push(
+      `- [${engagement.id}] ${engagement.name} | your role: ${role} | customer=${engagement.customer || "n/a"} | `
+      + `status=${engagement.status}${statusNote} | open tasks=${openTasks} | `
+      + `target=${engagement.targetDate || "n/a"} | docs: ${engagement.library.length}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderEngagementDetail(before, engagementId) {
+  const state = authoritativeEngagements(before);
+  if (!state || typeof engagementId !== "string") return null;
+  const engagement = state.engagements.find((entry) => entry.id === engagementId);
+  if (!engagement) return null;
+  const lines = [
+    `Engagement [${engagement.id}] ${engagement.name}`,
+    `customer=${engagement.customer || "n/a"} | status=${engagement.status || "green"}${engagement.statusNote ? ` (${engagement.statusNote})` : ""} | start=${engagement.startDate || "n/a"} | target=${engagement.targetDate || "n/a"}`,
+    "members: " + (engagement.members.map((member) => `${member.userId}(${member.role})`).join(", ") || "none"),
+  ];
+  if (engagement.description) lines.push(`description: ${engagement.description}`);
+  for (const [label, key, fields] of [
+    ["tasks", "tasks", ["title", "status", "priority", "dueDate"]],
+    ["actions", "actions", ["title", "status", "owner", "dueDate"]],
+    ["milestones", "milestones", ["title", "status", "dueDate"]],
+    ["risks", "risks", ["title", "severity", "status"]],
+  ]) {
+    const items = engagement[key];
+    if (items.length) {
+      lines.push(`${label}:`);
+      for (const item of items) {
+        const parts = fields.filter((field) => item[field]).map((field) => item[field]);
+        lines.push(`- [${item.id}] ${parts.join(" | ")}`);
+      }
+    }
+  }
+  lines.push(`artifacts: ${engagement.library.length}`);
+  if (engagement.conventions.length) lines.push(`conventions: ${engagement.conventions.map((convention) => convention.text).join("; ")}`);
+  return lines.join("\n");
+}
+
+function modelVisibleOutputMatches(output, expected) {
+  return expected !== null && normalizeModelVisibleLineEndings(output) === expected;
+}
+
+function groundedModelVisibleOutputChecks(expectation, before, toolCalls, rawRecords) {
+  const specification = expectation.modelVisibleOutput;
+  const notRequired = {
+    authorizedEngagementIdsGrounded: true,
+    engagementDetailFactsGrounded: true,
+  };
+  if (!specification) return notRequired;
+  const matchingCalls = toolCalls.filter((call) => call.name === expectation.toolCall?.name);
+  if (specification.kind === "authorizedEngagementList") {
+    return {
+      authorizedEngagementIdsGrounded: matchingCalls.length > 0 && matchingCalls.every((call) =>
+        modelVisibleOutputMatches(
+          productEvidenceFor(call, rawRecords)?.model_visible_output,
+          renderAuthorizedEngagementList(before),
+        )),
+      engagementDetailFactsGrounded: true,
+    };
+  }
+  if (specification.kind === "engagementDetail") {
+    return {
+      authorizedEngagementIdsGrounded: true,
+      engagementDetailFactsGrounded: matchingCalls.length > 0 && matchingCalls.every((call) =>
+        modelVisibleOutputMatches(
+          productEvidenceFor(call, rawRecords)?.model_visible_output,
+          renderEngagementDetail(before, specification.engagementId),
+        )),
+    };
+  }
+  return {
+    authorizedEngagementIdsGrounded: false,
+    engagementDetailFactsGrounded: false,
+  };
 }
 
 export function requireLoopbackUrl(value, label) {
@@ -223,20 +436,23 @@ function safeNonExecutionChecks(safeNonExecution, { before, after, events, resul
   };
 }
 
-export function evaluateCase({ expectation, before, after, events }) {
+export function evaluateCase({ expectation, before, after, events, rawRecords = [] }) {
   const results = events.filter((event) => event.type === "TOOL_CALL_RESULT").map((event) => event.result);
+  const toolCalls = extractToolCalls(events);
   const terminals = terminalEvents(events);
   const matchedResult = results.find((result) =>
     (!expectation.operation || result?.operation === expectation.operation)
     && (!expectation.status || result?.status === expectation.status),
   );
   const target = expectation.engagementAfter;
+  const expectedArgumentTarget = expectation.argumentTargetId ?? expectation.resourceId;
   const targetAfter = !target || (() => {
     const engagement = (after.engagements ?? []).find((entry) => entry.id === target.id);
     return !!engagement
       && engagement.status === target.status
       && (target.statusNote === undefined || engagement.statusNote === target.statusNote);
   })();
+  const modelVisibleOutputChecks = groundedModelVisibleOutputChecks(expectation, before, toolCalls, rawRecords);
   const checks = {
     validEventSequence: validEventSequence(events),
     terminalExpected: terminals.length === 1 && events.at(-1) === terminals[0] && terminals[0].type === (expectation.terminal ?? "RUN_FINISHED"),
@@ -248,11 +464,38 @@ export function evaluateCase({ expectation, before, after, events }) {
     onlyNamedEngagementMayChange: !expectation.onlyEngagementMayChange || onlyNamedEngagementMayChange(before, after, expectation.onlyEngagementMayChange),
     onlyExpectedEngagementUpdate: !expectation.exactEngagementUpdate || onlyExpectedEngagementUpdate(before, after, expectation.exactEngagementUpdate),
     resourceMatchesTarget: !expectation.resourceId || (matchedResult?.resource?.kind === "engagement" && matchedResult.resource.id === expectation.resourceId),
+    noUnexpectedResourceTargets: !expectation.resourceId || results.every((result) =>
+      result?.resource?.kind !== "engagement" || result.resource.id === expectation.resourceId),
+    noUnexpectedArgumentTargets: !expectedArgumentTarget || toolCalls.every((call) =>
+      call.args?.engagement_id === undefined || call.args.engagement_id === expectedArgumentTarget),
+    requiredToolCalls: !expectation.requiredToolNames
+      || expectation.requiredToolNames.every((name) => toolCalls.some((call) => call.name === name)),
+    forbiddenToolCalls: !expectation.forbiddenToolNames
+      || expectation.forbiddenToolNames.every((name) => !toolCalls.some((call) => call.name === name)),
+    expectedToolCall: !expectation.toolCall || toolCalls.some((call) => call.name === expectation.toolCall.name
+      && call.args !== null && containsExpected(call.args, expectation.toolCall.args ?? {})),
+    completeModelVisibleToolEvidence: !expectation.completeToolEvidence || toolCalls.every((call) => {
+      const evidence = productEvidenceFor(call, rawRecords);
+      return !!evidence
+        && containsExpected(evidence.arguments, call.args ?? {})
+        && typeof evidence.model_visible_output === "string"
+        && evidence.model_visible_output.length > 0
+        && JSON.stringify(evidence.product_result) === JSON.stringify(call.result);
+    }),
+    ...modelVisibleOutputChecks,
+    expectedSkillInvocation: !expectation.skill || skillInvocations(rawRecords).some((record) =>
+      record.skill.name === expectation.skill.name
+      && (!expectation.skill.sha256 || record.skill.sha256 === expectation.skill.sha256)),
+    forbiddenSkillInvocation: !expectation.forbiddenSkillNames
+      || expectation.forbiddenSkillNames.every((name) => !skillInvocations(rawRecords).some((record) => record.skill.name === name)),
+    assistantResponsePresent: !expectation.assistantResponseRequired || assistantResponse(events).trim().length > 0,
     expectedNavigation: !expectation.navigation || (() => {
       const navigationEvents = events.filter((event) => event.type === "NAVIGATION_RESOLVED");
       return navigationEvents.length === 1
         && navigationEvents[0].destination?.id === expectation.navigation.destination.id
         && navigationEvents[0].destination?.path === expectation.navigation.destination.path
+        && (expectation.navigation.destination.engagementId === undefined
+          || navigationEvents[0].destination?.engagementId === expectation.navigation.destination.engagementId)
         && (expectation.navigation.requestedAtNavigationVersion === undefined
           || navigationEvents[0].requestedAtNavigationVersion === expectation.navigation.requestedAtNavigationVersion);
     })(),
@@ -269,7 +512,46 @@ export function evaluateCase({ expectation, before, after, events }) {
     pass: primaryPass || safeNonExecutionPass, checks,
     safeNonExecution: safeChecks === null ? null : { pass: safeNonExecutionPass, checks: safeChecks },
     results: results.map((result) => ({ operation: result?.operation, status: result?.status })),
+    toolCalls: toolCalls.map((call) => ({ id: call.id, name: call.name, args: call.args, result: call.result })),
+    assistantResponse: assistantResponse(events),
     terminal: terminals[0]?.type ?? null,
+  };
+}
+
+export function evaluateWorkflow({ definition, resetCount, sessionId, before, turns, after }) {
+  const expectedTurns = definition.turns ?? [];
+  const turnResults = turns.map((turn, index) => evaluateCase({
+    expectation: expectedTurns[index]?.expectation ?? {},
+    before: turn.before,
+    after: turn.after,
+    events: turn.events,
+    rawRecords: turn.rawRecords,
+  }));
+  const finalExpected = definition.finalEngagement;
+  const finalEngagement = !finalExpected ? null : (after.engagements ?? []).find((entry) => entry.id === finalExpected.id);
+  const checks = {
+    resetExactlyOnce: resetCount === 1,
+    expectedTurnCount: turns.length === expectedTurns.length,
+    oneSession: typeof sessionId === "string" && !!sessionId && turns.every((turn) => turn.sessionId === sessionId),
+    continuousState: turns.every((turn, index) => index === 0
+      ? stateFingerprint(turn.before) === stateFingerprint(before)
+      : stateFingerprint(turn.before) === stateFingerprint(turns[index - 1].after)),
+    allTurnsPass: turnResults.length === expectedTurns.length && turnResults.every((result) => result.pass),
+    finalEngagement: !finalExpected || (!!finalEngagement
+      && finalEngagement.status === finalExpected.status
+      && finalEngagement.statusNote === finalExpected.statusNote),
+  };
+  const groundingTurn = turnResults[definition.groundingTurn ?? 0];
+  return {
+    pass: Object.values(checks).every(Boolean),
+    checks,
+    turnResults,
+    groundingReview: {
+      status: "REVIEW_REQUIRED",
+      question: "Does the meeting brief contain only facts present in the captured model-visible tool outputs?",
+      assistantResponse: groundingTurn?.assistantResponse ?? "",
+      evidenceRecordKinds: ["product_tool_execution", "skill_invoked"],
+    },
   };
 }
 

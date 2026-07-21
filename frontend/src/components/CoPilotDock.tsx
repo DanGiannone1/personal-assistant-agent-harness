@@ -4,8 +4,8 @@ import { useRouter } from "next/navigation";
 import { Maximize2, PanelRightClose } from "lucide-react";
 import AssistantPanel from "./AssistantPanel";
 
-// The docked co-pilot: the assistant on top of the host app, for navigation / quick
-// CRUD / quick Q&A. `Expand` opens the full /assistant workspace (same session);
+// The docked co-pilot supports Engagement work beside the host app. `Expand` opens
+// the full /assistant workspace (same session);
 // `Collapse` hands the screen back to the app (host app shows a launcher pill).
 export default function CoPilotDock({ onCollapse }: { onCollapse: () => void }) {
   const router = useRouter();

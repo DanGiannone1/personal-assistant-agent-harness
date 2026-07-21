@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Sparkles, FileText, ArrowRight } from "lucide-react";
 import BespokeIcon from "./ui/BespokeIcon";
 import GlassPanel from "./ui/GlassPanel";
@@ -13,56 +13,51 @@ import { useSession } from "./SessionProvider";
 // `headerActions` lets each surface add its own controls (expand/collapse, back-to-app).
 // `onOpenWorkspace` (dock only) surfaces a compact artifact card so a generated deliverable
 // isn't orphaned in the dock — one click opens it in the workspace canvas.
-// Human "Tue, Jun 30" label for an ISO day (matches the workspace's date formatting;
-// deterministic UTC + fixed names to avoid hydration mismatch).
-const _WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const _MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-function humanDay(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  const [, m, day] = iso.split("-").map(Number);
-  return `${_WD[d.getUTCDay()]}, ${_MO[m - 1]} ${day}`;
-}
-
 export default function AssistantPanel({ headerActions, onOpenWorkspace }: { headerActions?: React.ReactNode; onOpenWorkspace?: () => void }) {
   const {
     state, statusMessage, isChatUploading, chatUploadName,
-    handleSend, handleStop, handleChatUpload, doNewChat, startSession, navigateView,
+    handleSend, handleStop, handleChatUpload, doNewChat, startSession,
   } = useSession();
 
   const [confirmNewChat, setConfirmNewChat] = useState(false);
+  const [newSessionPending, setNewSessionPending] = useState(false);
+  const newSessionLauncherRef = useRef<HTMLButtonElement>(null);
+  const newSessionConfirmRef = useRef<HTMLButtonElement>(null);
+  const newSessionCancelRef = useRef<HTMLButtonElement>(null);
   const agentWorking = state.isStreaming || isChatUploading;
   const artifacts = useMemo(() => state.files.filter((f) => f.origin === "generated"), [state.files]);
-  // Instant quick-nav targets — context-ranked when the visit log has signal
-  // (rank_destinations with no utterance), static pages as the cold-start fallback.
-  const quickNav = useMemo(() => {
-    if (state.quickLinks.length > 0) {
-      return state.quickLinks.map((q) => ({ label: q.title, route: q.path }));
-    }
-    return [
-      { label: "Home", route: "/home" },
-      { label: "Tasks", route: "/todo" },
-      { label: "Calendar", route: "/calendar" },
-      { label: "Documents", route: "/documents" },
-      { label: "Reminders", route: "/reminders" },
-    ];
-  }, [state.quickLinks]);
-
-  // "Needs attention" — overdue tasks, computed client-side so opening the assistant lands the
-  // user on what matters with one click (no asking, no agent turn). Done = not overdue.
-  const attention = useMemo(() => {
-    const app = state.appState;
-    if (!app) return [];
-    const today = new Date().toISOString().slice(0, 10);
-    return app.tasks
-      .filter((t) => t.dueDate && t.dueDate.slice(0, 10) < today && t.status !== "Done")
-      .slice(0, 4)
-      .map((t) => ({ label: t.title, sublabel: `${t.group || "Task"} · due ${humanDay(t.dueDate!.slice(0, 10))}`, route: `/todo/${t.id}` }));
-  }, [state.appState]);
-
   const handleNewChat = useCallback(() => {
     if (state.messages.length > 0) { setConfirmNewChat(true); return; }
     void doNewChat();
   }, [state.messages.length, doNewChat]);
+
+  const closeNewSessionDialog = useCallback(() => {
+    setConfirmNewChat(false);
+    requestAnimationFrame(() => newSessionLauncherRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!confirmNewChat) return;
+    const focusable = () => [newSessionConfirmRef.current, newSessionCancelRef.current].filter((element): element is HTMLButtonElement => !!element && !element.disabled);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !newSessionPending) { event.preventDefault(); closeNewSessionDialog(); return; }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      if (!controls.length) return;
+      const first = controls[0]; const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    requestAnimationFrame(() => newSessionConfirmRef.current?.focus());
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [closeNewSessionDialog, confirmNewChat, newSessionPending]);
+
+  const confirmNewSession = useCallback(async () => {
+    setNewSessionPending(true);
+    try { await doNewChat(); closeNewSessionDialog(); }
+    finally { setNewSessionPending(false); }
+  }, [closeNewSessionDialog, doNewChat]);
 
   return (
     <div className="flex h-full flex-col gap-3 min-w-0">
@@ -81,6 +76,7 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
 
         <div className="flex items-center gap-2">
           <button
+            ref={newSessionLauncherRef}
             type="button"
             data-testid="new-chat-button"
             onClick={handleNewChat}
@@ -105,9 +101,6 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
             <MessageList
               messages={state.messages}
               onSuggestion={state.isStreaming || state.isInitializing ? undefined : handleSend}
-              quickNav={quickNav}
-              onQuickNav={navigateView}
-              attention={attention}
             />
             {statusMessage && <div className="px-5 pb-1 text-[11px] text-text-muted">{statusMessage}</div>}
             {onOpenWorkspace && artifacts.length > 0 && (
@@ -154,14 +147,14 @@ export default function AssistantPanel({ headerActions, onOpenWorkspace }: { hea
       </GlassPanel>
 
       {confirmNewChat && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-app/80 backdrop-blur-md px-4" onClick={() => setConfirmNewChat(false)}>
-          <div className="w-full max-w-sm rounded-[2rem] border border-border-subtle bg-surface-1 p-8 shadow-[0_24px_60px_rgba(0,0,0,0.15)] relative overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-app/80 backdrop-blur-md px-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="new-session-title" aria-describedby="new-session-description" className="w-full max-w-sm rounded-[2rem] border border-border-subtle bg-surface-1 p-8 shadow-[0_24px_60px_rgba(0,0,0,0.15)] relative overflow-hidden">
             <div className="absolute top-0 inset-x-0 h-1 bg-brand-primary" />
-            <h2 className="text-lg font-bold text-text-primary uppercase tracking-wide">New session?</h2>
-            <p className="mt-3 text-sm text-text-muted leading-relaxed">This clears the current conversation and resets the workspace to seed data.</p>
+            <h2 id="new-session-title" className="text-lg font-bold text-text-primary uppercase tracking-wide">Start a new session?</h2>
+            <p id="new-session-description" className="mt-3 text-sm text-text-muted leading-relaxed">This clears this conversation and its session files. Your Engagements and their durable artifacts stay available.</p>
             <div className="mt-8 flex flex-col gap-2">
-              <button type="button" onClick={() => { setConfirmNewChat(false); void doNewChat(); }} className="interactive-control w-full rounded-xl bg-brand-primary py-3 text-xs font-bold uppercase tracking-widest text-white hover:brightness-110">Start new session</button>
-              <button type="button" onClick={() => setConfirmNewChat(false)} className="interactive-control w-full rounded-xl border border-border-subtle py-3 text-xs font-bold uppercase tracking-widest text-text-muted hover:bg-surface-2">Cancel</button>
+              <button ref={newSessionConfirmRef} type="button" disabled={newSessionPending} onClick={() => void confirmNewSession()} className="interactive-control w-full rounded-xl bg-brand-primary py-3 text-xs font-bold uppercase tracking-widest text-white hover:brightness-110 disabled:opacity-45">{newSessionPending ? "Starting…" : "Start new session"}</button>
+              <button ref={newSessionCancelRef} type="button" disabled={newSessionPending} onClick={closeNewSessionDialog} className="interactive-control w-full rounded-xl border border-border-subtle py-3 text-xs font-bold uppercase tracking-widest text-text-muted hover:bg-surface-2 disabled:opacity-45">Cancel</button>
             </div>
           </div>
         </div>

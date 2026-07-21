@@ -21,7 +21,6 @@ const appAuthSource = source("src/lib/appAuth.ts");
 const apiSource = source("src/lib/api.ts");
 const hookSource = source("src/hooks/useAgentSession.ts");
 const sessionManagerSource = source("../session_manager.py");
-const designSource = source("../docs/design.md");
 
 const fetchMe = functionRegion(appAuthSource, "export async function fetchMe", "export async function login");
 const getSession = functionRegion(apiSource, "export async function getSession", "export async function createSession");
@@ -63,11 +62,4 @@ if (readTimeout === null) throw new Error("create_session must declare an HTTP r
 expect(
   Number(readTimeout[1]) * 1_000 < STARTUP_REQUEST_TIMEOUT_MS,
   "browser startup policy must outlast the runtime-create read timeout",
-);
-
-const coldStart = designSource.match(/roughly\s+(\d+(?:\.\d+)?)\s+seconds\s+were observed/i);
-if (coldStart === null) throw new Error("design must record the observed cold-start duration");
-expect(
-  Number(coldStart[1]) * 1_000 < STARTUP_REQUEST_TIMEOUT_MS,
-  "browser startup policy must outlast the documented cold start",
 );

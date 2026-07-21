@@ -6,14 +6,14 @@ import { MessagePart, ProductToolResult } from "@/lib/types";
 
 function runningLabel(name: string): string {
   const labels: Record<string, string> = {
-    navigate: "Navigating", create_task: "Creating task", update_task: "Updating task",
-    delete_task: "Deleting task", add_subtask: "Adding subtask", list_tasks: "Reviewing tasks",
-    create_event: "Creating event", update_event: "Updating event", delete_event: "Deleting event",
-    list_events: "Reviewing events", search_documents: "Searching documents",
-    list_documents: "Browsing documents",
-    read_workspace_file: "Reading document", write_file: "Saving document", skill: "Loading skill",
-    list_engagements: "Reviewing engagements", create_engagement: "Creating engagement", share_engagement: "Sharing engagement",
-    propose_memory: "Proposing memory", save_memory: "Saving memory", delete_schedule: "Deleting reminder",
+    navigate: "Navigating",
+    list_engagements: "Reviewing engagements",
+    create_engagement: "Creating engagement",
+    get_engagement: "Reviewing engagement",
+    update_engagement: "Updating engagement",
+    set_engagement_status: "Updating status",
+    share_engagement: "Sharing engagement",
+    skill: "Loading skill",
   };
   return labels[name] || "Working";
 }
@@ -24,7 +24,7 @@ function doneLabel(name: string, result: ProductToolResult | undefined): string 
   if (!result) return "Outcome unavailable";
   if (["failed", "invalid", "not_found", "forbidden", "conflict"].includes(result.status)) return "Couldn't complete";
   if (["noop", "needs_confirmation", "ambiguous"].includes(result.status)) return "No change";
-  if (["committed", "resolved", "succeeded"].includes(result.status)) return ({ navigate: "Navigated", create_engagement: "Engagement created", update_engagement: "Engagement updated", set_engagement_status: "Status updated", share_engagement: "Engagement shared", list_engagements: "Engagements reviewed" } as Record<string, string>)[name] || "Completed";
+  if (["committed", "resolved", "succeeded"].includes(result.status)) return ({ navigate: "Navigated", create_engagement: "Engagement created", get_engagement: "Engagement reviewed", update_engagement: "Engagement updated", set_engagement_status: "Status updated", share_engagement: "Engagement shared", list_engagements: "Engagements reviewed" } as Record<string, string>)[name] || "Completed";
   return "Outcome unavailable";
 }
 
@@ -34,13 +34,9 @@ function toolContext(name: string, args: string | undefined): string | null {
     const p = JSON.parse(args);
     switch (name) {
       case "navigate": return p.destination_id || null;
-      case "create_task": return p.title ? `${p.title}${p.priority ? ` · ${p.priority}` : ""}` : null;
-      case "update_task": case "delete_task": case "add_subtask": return p.task || null;
-      case "create_event": return p.title ? `${p.title}${p.date ? ` · ${p.date}` : ""}` : null;
-      case "update_event": case "delete_event": return p.event || null;
-      case "search_documents": return p.query || null;
-      case "read_workspace_file": return p.path || "uploaded document";
-      case "write_file": return p.path || null;
+      case "create_engagement": return p.name || null;
+      case "get_engagement": case "update_engagement": case "set_engagement_status": return p.engagement_id || null;
+      case "share_engagement": return p.user || null;
       case "skill": return p.name || null;
       default: return null;
     }

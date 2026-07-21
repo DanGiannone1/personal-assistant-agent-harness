@@ -2,33 +2,46 @@ targetScope = 'resourceGroup'
 
 param location string = resourceGroup().location
 param environmentName string
+param frontendIdentityName string
+param apiIdentityName string
+param runtimeIdentityName string
+param virtualNetworkName string
+param cosmosPrivateEndpointName string
+param storagePrivateEndpointName string
+param privateDnsVnetLinkName string
+param databaseName string
 param cosmosAccountName string
 param storageAccountName string
 param acrName string
 param acrLocation string
 param azureOpenAiName string
+@minLength(1)
+@maxLength(64)
 param azureOpenAiDeploymentName string
+@minLength(1)
+@maxLength(128)
+param azureOpenAiModelName string
+@minLength(1)
+@maxLength(128)
+param azureOpenAiModelVersion string
+@minLength(1)
+@maxLength(64)
+param azureOpenAiModelSkuName string
+@minValue(1)
+@maxValue(1000000)
+param azureOpenAiModelCapacity int
 param acaInfrastructureNsgId string = ''
 param privateEndpointNsgId string = ''
 
-var databaseName = 'csa-workbench-entra'
 var containerName = 'appstate'
-var frontendIdentityName = 'csa-workbench-frontend-identity'
-var apiIdentityName = 'csa-workbench-api-identity'
-var runtimeIdentityName = 'csa-workbench-runtime-identity'
 var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 var blobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-var virtualNetworkName = 'csa-workbench-vnet'
 var acaInfrastructureSubnetName = 'aca-infrastructure'
 var privateEndpointSubnetName = 'private-endpoints'
-var cosmosPrivateEndpointName = 'csa-workbench-cosmos-pe'
-var storagePrivateEndpointName = 'csa-workbench-storage-pe'
 var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
 // This is the Azure public-cloud Private Link suffix required by the approved Storage endpoint.
 #disable-next-line no-hardcoded-env-urls
 var storagePrivateDnsZoneName = 'privatelink.blob.core.windows.net'
-var azureOpenAiModelName = 'gpt-5.6-terra'
-var azureOpenAiModelVersion = '2026-07-09'
 
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: virtualNetworkName
@@ -148,8 +161,8 @@ resource azureOpenAiDeployment 'Microsoft.CognitiveServices/accounts/deployments
   parent: azureOpenAi
   name: azureOpenAiDeploymentName
   sku: {
-    name: 'GlobalStandard'
-    capacity: 30
+    name: azureOpenAiModelSkuName
+    capacity: azureOpenAiModelCapacity
   }
   properties: {
     model: {
@@ -254,7 +267,7 @@ resource storagePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = 
 
 resource cosmosPrivateDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   parent: cosmosPrivateDnsZone
-  name: 'csa-workbench-vnet-link'
+  name: privateDnsVnetLinkName
   location: 'global'
   properties: {
     virtualNetwork: {
@@ -266,7 +279,7 @@ resource cosmosPrivateDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetw
 
 resource storagePrivateDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   parent: storagePrivateDnsZone
-  name: 'csa-workbench-vnet-link'
+  name: privateDnsVnetLinkName
   location: 'global'
   properties: {
     virtualNetwork: {
@@ -366,6 +379,7 @@ module openAiRole 'openai-role.bicep' = {
   params: {
     accountName: azureOpenAiName
     runtimePrincipalId: runtimeIdentity.properties.principalId
+    assignmentSeed: runtimeIdentityName
   }
   dependsOn: [
     azureOpenAi
@@ -407,8 +421,10 @@ output environmentId string = environment.id
 output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = 'https://${cosmos.name}.documents.azure.com:443/'
 output storageAccountName string = storage.name
+output acrName string = acr.name
 output storageBlobEndpoint string = storage.properties.primaryEndpoints.blob
 output acrLoginServer string = acr.properties.loginServer
+output azureOpenAiName string = azureOpenAi.name
 output azureOpenAiEndpoint string = azureOpenAi.properties.endpoint
 output azureOpenAiDeploymentName string = azureOpenAiDeployment.name
 output frontendIdentityId string = frontendIdentity.id
