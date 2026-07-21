@@ -79,6 +79,7 @@ validation rules rather than two parallel implementations.
 | [Design](docs/design.md) | High-level MVP product and system boundary |
 | [Requirements](docs/requirements.md) | Release and acceptance intent |
 | [Capability notes](docs/capabilities/) | Current focused boundaries |
+| [Reference architectures](docs/reference-architectures/) | Target capability designs, subordinate to design.md for current scope |
 | [Development](docs/development.md) and [deployment](docs/deployment.md) | Operating runbooks |
 | [Evals reference architecture](docs/evals-reference-architecture.md) | Canonical demo/evidence architecture |
 | [Governance](docs/governance/README.md) | Governing lifecycle, engineering, test, and agent rules |

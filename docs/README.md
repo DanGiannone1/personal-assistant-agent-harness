@@ -9,6 +9,7 @@ Start at the [root README](../README.md), the sole colleague-facing front door.
 | [design.md](design.md) | High-level MVP product and system design |
 | [requirements.md](requirements.md) | Release and acceptance intent |
 | [capabilities/](capabilities/) | Focused current-boundary notes; subordinate to design and requirements |
+| [reference-architectures/](reference-architectures/) | Target capability designs; subordinate to design.md for current scope |
 | [development.md](development.md) | Local run and deterministic verification runbook |
 | [deployment.md](deployment.md) | Human-owned Azure plan/apply runbook |
 | [evals-reference-architecture.md](evals-reference-architecture.md) | Canonical customer-demo and evidence architecture |
