@@ -11,8 +11,6 @@ Start at the [root README](../README.md), the sole colleague-facing front door.
 | [capabilities/](capabilities/) | Focused current-boundary notes; subordinate to design and requirements |
 | [development.md](development.md) | Local run and deterministic verification runbook |
 | [deployment.md](deployment.md) | Human-owned Azure plan/apply runbook |
-| [environments.md](environments.md) | What runs in Azure now, access, and safe-testing boundaries |
-| [evidence.md](evidence.md) | Single owner of current verification claims |
 | [evals-reference-architecture.md](evals-reference-architecture.md) | Canonical customer-demo and evidence architecture |
 | [coding-agent-setup.md](coding-agent-setup.md) | CLI coding-agent collaboration guardrails |
 | [governance/](governance/) | Governing SDLC, engineering, testing, and agent-design rules |

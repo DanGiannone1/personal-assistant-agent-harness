@@ -126,7 +126,7 @@ Focused tests cover exact tool inventory and JSON-schema shape, `ProductToolResu
 validation, framed SSE parsing and lifecycle correlation, and Engagement/personal-workspace
 authorization and validation behavior (`tests/test_structured_control.py`,
 `tests/test_engagement_core.py`, `tests/test_personal_workspace.py`, `tests/test_skill_runtime.py`).
-A local browser journey passed 41/41 checks ([current evidence record](../evidence.md)) including a live agent turn, and
+The committed local browser journey covers a live agent turn, and
 live-model spot checks cover the personal tools. **UNVERIFIED:** a deployed Azure/Entra turn and a
 live-model eval run of the `MVP-E8`/`MVP-E9` personal-work cases specifically.
 

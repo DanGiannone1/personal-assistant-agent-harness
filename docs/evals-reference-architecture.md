@@ -61,9 +61,10 @@ Live MVP evaluation and Playwright require the local emulator and running servic
 
 ## Current evidence status
 
-A local browser journey has passed 41/41 checks ([current evidence record](evidence.md)), covering the full page
-inventory (Engagements, My work, Assistant, Settings) plus a live agent turn. `npm run verify` is
-green, and live-model spot checks cover the personal tools. **UNVERIFIED from this repository:** a
+The committed local browser journey covers the full page inventory (Engagements, My work,
+Assistant, Settings) plus a live agent turn; `npm run verify` is the deterministic gate, and
+live-model spot checks cover the personal tools. Run results live on the tracking issue and in
+ignored local evidence bundles, never in this repository. **UNVERIFIED from this repository:** a
 deployed Azure instance, a real Entra sign-in against this code, a real Azure Communication Services
 email send, and a live-model eval run of the `MVP-E8`/`MVP-E9` personal-work cases specifically. Do
 not infer any of those from a deterministic pass or from source inspection; state them as

@@ -191,9 +191,10 @@ identity/RBAC contract, and recovery behavior are owned by
 
 ## Quality and evidence
 
-A local browser journey passed 41/41 checks ([current evidence record](evidence.md)), including the full page
-inventory and a live agent turn, and `npm run verify` is green. Live-model spot checks cover the
-personal tools. **Not verified:** a deployed Azure instance, a real Entra sign-in against this code,
+The committed local browser journey covers the full page inventory and a live agent turn;
+`npm run verify` is the deterministic gate, and live-model spot checks cover the personal tools.
+Run results are recorded on the tracking issue and in ignored local evidence bundles, never in
+this repository. **Not verified:** a deployed Azure instance, a real Entra sign-in against this code,
 a real ACS email send, and a live-model eval run of the `MVP-E8`/`MVP-E9` personal-work cases. The
 [reference eval architecture](evals-reference-architecture.md) separates these lanes and requires
 human review of demo output; do not infer deployed or live-model behavior from source inspection or

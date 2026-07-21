@@ -105,9 +105,9 @@ There is no separate `orchestrator/` directory; the API lives at the repository 
 
 ## Evidence honesty
 
-A local browser journey passed 41/41 checks ([current evidence record](docs/evidence.md)), including the page inventory
-and a live agent turn, and `npm run verify` is green. Live-model spot checks cover the personal
-tools. **Not verified from this repository:** a deployed Azure instance, a real Entra sign-in
+The committed local browser journey covers the full page inventory and a live agent turn;
+`npm run verify` is the deterministic gate. Run results are recorded on the tracking issue and in
+ignored local evidence bundles — never committed to this repository. **Not verified from this repository:** a deployed Azure instance, a real Entra sign-in
 against this code, a real Azure Communication Services email send, or a live-model eval run of the
 `MVP-E8`/`MVP-E9` personal-work cases. Do not infer any of those from source inspection or a passing
 deterministic check alone; see [requirements](docs/requirements.md) and
@@ -117,9 +117,7 @@ boundary.
 ## Useful links
 
 - [Local development](docs/development.md)
-- [Azure environments and access](docs/environments.md)
 - [Azure deployment runbook](docs/deployment.md)
-- [Current evidence record](docs/evidence.md)
 - [Reference eval architecture](docs/evals-reference-architecture.md)
 - [Coding-agent setup](docs/coding-agent-setup.md)
 - [Governance](docs/governance/README.md)

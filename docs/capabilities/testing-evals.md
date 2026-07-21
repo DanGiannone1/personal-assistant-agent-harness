@@ -48,9 +48,10 @@ see [development](../development.md) for the exact isolated-run procedure.
 
 ## Current evidence status
 
-A local browser journey has passed 41/41 checks ([current evidence record](../evidence.md)), including the full page
-inventory (Engagements, My work, Assistant, Settings) and a live agent turn. Live-model spot checks
-cover the personal tools. **UNVERIFIED from this repository:** a deployed Azure instance, a real
+The committed local browser journey covers the full page inventory (Engagements, My work,
+Assistant, Settings) and a live agent turn; live-model spot checks cover the personal tools. Run
+results are recorded on the tracking issue and in ignored local evidence bundles, never in this
+repository. **UNVERIFIED from this repository:** a deployed Azure instance, a real
 Entra sign-in against this code, a real Azure Communication Services email send, and a live-model
 eval run of the `MVP-E8`/`MVP-E9` personal-work cases specifically. A pass label, assistant prose, or
 an older revision's result is never a substitute for state, structured-event, browser, Entra, Azure,
