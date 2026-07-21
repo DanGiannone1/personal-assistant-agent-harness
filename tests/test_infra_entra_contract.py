@@ -432,6 +432,8 @@ def test_portable_verifier_accepts_only_the_optional_governance_nsg_resource_pai
     assert subprocess.run([sys.executable, '-c', code], env=unrelated, text=True, capture_output=True).returncode != 0
     extra_nsg = {'name': 'unrelated', 'provisioningState': 'Succeeded', 'securityRules': [], 'networkInterfaces': None}
     assert subprocess.run([sys.executable, '-c', code], env={**governed, 'NETWORK_SECURITY_GROUPS': json.dumps(network_security_groups + [extra_nsg]), 'RESOURCES': json.dumps(resources + [{'type': 'Microsoft.Network/networkSecurityGroups', 'name': 'unrelated'}])}, text=True, capture_output=True).returncode != 0
+    for malformed in ('null', '{}', 'false', '0', '""'):
+        assert subprocess.run([sys.executable, '-c', code], env={**env, 'NETWORK_SECURITY_GROUPS': malformed}, text=True, capture_output=True).returncode != 0
 
 
 def test_browser_validation_runbook_uses_the_isolated_demo_parent_shell_values() -> None:
