@@ -86,7 +86,8 @@ def test_owner_can_crud_private_tasks_events_and_reminders(monkeypatch) -> None:
         assert task.status_code == 201
         assert task.json() | {"createdAt": "ignored"} == {
             "id": "t-1", "title": "x" * 300, "status": "To do", "priority": "High",
-            "group": "Work", "dueDate": "2030-02-28", "notes": "private", "createdAt": "ignored",
+            "group": "Work", "dueDate": "2030-02-28", "notes": "private", "subtasks": [],
+            "createdAt": "ignored",
         }
         assert client.patch("/sessions/session-dan/tasks/t-1", json={"status": "Done"}).json()["status"] == "Done"
         assert client.delete("/sessions/session-dan/tasks/t-1").status_code == 204
@@ -111,6 +112,28 @@ def test_owner_can_crud_private_tasks_events_and_reminders(monkeypatch) -> None:
         assert client.patch("/sessions/session-dan/schedules/s-1", json={"enabled": False}).json()["nextDueAt"] is None
         assert client.delete("/sessions/session-dan/schedules/s-1").status_code == 204
         assert repository.states["dan"] == _state()
+    finally:
+        orchestrator.app.dependency_overrides.clear()
+        client.close()
+
+
+def test_subtasks_are_bounded_index_addressed_and_validated(monkeypatch) -> None:
+    repository = MemoryPersonalRepository()
+    client, _actor = _client(monkeypatch, repository)
+    try:
+        assert client.post("/sessions/session-dan/tasks", json={"title": "Parent"}).status_code == 201
+        added = client.post("/sessions/session-dan/tasks/t-1/subtasks", json={"text": "  step one  "})
+        assert added.status_code == 201
+        assert added.json()["subtasks"] == [{"text": "step one", "done": False}]
+
+        toggled = client.patch("/sessions/session-dan/tasks/t-1/subtasks/0", json={"done": True})
+        assert toggled.json()["subtasks"] == [{"text": "step one", "done": True}]
+
+        assert client.post("/sessions/session-dan/tasks/t-1/subtasks", json={"text": "  "}).status_code == 422
+        assert client.patch("/sessions/session-dan/tasks/t-1/subtasks/5", json={"done": True}).status_code == 404
+        assert client.delete("/sessions/session-dan/tasks/t-1/subtasks/5").status_code == 404
+        assert client.delete("/sessions/session-dan/tasks/t-1/subtasks/0").status_code == 204
+        assert repository.states["dan"]["personalTasks"][0]["subtasks"] == []
     finally:
         orchestrator.app.dependency_overrides.clear()
         client.close()

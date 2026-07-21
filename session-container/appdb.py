@@ -346,7 +346,8 @@ def _new_personal_workspace(user_id: str, *, demo: bool) -> dict:
         doc["personalTasks"] = [{
             "id": "t-1", "title": "Review personal workspace", "status": "To do",
             "priority": "Medium", "group": "Personal", "dueDate": "2030-01-15",
-            "notes": "Seeded private demo task.", "createdAt": "2030-01-01T00:00:00+00:00",
+            "notes": "Seeded private demo task.", "subtasks": [],
+            "createdAt": "2030-01-01T00:00:00+00:00",
         }]
         doc["calendarEvents"] = [{
             "id": "e-1", "title": "Personal planning", "date": "2030-01-15",

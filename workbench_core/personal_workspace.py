@@ -17,6 +17,7 @@ SCHEDULE_FREQUENCIES = ("once", "daily", "weekly")
 MAX_TASKS = 500
 MAX_EVENTS = 500
 MAX_SCHEDULES = 100
+MAX_SUBTASKS = 50
 MAX_TITLE_CHARS = 300
 MAX_NOTES_CHARS = 4_000
 MAX_GROUP_CHARS = 120
@@ -74,6 +75,7 @@ class PersonalWorkspaceService:
             task = {
                 "id": self._repository.new_id("t", tasks),
                 **normalized,
+                "subtasks": [],
                 "createdAt": self._repository.now_iso(),
             }
             tasks.append(task)
@@ -101,6 +103,54 @@ class PersonalWorkspaceService:
 
     def delete_task(self, actor_id: str, task_id: str) -> None:
         self._delete(actor_id, "personalTasks", task_id, "t")
+
+    def add_subtask(self, actor_id: str, task_id: str, text: Any) -> PersonalOutcome:
+        self._valid_id(task_id, "t")
+        normalized = self._text(text, "text", MAX_TITLE_CHARS, required=True)
+
+        def change(subtasks: list[dict[str, Any]]) -> None:
+            self._bounded(subtasks, MAX_SUBTASKS, "subtasks")
+            subtasks.append({"text": normalized, "done": False})
+
+        return self._mutate_subtasks(actor_id, task_id, change)
+
+    def set_subtask(self, actor_id: str, task_id: str, index: Any, done: Any) -> PersonalOutcome:
+        self._valid_id(task_id, "t")
+        if not isinstance(done, bool):
+            raise PersonalWorkspaceError("done must be a boolean")
+
+        def change(subtasks: list[dict[str, Any]]) -> None:
+            self._subtask_at(subtasks, index)["done"] = done
+
+        return self._mutate_subtasks(actor_id, task_id, change)
+
+    def delete_subtask(self, actor_id: str, task_id: str, index: Any) -> PersonalOutcome:
+        self._valid_id(task_id, "t")
+
+        def change(subtasks: list[dict[str, Any]]) -> None:
+            subtasks.remove(self._subtask_at(subtasks, index))
+
+        return self._mutate_subtasks(actor_id, task_id, change)
+
+    def _mutate_subtasks(self, actor_id: str, task_id: str, change) -> PersonalOutcome:
+        updated: dict[str, Any] = {}
+
+        def mutate(state: dict[str, Any]) -> None:
+            task = self._find(state.setdefault("personalTasks", []), task_id)
+            if task is None:
+                raise PersonalNotFound("task not found")
+            change(task.setdefault("subtasks", []))
+            updated.clear()
+            updated.update(task)
+
+        self._repository.update(actor_id, mutate)
+        return PersonalOutcome(dict(updated))
+
+    @staticmethod
+    def _subtask_at(subtasks: list[dict[str, Any]], index: Any) -> dict[str, Any]:
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0 or index >= len(subtasks):
+            raise PersonalNotFound("subtask not found")
+        return subtasks[index]
 
     def create_event(self, actor_id: str, values: dict[str, Any]) -> PersonalOutcome:
         normalized = self._event_values(values, creating=True)
