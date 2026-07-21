@@ -177,9 +177,9 @@ export async function uploadEngagementArtifact(pid: string, file: File): Promise
     throw new Error(detail || `Upload failed (${res.status})`);
   }
 }
-export async function openEngagementArtifact(pid: string, aid: string): Promise<Blob> {
+export async function downloadEngagementArtifact(pid: string, aid: string): Promise<Blob> {
   const res = await apiFetch(`/engagements/${pid}/artifacts/${aid}`);
-  if (!res.ok) throw new Error(`Open failed (${res.status})`);
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
   return res.blob();
 }
 export const deleteEngagementArtifact = (pid: string, aid: string) =>

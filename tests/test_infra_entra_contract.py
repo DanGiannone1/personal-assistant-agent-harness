@@ -120,13 +120,19 @@ def test_governance_nsg_is_instance_and_location_parameterized() -> None:
         helper.select_governance_nsgs(inventory, "sub", "csa-wb-other-rg", "westus3", "other")
 
 
-def _write_command_stubs(tmp_path: Path, recovery: bool = False, bad_recovery: bool = False) -> tuple[Path, Path]:
+def _write_command_stubs(tmp_path: Path, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected') -> tuple[Path, Path]:
     bin_dir, log = tmp_path / "bin", tmp_path / "az.log"
     bin_dir.mkdir(parents=True)
     (bin_dir / "git").write_text("""#!/usr/bin/env bash
 case "$1" in rev-parse) echo 0123456789abcdef0123456789abcdef01234567 ;; status) exit 0 ;; *) exit 1 ;; esac
 """)
     mode = "recovery" if recovery else "absent"
+    recovery_apps = {
+        'expected': '[{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}}]',
+        'reordered': '[{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}}]',
+        'missing': '[]',
+        'extra': '[{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"unrelated","properties":{"managedEnvironmentId":"env-id"}}]',
+    }['missing' if bad_recovery else recovery_apps_order]
     (bin_dir / "az").write_text(f"""#!/usr/bin/env bash
 set -eu
 echo "$*" >> "$AZ_LOG"
@@ -139,7 +145,7 @@ case "$*" in
   "network nsg list "*) echo '[]' ;;
   "containerapp env list "*) {'echo \'[{"name":"csa-wb-mvp1-env","id":"env-id"}]\'' if recovery else "echo '[]'"} ;;
   "containerapp env show "*) echo '{{"name":"csa-wb-mvp1-env","properties":{{"vnetConfiguration":{{}},"workloadProfiles":[]}}}}' ;;
-  "containerapp list "*) {'echo "[]"' if bad_recovery else 'echo \'[{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}}]\''} ;;
+  "containerapp list "*) echo '{recovery_apps}' ;;
   "deployment sub create "*) exit 9 ;;
   *) exit 0 ;;
 esac
@@ -149,8 +155,8 @@ esac
     return bin_dir, log
 
 
-def _run_deploy(tmp_path: Path, *args: str, recovery: bool = False, bad_recovery: bool = False, overrides: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
-    bin_dir, log = _write_command_stubs(tmp_path, recovery, bad_recovery)
+def _run_deploy(tmp_path: Path, *args: str, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', overrides: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
+    bin_dir, log = _write_command_stubs(tmp_path, recovery, bad_recovery, recovery_apps_order)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}", "AZ_LOG": str(log), "INSTANCE_SLUG": "mvp1",
@@ -257,15 +263,31 @@ def test_deployment_what_if_replaces_only_the_operation_token_and_preserves_crea
     assert '${APPS[@]/create/what-if}' not in deploy_source
 
 
-def test_deployment_workflow_uses_locked_canonical_python_environment() -> None:
+def test_deployment_workflow_runs_the_canonical_host_suite_with_containerized_bicep() -> None:
     workflow = (ROOT / '.github' / 'workflows' / 'deploy.yml').read_text()
+    package = json.loads((ROOT / 'package.json').read_text())
+    verifier = (ROOT / 'scripts' / 'verify.sh').read_text()
 
+    assert 'actions/setup-node@v4' in workflow
+    assert "node-version: '22'" in workflow
+    assert 'npm ci' in workflow and '(cd frontend && npm ci)' in workflow
     assert 'astral-sh/setup-uv@v6' in workflow
-    assert 'uv lock --check' in workflow
-    assert '(cd session-container && uv lock --check)' in workflow
-    assert 'PYTHONPATH="$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/session-container"' in workflow
-    assert 'uv run --project session-container --locked --with pytest pytest -q' in workflow
+    assert 'uv sync --locked' in workflow
+    assert '(cd session-container && uv sync --locked)' in workflow
+    assert 'npm run verify:ci' in workflow
+    assert 'azure/cli@v2' in workflow and 'az bicep build --file infra/foundation.bicep' in workflow
+    assert 'pytest' not in workflow
     assert 'pip install pytest' not in workflow
+    assert package['scripts']['verify:ci'] == 'CSA_VERIFY_SKIP_BICEP=1 bash scripts/verify.sh'
+    assert 'CSA_VERIFY_SKIP_BICEP must be exactly 0 or 1' in verifier
+    assert 'if [[ "${verify_skip_bicep}" == \'0\' ]]; then\n  require_command az' in verifier
+
+
+def test_ci_verifier_rejects_an_invalid_bicep_skip_value_before_running_checks() -> None:
+    result = subprocess.run(['bash', 'scripts/verify.sh'], cwd=ROOT, env={**os.environ, 'CSA_VERIFY_SKIP_BICEP': 'true'}, text=True, capture_output=True)
+
+    assert result.returncode == 2
+    assert 'CSA_VERIFY_SKIP_BICEP must be exactly 0 or 1' in result.stderr
 
 
 def test_governance_nsg_rejects_extra_wrong_state_and_association() -> None:
@@ -292,6 +314,23 @@ def test_confirmed_recovery_deletes_only_ordered_targets_before_foundation_mutat
         next(action for action in actions if 'deployment sub what-if' in action),
         next(action for action in actions if 'deployment sub create' in action),
     ]
+
+
+def test_recovery_accepts_expected_apps_in_any_azure_list_order(tmp_path: Path) -> None:
+    result, log = _run_deploy(tmp_path, recovery=True, recovery_apps_order='reordered')
+
+    assert result.returncode == 0, result.stderr
+    assert '"recovery_state":"incompatible"' in result.stdout
+    assert 'containerapp delete' not in log and 'containerapp env delete' not in log
+    assert 'deployment sub what-if' not in log
+
+
+@pytest.mark.parametrize('recovery_apps_order', ['missing', 'extra'])
+def test_recovery_rejects_missing_or_extra_attached_apps_before_mutation(tmp_path: Path, recovery_apps_order: str) -> None:
+    result, log = _run_deploy(tmp_path, recovery=True, recovery_apps_order=recovery_apps_order)
+
+    assert result.returncode != 0
+    assert 'containerapp delete' not in log and 'containerapp env delete' not in log and 'deployment sub what-if' not in log
 
 
 def test_malformed_recovery_inventory_fails_before_deletion_even_when_optimized(tmp_path: Path) -> None:
@@ -372,3 +411,31 @@ def test_portable_verifier_accepts_complete_fixture_and_rejects_wiring_roles_and
     cases = [('APPS', lambda value: value.replace('acr.azurecr.io/csa-workbench-frontend:', 'wrong/')), ('COSMOS_DNS_RECORDS', lambda value: value.replace('10.42.0.40','10.42.0.99')), ('RESOURCES', lambda value: value[:-1]+',{"type":"Microsoft.Search/searchServices","name":"extra"}]'), ('ASSIGNMENTS', lambda value: value[:-2]+',{"scope":"/subscriptions/sub/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Storage/storageAccounts/storage","roleDefinitionName":"Reader","principalId":"api"}]]'), ('COSMOS_SQL_ASSIGNMENTS', lambda value: value[:-1]+',{"roleDefinitionId":"x","scope":"x","principalId":"api"}]')]
     for key, mutate in cases:
         changed={**env,key:mutate(env[key])}; assert subprocess.run([sys.executable,'-c',code],env=changed,text=True,capture_output=True).returncode != 0
+
+
+def test_portable_verifier_accepts_only_the_optional_governance_nsg_resource_pair() -> None:
+    code, env = _verifier_fixture()
+    vnet = 'csa-wb-mvp1-vnet'
+    names = [f'{vnet}-aca-infrastructure-nsg-eastus2', f'{vnet}-private-endpoints-nsg-eastus2']
+    network_security_groups = [
+        {'name': name, 'provisioningState': 'Succeeded', 'securityRules': [], 'networkInterfaces': None}
+        for name in names
+    ]
+    resources = json.loads(env['RESOURCES']) + [
+        {'type': 'Microsoft.Network/networkSecurityGroups', 'name': name}
+        for name in names
+    ]
+    governed = {**env, 'NETWORK_SECURITY_GROUPS': json.dumps(network_security_groups), 'RESOURCES': json.dumps(resources)}
+
+    assert subprocess.run([sys.executable, '-c', code], env=governed, text=True, capture_output=True).returncode == 0
+    unrelated = {**governed, 'RESOURCES': json.dumps(resources + [{'type': 'Microsoft.Search/searchServices', 'name': 'extra'}])}
+    assert subprocess.run([sys.executable, '-c', code], env=unrelated, text=True, capture_output=True).returncode != 0
+    extra_nsg = {'name': 'unrelated', 'provisioningState': 'Succeeded', 'securityRules': [], 'networkInterfaces': None}
+    assert subprocess.run([sys.executable, '-c', code], env={**governed, 'NETWORK_SECURITY_GROUPS': json.dumps(network_security_groups + [extra_nsg]), 'RESOURCES': json.dumps(resources + [{'type': 'Microsoft.Network/networkSecurityGroups', 'name': 'unrelated'}])}, text=True, capture_output=True).returncode != 0
+
+
+def test_browser_validation_runbook_uses_the_isolated_demo_parent_shell_values() -> None:
+    development = (ROOT / 'docs' / 'development.md').read_text()
+
+    for value in ('## Browser validation', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
+        assert value in development

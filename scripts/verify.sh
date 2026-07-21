@@ -13,9 +13,22 @@ require_command() {
   }
 }
 
-for tool in bash git node npm uv az; do
+verify_skip_bicep="${CSA_VERIFY_SKIP_BICEP:-0}"
+case "${verify_skip_bicep}" in
+  0|1) ;;
+  *)
+    echo "CSA_VERIFY_SKIP_BICEP must be exactly 0 or 1" >&2
+    exit 2
+    ;;
+esac
+
+for tool in bash git node npm uv; do
   require_command "${tool}"
 done
+
+if [[ "${verify_skip_bicep}" == '0' ]]; then
+  require_command az
+fi
 
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "${temporary_dir}"' EXIT
@@ -35,6 +48,8 @@ npm run eval:waza:check
 
 bash -n scripts/verify.sh
 bash -n infra/deploy.sh
-az bicep build --file infra/foundation.bicep --outfile "${temporary_dir}/foundation.json"
-az bicep build --file infra/apps.bicep --outfile "${temporary_dir}/apps.json"
+if [[ "${verify_skip_bicep}" == '0' ]]; then
+  az bicep build --file infra/foundation.bicep --outfile "${temporary_dir}/foundation.json"
+  az bicep build --file infra/apps.bicep --outfile "${temporary_dir}/apps.json"
+fi
 git diff --check

@@ -21,6 +21,11 @@ if str(_SC) not in sys.path:
 import appdb  # noqa: E402
 from workbench_core import EngagementService, Outcome  # noqa: E402
 from workbench_core.appdb_repository import AppdbEngagementRepository  # noqa: E402
+from workbench_core.request_limits import (  # noqa: E402
+    MAX_EDIT_CONTENT_BYTES,
+    MAX_EDIT_FILENAME_CHARS,
+    JsonRequestBodyLimitMiddleware,
+)
 
 import artifact_store
 
@@ -205,6 +210,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CSA Workbench", lifespan=lifespan)
+app.add_middleware(JsonRequestBodyLimitMiddleware)
 
 
 # CORS: allow localhost only in dev, plus configurable FRONTEND_URL for production
@@ -465,8 +471,8 @@ class TaskUpdate(BaseModel):
     dueDate: str | None = None
 
 class SaveContentRequest(BaseModel):
-    filename: str
-    content: str
+    filename: str = Field(..., max_length=MAX_EDIT_FILENAME_CHARS)
+    content: str = Field(..., max_length=MAX_EDIT_CONTENT_BYTES)
 
 
 @app.put("/sessions/{session_id}/files/content")
@@ -524,11 +530,6 @@ class EngagementPatch(BaseModel):
     statusNote: str | None = Field(None, max_length=300)
     startDate: str | None = Field(None, max_length=10)
     targetDate: str | None = Field(None, max_length=10)
-
-
-def _check_status_field(status: str | None) -> None:
-    if status and status not in appdb.ENGAGEMENT_STATUSES:
-        raise HTTPException(status_code=422, detail=f"status must be one of {appdb.ENGAGEMENT_STATUSES}")
 
 
 class MemberAdd(BaseModel):
@@ -799,7 +800,7 @@ async def download_artifact(engagement_id: str, artifact_id: str,
     filename = entry["name"].replace('"', "")
     return Response(
         content=data,
-        media_type=entry.get("contentType") or "application/octet-stream",
+        media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

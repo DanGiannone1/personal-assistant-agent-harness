@@ -27,6 +27,11 @@ import app as orchestrator
 import session_manager
 from session_manager import SessionManager, _RuntimeServiceAuth
 from workload_auth import EntraTokenVerifier, WorkloadAuthConfig, WorkloadAuthenticator
+from workbench_core.request_limits import (
+    MAX_EDIT_CONTENT_BYTES,
+    MAX_EDIT_FILENAME_CHARS,
+    JsonRequestBodyLimitMiddleware,
+)
 
 
 def _request(headers: dict[str, str] | None = None, path: str = "/session") -> Request:
@@ -434,6 +439,121 @@ def test_session_manager_rejects_non_markdown_before_proxying() -> None:
     assert exc.value.status_code == 415
     assert exc.value.detail == "Markdown (.md) files only"
     assert calls == []
+
+
+def test_artifact_download_is_always_inert_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    class AllowRequest:
+        async def authenticate(self, _request: Request) -> None:
+            return None
+
+    async def load_engagement(*_args: object, **_kwargs: object) -> dict:
+        return {"id": "eng-1", "library": [{"id": "art-1", "name": "malicious.html", "contentType": "text/html"}]}
+
+    monkeypatch.setattr(orchestrator, "api_authenticator", AllowRequest())
+    monkeypatch.setattr(orchestrator, "_load_engagement_authed", load_engagement)
+    monkeypatch.setattr(artifact_store, "get", lambda *_args: b"<script>alert(1)</script>")
+    monkeypatch.setitem(orchestrator.app.dependency_overrides, orchestrator.current_user, lambda: "dan")
+
+    client = TestClient(orchestrator.app)
+    response = client.get("/engagements/eng-1/artifacts/art-1")
+    client.close()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["content-disposition"] == 'attachment; filename="malicious.html"'
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_artifact_frontend_uses_download_anchor_without_blob_navigation() -> None:
+    source = (ROOT / "frontend" / "src" / "components" / "workbench" / "EngagementScreens.tsx").read_text()
+    api_source = (ROOT / "frontend" / "src" / "lib" / "api.ts").read_text()
+
+    assert "window.open" not in source
+    assert "downloadEngagementArtifact" in source
+    assert "document.createElement(\"a\")" in source
+    assert "anchor.download = artifact.name" in source
+    assert "artifact-download-" in source
+    assert "downloadEngagementArtifact" in api_source
+    assert "openEngagementArtifact" not in api_source
+
+
+def test_json_body_limit_rejects_declared_and_chunked_bodies_before_app_execution() -> None:
+    import server
+
+    assert any(item.cls is JsonRequestBodyLimitMiddleware for item in orchestrator.app.user_middleware)
+    assert any(item.cls is JsonRequestBodyLimitMiddleware for item in server.app.user_middleware)
+
+    async def run(messages: list[dict], headers: list[tuple[bytes, bytes]]) -> tuple[list[dict], int]:
+        calls = 0
+
+        async def inner(_scope: dict, _receive: object, _send: object) -> None:
+            nonlocal calls
+            calls += 1
+
+        pending = iter(messages)
+        sent: list[dict] = []
+
+        async def receive() -> dict:
+            return next(pending)
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        middleware = JsonRequestBodyLimitMiddleware(inner, max_body_bytes=8)
+        await middleware({"type": "http", "headers": headers}, receive, send)
+        return sent, calls
+
+    declared, declared_calls = asyncio.run(run(
+        [{"type": "http.request", "body": b"{}", "more_body": False}],
+        [(b"content-type", b"application/json"), (b"content-length", b"9")],
+    ))
+    chunked, chunked_calls = asyncio.run(run(
+        [
+            {"type": "http.request", "body": b"12345", "more_body": True},
+            {"type": "http.request", "body": b"6789", "more_body": False},
+        ],
+        [(b"content-type", b"application/json")],
+    ))
+
+    for sent, calls in ((declared, declared_calls), (chunked, chunked_calls)):
+        assert calls == 0
+        assert sent[0]["status"] == 413
+
+
+def test_edit_request_models_share_filename_and_content_bounds() -> None:
+    import server
+
+    for model in (orchestrator.SaveContentRequest, server.WriteContentBody):
+        properties = model.model_json_schema()["properties"]
+        assert properties["filename"]["maxLength"] == MAX_EDIT_FILENAME_CHARS
+        assert properties["content"]["maxLength"] == MAX_EDIT_CONTENT_BYTES
+
+
+def test_runtime_bounded_write_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+    import server
+
+    sid = "0123456789abcdef"
+    workspace = tmp_path / sid
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("before", encoding="utf-8")
+    monkeypatch.setattr(server, "WORKSPACE", str(tmp_path))
+    server._sessions.clear()
+    server._session_users.clear()
+    server._session_users[sid] = "dan"
+    content = "x" * MAX_EDIT_CONTENT_BYTES
+
+    with TestClient(server.app) as client:
+        response = client.put(
+            f"/files/content?identifier={sid}",
+            headers={"X-User-Id": "dan"},
+            json={"filename": "notes.txt", "content": content},
+        )
+
+    assert response.status_code == 200
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == content
 
 
 def test_runtime_upload_accepts_markdown_and_rejects_other_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

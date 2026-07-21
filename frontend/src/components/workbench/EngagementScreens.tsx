@@ -29,7 +29,7 @@ import {
   deleteEngagementArtifact,
   deleteEngagementTask,
   listUsers,
-  openEngagementArtifact,
+  downloadEngagementArtifact,
   removeConvention,
   removeEngagementMember,
   updateEngagement,
@@ -1239,25 +1239,20 @@ function EngagementArtifacts({
       if (fileInput.current) fileInput.current.value = "";
     }
   };
-  const open = async (artifact: Artifact) => {
+  const download = async (artifact: Artifact) => {
     setError("");
-    const preview = window.open("", "_blank");
-    if (!preview) {
-      setError("Artifact preview was blocked. Allow pop-ups and try again.");
-      return;
-    }
-    preview.opener = null;
-    let url: string | null = null;
     try {
-      const blob = await openEngagementArtifact(engagement.id, artifact.id);
-      const previewUrl = URL.createObjectURL(blob);
-      url = previewUrl;
-      preview.location.href = previewUrl;
-      setTimeout(() => URL.revokeObjectURL(previewUrl), 60_000);
+      const blob = await downloadEngagementArtifact(engagement.id, artifact.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = artifact.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (err) {
-      if (url) URL.revokeObjectURL(url);
-      preview.close();
-      setError(friendlyError(err, "Unable to open artifact preview."));
+      setError(friendlyError(err, "Unable to download artifact."));
     }
   };
   const remove = async (artifact: Artifact) => {
@@ -1316,11 +1311,11 @@ function EngagementArtifacts({
               <button
                 type="button"
                 className="tw-btn-ghost"
-                data-testid={`artifact-open-${artifact.id}`}
-                title={`Open ${artifact.name}`}
-                onClick={() => void open(artifact)}
+                data-testid={`artifact-download-${artifact.id}`}
+                title={`Download ${artifact.name}`}
+                onClick={() => void download(artifact)}
               >
-                <Download size={13} />
+                <Download size={13} /> Download
               </button>
               {editable && (
                 <ArmedDelete

@@ -70,3 +70,25 @@ MVP_EVAL_SCOPE=workflow npm run eval:mvp
 ```
 
 `MVP_EVAL_SCOPE` accepts only `all` (the default), `atomic`, or `workflow`; an invalid value fails before the evaluator makes live calls. `workflow` performs one guarded fixture reset, one session, and the three versioned workflow turns only. It is useful after a transient provider limit, but it is subset evidence and does not replace `npm run eval:mvp` full readiness.
+
+## Browser validation
+
+Run this only with deliberate human authorization, after the isolated stack is already running and its Cosmos emulator, model, and browser prerequisites are available. From a separate parent shell for the `demo1` ports above, use the matching isolation values:
+
+```bash
+export CSA_LOCAL_RUN_ID=demo1
+export WORKSPACE=.local-runs/demo1/workspace
+export ARTIFACTS_DIR=.mvp-artifacts/demo1
+export IDENTITY_MODE=demo
+export DEMO_PASSWORD='local-only-secret'
+export COSMOS_ENDPOINT='http://localhost:8081'
+export COSMOS_DATABASE='csa_workbench_demo1_local'
+export COSMOS_CONTAINER='appstate_demo1_local'
+export MVP_APP_URL='http://localhost:13000'
+export MVP_API_URL='http://localhost:18000'
+export MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'
+export MVP_RESET_BEFORE_RUN=1
+npm run playwright:mvp
+```
+
+The guarded reset and browser run validate this exact local revision only. They do not validate Azure deployment or Entra behavior, and this runbook does not claim that the browser validation has run.

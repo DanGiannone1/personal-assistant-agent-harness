@@ -43,6 +43,11 @@ else:
     raise RuntimeError("AGENT_BACKEND must be 'deepagents' or 'copilot'")
 from tracing import setup_tracing
 from workbench_core.trace_logging import setup_trace_logging, trace_event
+from workbench_core.request_limits import (
+    MAX_EDIT_CONTENT_BYTES,
+    MAX_EDIT_FILENAME_CHARS,
+    JsonRequestBodyLimitMiddleware,
+)
 from workbench_core.upload_policy import is_allowed_upload
 from workload_auth import WorkloadAuthenticator
 
@@ -72,6 +77,7 @@ async def runtime_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CSA Workbench Session", lifespan=runtime_lifespan)
+app.add_middleware(JsonRequestBodyLimitMiddleware)
 setup_tracing(app)
 
 
@@ -465,8 +471,8 @@ async def file_content(filename: str, request: Request) -> dict:
 
 
 class WriteContentBody(BaseModel):
-    filename: str
-    content: str
+    filename: str = Field(..., max_length=MAX_EDIT_FILENAME_CHARS)
+    content: str = Field(..., max_length=MAX_EDIT_CONTENT_BYTES)
 
 
 @app.put("/files/content")
@@ -492,7 +498,7 @@ async def write_file_content(body: WriteContentBody, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="File not found")
     if target.suffix.lower() not in {".md", ".txt", ".csv"}:
         raise HTTPException(status_code=415, detail="Only text artifacts are editable")
-    if len(body.content.encode("utf-8")) > 2 * 1024 * 1024:
+    if len(body.content.encode("utf-8")) > MAX_EDIT_CONTENT_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
     target.write_text(body.content, encoding="utf-8")

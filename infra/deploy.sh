@@ -144,7 +144,7 @@ subnet = properties.get('vnetConfiguration', {}).get('infrastructureSubnetId') i
 compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profiles == [{'name': 'Consumption', 'workloadProfileType': 'Consumption'}])
 if compatible:
     print('compatible|[]')
-elif attached == expected:
+elif set(attached) == set(expected):
     print('incompatible|' + json.dumps(['containerapp/' + name for name in expected] + ['managedEnvironment/' + os.environ['ENVIRONMENT_NAME']], separators=(',', ':')))
 else:
     raise SystemExit('incompatible environment app inventory is unsafe')
@@ -294,7 +294,7 @@ if not isinstance(zones, list) or {zone.get('name') for zone in zones} != {os.en
 vnet_id = f'/subscriptions/{os.environ["SUBSCRIPTION_ID"]}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.Network/virtualNetworks/{os.environ["VNET_NAME"]}'.lower()
 if network_security_groups:
     expected_nsgs = {f'{os.environ["VNET_NAME"]}-aca-infrastructure-nsg-{os.environ["LOCATION"]}'.lower(), f'{os.environ["VNET_NAME"]}-private-endpoints-nsg-{os.environ["LOCATION"]}'.lower()}
-    if not isinstance(network_security_groups, list) or {nsg.get('name', '').lower() for nsg in network_security_groups} != expected_nsgs or any(nsg.get('provisioningState') != 'Succeeded' or nsg.get('securityRules') != [] or nsg.get('networkInterfaces') not in (None, []) for nsg in network_security_groups): raise SystemExit('tenant-governance NSG profile drifted')
+    if not isinstance(network_security_groups, list) or len(network_security_groups) != len(expected_nsgs) or {nsg.get('name', '').lower() for nsg in network_security_groups} != expected_nsgs or any(nsg.get('provisioningState') != 'Succeeded' or nsg.get('securityRules') != [] or nsg.get('networkInterfaces') not in (None, []) for nsg in network_security_groups): raise SystemExit('tenant-governance NSG profile drifted')
 def verify_link(links, zone):
     if len(links) != 1 or links[0].get('name') != os.environ['PRIVATE_DNS_VNET_LINK_NAME'] or links[0].get('provisioningState') != 'Succeeded' or links[0].get('virtualNetworkLinkState') != 'Completed' or links[0].get('registrationEnabled') is not False or links[0].get('virtualNetwork', {}).get('id', '').lower() != vnet_id: raise SystemExit(f'private DNS VNet link drifted: {zone}')
 def verify_group(groups, zone, records):
@@ -318,6 +318,8 @@ expected_resources = {
   ('microsoft.containerregistry/registries', os.environ['ACR_NAME'].lower()), ('microsoft.cognitiveservices/accounts', os.environ['AOAI_NAME'].lower()), ('microsoft.documentdb/databaseaccounts', os.environ['COSMOS_ACCOUNT_NAME'].lower()), ('microsoft.storage/storageaccounts', os.environ['STORAGE_ACCOUNT_NAME'].lower()), ('microsoft.network/virtualnetworks', os.environ['VNET_NAME'].lower()), ('microsoft.network/privateendpoints', os.environ['COSMOS_PRIVATE_ENDPOINT_NAME'].lower()), ('microsoft.network/privateendpoints', os.environ['STORAGE_PRIVATE_ENDPOINT_NAME'].lower()), ('microsoft.network/privatednszones', os.environ['COSMOS_PRIVATE_DNS_ZONE'].lower()), ('microsoft.network/privatednszones', os.environ['STORAGE_PRIVATE_DNS_ZONE'].lower()),
 }
 expected_resources |= {('microsoft.network/networkinterfaces', name) for name in nic_names}
+if network_security_groups:
+    expected_resources |= {('microsoft.network/networksecuritygroups', name) for name in expected_nsgs}
 actual_resources = {(r.get('type', '').lower(), r.get('name', '').lower()) for r in resources if isinstance(r, dict)}
 allowed_children = {('microsoft.documentdb/databaseaccounts/sqldatabases', f'{os.environ["COSMOS_ACCOUNT_NAME"]}/{os.environ["DATABASE_NAME"]}'.lower()), ('microsoft.documentdb/databaseaccounts/sqldatabases/containers', f'{os.environ["COSMOS_ACCOUNT_NAME"]}/{os.environ["DATABASE_NAME"]}/appstate'.lower()), ('microsoft.cognitiveservices/accounts/deployments', f'{os.environ["AOAI_NAME"]}/{os.environ["MODEL_DEPLOYMENT_NAME"]}'.lower()), ('microsoft.network/privatednszones/virtualnetworklinks', f'{os.environ["COSMOS_PRIVATE_DNS_ZONE"]}/{os.environ["PRIVATE_DNS_VNET_LINK_NAME"]}'.lower()), ('microsoft.network/privatednszones/virtualnetworklinks', f'{os.environ["STORAGE_PRIVATE_DNS_ZONE"]}/{os.environ["PRIVATE_DNS_VNET_LINK_NAME"]}'.lower()), ('microsoft.network/privateendpoints/privatednszonegroups', f'{os.environ["COSMOS_PRIVATE_ENDPOINT_NAME"]}/default'.lower()), ('microsoft.network/privateendpoints/privatednszonegroups', f'{os.environ["STORAGE_PRIVATE_ENDPOINT_NAME"]}/default'.lower()), ('microsoft.storage/storageaccounts/blobservices', f'{os.environ["STORAGE_ACCOUNT_NAME"]}/default'.lower()), ('microsoft.storage/storageaccounts/blobservices/containers', f'{os.environ["STORAGE_ACCOUNT_NAME"]}/default/engagement-artifacts'.lower())}
 if not expected_resources <= actual_resources or any(resource not in expected_resources | allowed_children for resource in actual_resources): raise SystemExit('required resource inventory drifted')

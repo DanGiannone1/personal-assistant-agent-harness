@@ -13,19 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Node dependencies
+        run: |
+          npm ci
+          (cd frontend && npm ci)
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v6
-      - name: Check Python locks
+      - name: Install locked Python environments
         run: |
-          uv lock --check
-          (cd session-container && uv lock --check)
-      - name: Run deployment and release-boundary contracts
-        run: >-
-          PYTHONPATH="$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/session-container"
-          uv run --project session-container --locked --with pytest pytest -q
-          tests/test_infra_entra_contract.py tests/test_release_boundaries.py
+          uv sync --locked
+          (cd session-container && uv sync --locked)
+      - name: Run deterministic host verification
+        run: npm run verify:ci
       - name: Build Bicep
         uses: azure/cli@v2
         with:
