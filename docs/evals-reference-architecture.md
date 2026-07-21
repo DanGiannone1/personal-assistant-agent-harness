@@ -61,7 +61,7 @@ Live MVP evaluation and Playwright require the local emulator and running servic
 
 ## Current evidence status
 
-A local browser journey has passed 41/41 checks at the current revision, covering the full page
+A local browser journey has passed 41/41 checks at recovery revision `c876306` (2026-07-21), covering the full page
 inventory (Engagements, My work, Assistant, Settings) plus a live agent turn. `npm run verify` is
 green, and live-model spot checks cover the personal tools. **UNVERIFIED from this repository:** a
 deployed Azure instance, a real Entra sign-in against this code, a real Azure Communication Services

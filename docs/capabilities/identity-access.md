@@ -103,8 +103,8 @@ contract.
 Focused tests cover mode selection, missing/dual/wrong credentials, required Entra `tid`/`oid`,
 malformed claim types, write-once session binding, and role rules
 (`tests/test_identity_modes.py`, `tests/test_engagement_core.py`,
-`tests/test_infra_entra_contract.py`). A local browser journey passed 41/41 checks at the current
-revision using the deterministic demo actors. **UNVERIFIED:** a real Entra sign-in against this code,
+`tests/test_infra_entra_contract.py`). A local browser journey passed 41/41 checks at recovery revision `c876306`
+(2026-07-21) using the deterministic demo actors. **UNVERIFIED:** a real Entra sign-in against this code,
 a second real tenant actor, and an interactive real-Entra browser journey — none has been observed
 from this repository.
 

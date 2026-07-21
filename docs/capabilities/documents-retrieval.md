@@ -46,8 +46,8 @@ Library/Search elsewhere in the repository is history or an explicit exclusion, 
 
 Focused release-boundary tests verify that an Entra-mode startup refuses the local artifact backend
 (`ARTIFACTS_ACCOUNT` required) and that upload-filename policy accepts only `.md` for session uploads
-(`tests/test_release_boundaries.py`). A local browser journey passed 41/41 checks at the current
-revision. **UNVERIFIED:** a live Blob-backed artifact round trip against a deployed Azure instance —
+(`tests/test_release_boundaries.py`). A local browser journey passed 41/41 checks at recovery revision `c876306`
+(2026-07-21). **UNVERIFIED:** a live Blob-backed artifact round trip against a deployed Azure instance —
 local development exercises only the local-directory backend.
 
 ## Related authority

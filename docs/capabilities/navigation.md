@@ -93,7 +93,7 @@ rejection of marker-like destinations
 typed personal-work destination respectively; `MVP-E7-marker-prose-is-inert` proves that
 navigation-shaped prose alone produces no tool result and no route change.
 
-A local browser journey passed 41/41 checks at the current revision, including live navigation
+A local browser journey passed 41/41 checks at recovery revision `c876306` (2026-07-21), including live navigation
 between the covered surfaces. `ambiguous` exists in the shared result vocabulary, but the navigation
 service does not return structured choices today — the model must ask for clarification before
 calling `navigate` with a stable ID.

@@ -194,7 +194,7 @@ identity/RBAC contract, and recovery behavior are owned by
 
 ## Quality and evidence
 
-A local browser journey passed 41/41 checks at the current revision, including the full page
+A local browser journey passed 41/41 checks at recovery revision `c876306` (2026-07-21), including the full page
 inventory and a live agent turn, and `npm run verify` is green. Live-model spot checks cover the
 personal tools. **Not verified:** a deployed Azure instance, a real Entra sign-in against this code,
 a real ACS email send, and a live-model eval run of the `MVP-E8`/`MVP-E9` personal-work cases. The

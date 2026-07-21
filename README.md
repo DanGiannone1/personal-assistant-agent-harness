@@ -105,7 +105,7 @@ There is no separate `orchestrator/` directory; the API lives at the repository 
 
 ## Evidence honesty
 
-A local browser journey passed 41/41 checks at the current revision, including the page inventory
+A local browser journey passed 41/41 checks at recovery revision `c876306` (2026-07-21), including the page inventory
 and a live agent turn, and `npm run verify` is green. Live-model spot checks cover the personal
 tools. **Not verified from this repository:** a deployed Azure instance, a real Entra sign-in
 against this code, a real Azure Communication Services email send, or a live-model eval run of the
