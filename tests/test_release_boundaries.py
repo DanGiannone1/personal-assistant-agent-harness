@@ -30,6 +30,7 @@ from workload_auth import EntraTokenVerifier, WorkloadAuthConfig, WorkloadAuthen
 from workbench_core.request_limits import (
     MAX_EDIT_CONTENT_BYTES,
     MAX_EDIT_FILENAME_CHARS,
+    MAX_EDIT_JSON_REQUEST_BYTES,
     JsonRequestBodyLimitMiddleware,
 )
 
@@ -479,13 +480,13 @@ def test_artifact_frontend_uses_download_anchor_without_blob_navigation() -> Non
     assert "openEngagementArtifact" not in api_source
 
 
-def test_json_body_limit_rejects_declared_and_chunked_bodies_before_app_execution() -> None:
+def test_json_body_limit_rejects_declared_chunked_and_untyped_edit_bodies_before_app_execution() -> None:
     import server
 
     assert any(item.cls is JsonRequestBodyLimitMiddleware for item in orchestrator.app.user_middleware)
     assert any(item.cls is JsonRequestBodyLimitMiddleware for item in server.app.user_middleware)
 
-    async def run(messages: list[dict], headers: list[tuple[bytes, bytes]]) -> tuple[list[dict], int]:
+    async def run(messages: list[dict], headers: list[tuple[bytes, bytes]], *, method: str = "POST", path: str = "/") -> tuple[list[dict], int]:
         calls = 0
 
         async def inner(_scope: dict, _receive: object, _send: object) -> None:
@@ -502,7 +503,7 @@ def test_json_body_limit_rejects_declared_and_chunked_bodies_before_app_executio
             sent.append(message)
 
         middleware = JsonRequestBodyLimitMiddleware(inner, max_body_bytes=8)
-        await middleware({"type": "http", "headers": headers}, receive, send)
+        await middleware({"type": "http", "method": method, "path": path, "headers": headers}, receive, send)
         return sent, calls
 
     declared, declared_calls = asyncio.run(run(
@@ -516,8 +517,21 @@ def test_json_body_limit_rejects_declared_and_chunked_bodies_before_app_executio
         ],
         [(b"content-type", b"application/json")],
     ))
+    untyped_edit, untyped_edit_calls = asyncio.run(run(
+        [{"type": "http.request", "body": b"123456789", "more_body": False}],
+        [], method="PUT", path="/files/content",
+    ))
+    plain_public_edit, plain_public_edit_calls = asyncio.run(run(
+        [{"type": "http.request", "body": b"123456789", "more_body": False}],
+        [(b"content-type", b"text/plain")], method="PUT", path="/sessions/0123456789abcdef/files/content",
+    ))
 
-    for sent, calls in ((declared, declared_calls), (chunked, chunked_calls)):
+    for sent, calls in (
+        (declared, declared_calls),
+        (chunked, chunked_calls),
+        (untyped_edit, untyped_edit_calls),
+        (plain_public_edit, plain_public_edit_calls),
+    ):
         assert calls == 0
         assert sent[0]["status"] == 413
 
@@ -554,6 +568,30 @@ def test_runtime_bounded_write_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_
 
     assert response.status_code == 200
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == content
+
+
+def test_runtime_untyped_oversized_edit_body_is_rejected_before_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+    import server
+
+    sid = "0123456789abcdef"
+    workspace = tmp_path / sid
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("before", encoding="utf-8")
+    monkeypatch.setattr(server, "WORKSPACE", str(tmp_path))
+    server._sessions.clear()
+    server._session_users.clear()
+    server._session_users[sid] = "dan"
+
+    with TestClient(server.app) as client:
+        response = client.put(
+            f"/files/content?identifier={sid}",
+            headers={"X-User-Id": "dan"},
+            content=b"x" * (MAX_EDIT_JSON_REQUEST_BYTES + 1),
+        )
+
+    assert response.status_code == 413
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "before"
 
 
 def test_runtime_upload_accepts_markdown_and_rejects_other_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

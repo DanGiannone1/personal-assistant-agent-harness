@@ -20,13 +20,25 @@ def _is_json_request(scope: Scope) -> bool:
     return content_type == b"application/json" or content_type.endswith(b"+json")
 
 
+def _is_edit_content_request(scope: Scope) -> bool:
+    """Recognize the two JSON-edit endpoints even when a client omits Content-Type."""
+    if scope.get("method") != "PUT":
+        return False
+    path = str(scope.get("path", ""))
+    if path == "/files/content":
+        return True
+    return len(path_parts := path.strip("/").split("/")) == 4 and path_parts[0] == "sessions" and path_parts[2:] == ["files", "content"]
+
+
 class JsonRequestBodyLimitMiddleware:
-    """Buffer a bounded JSON request before FastAPI can parse or route it.
+    """Buffer bounded JSON and edit-route bodies before FastAPI can parse or route them.
 
     Multipart uploads deliberately bypass this middleware and retain their own
-    endpoint-specific limits.  Buffering JSON is intentional: it lets chunked
-    request bodies be rejected before endpoint parsing or side effects, just as
-    an oversized Content-Length is.
+    endpoint-specific limits. The edit routes are limited even without a JSON
+    Content-Type, so a malformed client cannot make FastAPI buffer an oversized
+    body before returning its normal validation error. Buffering is intentional:
+    it lets chunked request bodies be rejected before endpoint parsing or side
+    effects, just as an oversized Content-Length is.
     """
 
     def __init__(self, app: ASGIApp, max_body_bytes: int = MAX_EDIT_JSON_REQUEST_BYTES) -> None:
@@ -34,7 +46,7 @@ class JsonRequestBodyLimitMiddleware:
         self.max_body_bytes = max_body_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if not _is_json_request(scope):
+        if not (_is_json_request(scope) or _is_edit_content_request(scope)):
             await self.app(scope, receive, send)
             return
 
