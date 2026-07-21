@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:contract": "tsc -p tsconfig.contract.json && node .contract-dist/navigation.contract.js && node .contract-dist/engagementRoute.contract.js && node .contract-dist/startupRequestPolicy.contract.js && rm -rf .contract-dist"
+    "test:contract": "tsc -p tsconfig.contract.json && node .contract-dist/navigation.contract.js && node .contract-dist/engagementRoute.contract.js && node .contract-dist/startupRequestPolicy.contract.js && node .contract-dist/hostNavigation.contract.js && rm -rf .contract-dist"
   },
   "dependencies": {
     "@ag-ui/core": "^0.0.47",

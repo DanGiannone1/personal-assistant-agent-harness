@@ -89,6 +89,37 @@ export interface Task {
   createdAt?: string;
 }
 
+// ── Personal workspace — durable, private per-user Calendar + Reminders ────
+export type CalendarEventType = "Meeting" | "Focus" | "Personal";
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string;   // YYYY-MM-DD
+  start: string;  // HH:MM or ""
+  end: string;    // HH:MM or ""
+  type: CalendarEventType;
+  notes: string;
+}
+
+export type ReminderFrequency = "once" | "daily" | "weekly";
+
+export interface Reminder {
+  id: string;
+  title: string;
+  message: string;
+  frequency: ReminderFrequency;
+  dueDate: string;        // YYYY-MM-DD anchor date the recurrence is computed from
+  time: string;           // HH:MM
+  timezone: string;       // IANA zone
+  daysOfWeek: number[];   // 0=Sun..6=Sat — weekly only
+  enabled: boolean;
+  nextDueAt: string | null;
+  createdAt: string;
+  lastSentAt?: string;
+  lastStatus?: string;
+}
+
 export interface ContextBundle {
   user: { id: string; displayName: string };
   persona: { role?: string; tone?: string; outputPrefs?: string; language?: string };
@@ -161,6 +192,9 @@ export interface AppUserRecord {
 
 export interface AppState {
   currentRoute: string;
+  personalTasks: Task[];
+  calendarEvents: CalendarEvent[];
+  reminders: Reminder[];
   engagements: Engagement[];
   user: AppUserRecord;
 }

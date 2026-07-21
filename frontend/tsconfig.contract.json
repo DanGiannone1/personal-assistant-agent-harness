@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "outDir": ".contract-dist"
   },
-  "include": ["src/lib/types.ts", "src/lib/navigation.ts", "src/lib/navigation.contract.ts", "src/lib/engagementRoute.ts", "src/lib/engagementRoute.contract.ts", "src/lib/startupRequestPolicy.ts", "src/lib/startupRequestPolicy.contract.ts"]
+  "include": ["src/lib/types.ts", "src/lib/navigation.ts", "src/lib/navigation.contract.ts", "src/lib/engagementRoute.ts", "src/lib/engagementRoute.contract.ts", "src/lib/startupRequestPolicy.ts", "src/lib/startupRequestPolicy.contract.ts", "src/lib/hostNavigation.contract.ts"]
 }

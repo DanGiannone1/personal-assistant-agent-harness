@@ -271,6 +271,14 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (route === "/engagements") return "Engagements";
   if (route.startsWith("/engagements/")) return "Engagement";
   if (route === "/settings") return "Settings";
+  if (route === "/home") return "Home";
+  if (route.startsWith("/todo/")) {
+    const task = appState.personalTasks.find((entry) => entry.id === route.split("/").pop());
+    return task ? `the "${task.title}" task` : "Tasks";
+  }
+  if (route === "/todo") return "Tasks";
+  if (route === "/calendar") return "Calendar";
+  if (route === "/reminders") return "Reminders";
   return "Engagements";
 }
 
