@@ -1,6 +1,6 @@
 # CSA Workbench
 
-CSA Workbench is an internal MVP vertical-slice POC for solution-architect Engagement work. Its supported user surfaces are **Engagements**, **Assistant**, and **Settings**. The product is deliberately small: it is not a personal task, calendar, reminder, home, Library, Search, quick-links, scheduler, or generic workbench product.
+CSA Workbench is an internal MVP vertical-slice POC for solution-architect Engagement work. Its supported user surfaces are **Engagements** (the default landing surface), a private **My work** group (**Home**, **Tasks**, **Calendar**, **Reminders**), **Assistant**, and **Settings**. The product is deliberately small: it is not a Library, Search, quick-links, or generic workbench product.
 
 ## Choose a route
 
@@ -16,7 +16,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [coding-agent setup](docs/coding-agent-
 
 The web frontend, FastAPI API, and session runtime are separate processes. Engagement data is durable application state. Durable Engagement artifact metadata lives with the Engagement record and its bytes use the configured durable artifact backend; local development may use the isolated local artifact directory. Session files instead belong to an ephemeral assistant session and uploads are Markdown (`.md`) only.
 
-Deep Agents is the product lane. Copilot is retained only as a local portability and evaluation lane; it is not a release claim. The single product skill is `engagement-meeting-prep`.
+Deep Agents is the product lane. Copilot is retained only as a local portability and evaluation lane; it is not a release claim. The product skills are `engagement-meeting-prep`, `tasks`, `calendar`, and `weekly-review`.
 
 ## Documentation authority
 

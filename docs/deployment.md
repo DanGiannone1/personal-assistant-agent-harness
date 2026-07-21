@@ -44,3 +44,9 @@ Only the responsible human may apply, using the exact confirmation emitted by th
 There is no `APPLY=true` path. Do not use unattended apply, and do not let a coding agent apply with a copied confirmation. Apply re-computes and rechecks the plan before mutation. Depending on the guarded recovery state, it may delete only explicitly approved recovery targets before foundation deployment, then creates Entra registrations, builds images, deploys applications, and verifies the declared Azure inventory.
 
 Any legacy resource names, model revisions, URLs, or prior run results are historical observations only and are not portable proof for this instance.
+
+## Reminder email delivery (not yet provisioned)
+
+Reminder email needs an Azure Communication Services (ACS) resource with a verified sender address, reachable by the deployed app's managed identity through `DefaultAzureCredential`, plus `ACS_EMAIL_ENDPOINT`/`ACS_SENDER_ADDRESS` app configuration. **UNVERIFIED / not-yet-provisioned:** `infra/` currently has no Bicep for an ACS resource, role assignment, or this app configuration — provisioning it is a separate, human-owned infrastructure change, not something this runbook or `deploy.sh` does today.
+
+Once provisioned, dispatch behavior depends on deployment shape: an always-on API app replica runs the in-process dispatch loop (`REMINDER_DISPATCH=auto` ticks it whenever ACS is configured); a scale-to-zero deployment instead needs an external scheduler — e.g. an ACA Job on a cron trigger — invoking `scripts/dispatch_reminders.py` for one due-reminder pass, since a scaled-to-zero replica cannot run its own loop. No such job is defined in `infra/` yet either.

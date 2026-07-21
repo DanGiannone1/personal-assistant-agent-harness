@@ -6,4 +6,4 @@ Engagements are the durable shared product record. The application exposes autho
 
 An authorized status change requires a status and reason where the command contract requires one; invalid and unauthorized attempts are expected to leave the target state unchanged. The versioned atomic evidence covers list, read, typed navigation, exact status update, missing reason, outsider rejection, and inert marker prose.
 
-This does not make CSA Workbench a personal task manager. Some Engagement record fields can hold delivery detail, but there is no supported personal task, calendar, reminder, scheduler, or home surface.
+Some Engagement record fields can hold delivery detail, but Engagement records are not the personal task/calendar/reminder surface. Private, actor-owned Tasks, Calendar events, and Reminders exist as a separate "My work" surface, held on their own per-actor aggregate and never scoped to or shared through an Engagement; see [design](../design.md).

@@ -15,6 +15,8 @@ uv sync
 
 Configure local demo identity, the Azure OpenAI endpoint/deployment, and Cosmos emulator values in `.env`. Never commit a real secret. Read the current `.env.example` and source for the exact variables.
 
+Reminder email delivery is optional and off by default. To exercise it locally, set `ACS_EMAIL_ENDPOINT` and `ACS_SENDER_ADDRESS` for a real Azure Communication Services resource reachable with your signed-in `DefaultAzureCredential`; `REMINDER_DISPATCH=auto` (the default) then ticks an in-process dispatch loop, with `REMINDER_TICK_SECONDS` controlling cadence (default 60). Demo-identity actors only ever receive reminder email at the operator-set `REMINDER_DEMO_EMAIL` test address; Entra actors receive it at their own validated sign-in address. Leaving ACS unconfigured is expected for most local work — reminders still create, edit, and display in-app.
+
 ## Isolated local run
 
 `dev.py` runs a frontend, API, and session runtime. For an isolated stack, select a conservative run ID and three unused, distinct loopback ports. This illustrative configuration uses `demo1`, `18080`, `18000`, and `13000`:
