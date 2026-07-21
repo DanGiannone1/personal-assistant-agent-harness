@@ -4,6 +4,16 @@
 
 Read the current [`infra/deploy.sh`](../infra/deploy.sh) before use. The script requires a clean worktree and explicit model selection; it does not silently choose a model.
 
+## What this creates
+
+Each `INSTANCE_SLUG` deploys its own isolated resource group `csa-wb-<slug>-rg` containing a public
+frontend Container App, a public API Container App, an internal-only session-runtime Container App
+(each scaled `0-1`), a VNet with private endpoints and private DNS for Cosmos DB and Blob Storage, a
+Basic Azure Container Registry, and an Azure OpenAI account/deployment sized by the `MODEL_*`
+inputs. Every workload uses its own user-assigned managed identity; there is no shared-key or
+anonymous data path. See [Infrastructure](capabilities/infrastructure.md) for the exact resource,
+identity, and cost contract.
+
 ## Required inputs
 
 Use placeholders until the human owner supplies target-specific values:
@@ -44,6 +54,33 @@ Only the responsible human may apply, using the exact confirmation emitted by th
 There is no `APPLY=true` path. Do not use unattended apply, and do not let a coding agent apply with a copied confirmation. Apply re-computes and rechecks the plan before mutation. Depending on the guarded recovery state, it may delete only explicitly approved recovery targets before foundation deployment, then creates Entra registrations, builds images, deploys applications, and verifies the declared Azure inventory.
 
 Any legacy resource names, model revisions, URLs, or prior run results are historical observations only and are not portable proof for this instance.
+
+## Recovery is fail-closed
+
+Before planning or applying, the script inspects any existing Container Apps environment named for
+the target slug. An absent or already-compatible environment needs no recovery. An incompatible one
+(wrong network shape, or an app inventory that doesn't exactly match the three expected app names) is
+reported as a deletion target only for exactly those three named apps and their environment — never
+adopted, never partially deleted, and never silently worked around. Apply deletes only the approved
+targets from the immediately preceding plan before foundation deployment runs.
+
+## What the post-apply verifier checks
+
+After `apply`, the script re-reads live Azure JSON rather than trusting the deployment command's own
+success. It requires exactly the three named Container Apps with their declared ingress, ports,
+`0-1` scale, and the same immutable Git-SHA image tag; the exact VNet/subnet/private-endpoint/
+private-DNS shape for Cosmos and Blob; disabled Cosmos local/public access and disabled Storage
+public/shared-key/public-blob access; the exact managed-identity role assignments contained within
+the resource group; and the full expected resource inventory with nothing extra. A tenant-governance
+NSG pair or Defender-for-Storage Event Grid topic may legitimately exist outside the application's own
+Bicep; the verifier tolerates their absence and validates their exact shape only when present.
+
+## Workflow boundary
+
+`.github/workflows/deploy.yml` is validation-only: on push, pull request, or manual dispatch it runs
+`npm run verify:ci` and compiles both Bicep entrypoints. It has no deployment credential, OIDC
+permission, image publication, or Azure mutation. The guarded manual script above is the only
+deployment path.
 
 ## Reminder email delivery (not yet provisioned)
 
