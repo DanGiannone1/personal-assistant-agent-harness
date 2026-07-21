@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": "mvp-demo-v1",
+  "fixtureVersion": "mvp-demo-v2",
   "workflows": [
     {
       "id": "MVP-W1-engagement-meeting-to-action",
@@ -56,7 +56,7 @@
             "forbiddenToolNames": ["create_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
             "toolCall": { "name": "navigate", "args": { "destination_id": "engagement_overview", "engagement_id": "eng-product-launch" } },
             "completeToolEvidence": true,
-            "assistantResponseRequired": true,
+            "assistantResponseRequired": false,
             "forbiddenSkillNames": ["engagement-meeting-prep"],
             "navigation": {
               "destination": {

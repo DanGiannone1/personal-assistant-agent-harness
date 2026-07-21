@@ -1,14 +1,18 @@
-# Documentation Routing Notice
+# Documentation index
 
-> **Authority:** Compatibility pointer only; this file defines no product or architecture rule.
+> **Authority:** Routing only. Repository governance in [governance](governance/README.md) remains the governing lifecycle authority.
 
-The single repository and documentation front door is the [root README](../README.md). The
-[authoritative design](design.md), [v1 requirements](requirements.md), capability designs, and
-runbooks are mapped there.
+Start at the [root README](../README.md), the sole colleague-facing front door.
 
-[Repository governance](governance/README.md) owns the canonical work lifecycle, testing,
-engineering-execution, and agent-design rules loaded by the local Claude and Codex entrypoints.
+| Document | Authority and purpose |
+|---|---|
+| [design.md](design.md) | High-level MVP product and system design |
+| [requirements.md](requirements.md) | Release and acceptance intent |
+| [capabilities/](capabilities/) | Focused current-boundary notes; subordinate to design and requirements |
+| [development.md](development.md) | Local run and deterministic verification runbook |
+| [deployment.md](deployment.md) | Human-owned Azure plan/apply runbook |
+| [evals-reference-architecture.md](evals-reference-architecture.md) | Canonical customer-demo and evidence architecture |
+| [coding-agent-setup.md](coding-agent-setup.md) | CLI coding-agent collaboration guardrails |
+| [governance/](governance/) | Governing SDLC, engineering, testing, and agent-design rules |
 
-This path remains temporarily because local repository-governance material still names it as an
-entrypoint. Once that human-owned reference is explicitly authorized and updated, this pointer can
-be removed.
+`architecture.md`, `spec.md`, `use-cases.md`, `projects-spec.md`, `mvp-requirements.md`, and `navigation-reference-architecture.md` are compatibility pointers only. `agent-evals-reference.md` is non-authoritative educational background.

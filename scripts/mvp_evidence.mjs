@@ -1,6 +1,33 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
+export const MVP_EVAL_SCOPES = Object.freeze(["all", "atomic", "workflow"]);
+
+export function parseMvpEvalScope(value) {
+  const scope = value === undefined ? "all" : value;
+  if (!MVP_EVAL_SCOPES.includes(scope)) {
+    throw new Error(`MVP_EVAL_SCOPE must be one of: ${MVP_EVAL_SCOPES.join(", ")}`);
+  }
+  return scope;
+}
+
+export function selectMvpEvalScope(scopeValue, atomicSuite, workflowSuite) {
+  const scope = parseMvpEvalScope(scopeValue);
+  const runsAtomic = scope === "all" || scope === "atomic";
+  const runsWorkflow = scope === "all" || scope === "workflow";
+  if (runsAtomic && !Array.isArray(atomicSuite?.cases)) throw new Error("atomic MVP suite must define cases");
+  if (runsWorkflow && !Array.isArray(workflowSuite?.workflows)) throw new Error("workflow MVP suite must define workflows");
+  if (scope === "all" && workflowSuite.fixtureVersion !== atomicSuite.fixtureVersion) {
+    throw new Error("atomic and workflow fixture versions must match");
+  }
+  return {
+    scope,
+    fixtureVersion: runsWorkflow ? workflowSuite.fixtureVersion : atomicSuite.fixtureVersion,
+    atomicCases: runsAtomic ? atomicSuite.cases : [],
+    workflowDefinitions: runsWorkflow ? workflowSuite.workflows : [],
+  };
+}
+
 export function parseSse(text) {
   const frames = text.split(/\r?\n\r?\n/).filter((frame) => frame.trim());
   return frames.map((frame) => {
@@ -63,6 +90,142 @@ function productEvidenceFor(call, rawRecords) {
 
 function skillInvocations(rawRecords) {
   return rawRecords.filter((record) => record?.kind === "skill_invoked" && record.skill?.name);
+}
+
+function normalizeModelVisibleLineEndings(value) {
+  return typeof value === "string" ? value.replace(/\r\n/g, "\n") : null;
+}
+
+function actorIdFromState(before) {
+  const actorId = before?.user?.id;
+  return typeof actorId === "string" && actorId.trim() ? actorId.trim().toLowerCase() : null;
+}
+
+function memberRoleForActor(engagement, actorId) {
+  if (!Array.isArray(engagement?.members) || !actorId) return null;
+  const member = engagement.members.find((entry) => entry?.userId === actorId);
+  return typeof member?.role === "string" ? member.role : null;
+}
+
+function isStringOrAbsent(value) {
+  return value === undefined || typeof value === "string";
+}
+
+function isAuthoritativeEngagement(engagement, actorId) {
+  if (!engagement || typeof engagement !== "object"
+    || typeof engagement.id !== "string" || typeof engagement.name !== "string"
+    || !isStringOrAbsent(engagement.customer) || typeof engagement.status !== "string"
+    || !isStringOrAbsent(engagement.statusNote) || !isStringOrAbsent(engagement.startDate)
+    || !isStringOrAbsent(engagement.targetDate) || !isStringOrAbsent(engagement.description)
+    || !Array.isArray(engagement.members) || !Array.isArray(engagement.tasks)
+    || !Array.isArray(engagement.actions) || !Array.isArray(engagement.milestones)
+    || !Array.isArray(engagement.risks) || !Array.isArray(engagement.library)
+    || !Array.isArray(engagement.conventions)) return false;
+  if (!memberRoleForActor(engagement, actorId)) return false;
+  return engagement.members.every((member) => member && typeof member.userId === "string" && typeof member.role === "string")
+    && engagement.conventions.every((convention) => convention && typeof convention.text === "string")
+    && [
+      [engagement.tasks, ["id", "title", "status", "priority", "dueDate"]],
+      [engagement.actions, ["id", "title", "status", "owner", "dueDate"]],
+      [engagement.milestones, ["id", "title", "status", "dueDate"]],
+      [engagement.risks, ["id", "title", "severity", "status"]],
+    ].every(([items, fields]) => items.every((item) => item && typeof item.id === "string"
+      && fields.every((field) => isStringOrAbsent(item[field]))));
+}
+
+function authoritativeEngagements(before) {
+  const actorId = actorIdFromState(before);
+  if (!actorId || !Array.isArray(before?.engagements)) return null;
+  if (!before.engagements.every((engagement) => isAuthoritativeEngagement(engagement, actorId))) return null;
+  return { actorId, engagements: before.engagements };
+}
+
+function renderAuthorizedEngagementList(before) {
+  const state = authoritativeEngagements(before);
+  if (!state) return null;
+  const { actorId, engagements } = state;
+  if (!engagements.length) return "No engagements yet.";
+  const lines = [`${engagements.length} engagement(s):`];
+  for (const engagement of engagements) {
+    const role = memberRoleForActor(engagement, actorId);
+    const openTasks = engagement.tasks.filter((task) => task.status !== "Done").length;
+    const statusNote = engagement.statusNote ? ` (${engagement.statusNote})` : "";
+    lines.push(
+      `- [${engagement.id}] ${engagement.name} | your role: ${role} | customer=${engagement.customer || "n/a"} | `
+      + `status=${engagement.status}${statusNote} | open tasks=${openTasks} | `
+      + `target=${engagement.targetDate || "n/a"} | docs: ${engagement.library.length}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderEngagementDetail(before, engagementId) {
+  const state = authoritativeEngagements(before);
+  if (!state || typeof engagementId !== "string") return null;
+  const engagement = state.engagements.find((entry) => entry.id === engagementId);
+  if (!engagement) return null;
+  const lines = [
+    `Engagement [${engagement.id}] ${engagement.name}`,
+    `customer=${engagement.customer || "n/a"} | status=${engagement.status || "green"}${engagement.statusNote ? ` (${engagement.statusNote})` : ""} | start=${engagement.startDate || "n/a"} | target=${engagement.targetDate || "n/a"}`,
+    "members: " + (engagement.members.map((member) => `${member.userId}(${member.role})`).join(", ") || "none"),
+  ];
+  if (engagement.description) lines.push(`description: ${engagement.description}`);
+  for (const [label, key, fields] of [
+    ["tasks", "tasks", ["title", "status", "priority", "dueDate"]],
+    ["actions", "actions", ["title", "status", "owner", "dueDate"]],
+    ["milestones", "milestones", ["title", "status", "dueDate"]],
+    ["risks", "risks", ["title", "severity", "status"]],
+  ]) {
+    const items = engagement[key];
+    if (items.length) {
+      lines.push(`${label}:`);
+      for (const item of items) {
+        const parts = fields.filter((field) => item[field]).map((field) => item[field]);
+        lines.push(`- [${item.id}] ${parts.join(" | ")}`);
+      }
+    }
+  }
+  lines.push(`artifacts: ${engagement.library.length}`);
+  if (engagement.conventions.length) lines.push(`conventions: ${engagement.conventions.map((convention) => convention.text).join("; ")}`);
+  return lines.join("\n");
+}
+
+function modelVisibleOutputMatches(output, expected) {
+  return expected !== null && normalizeModelVisibleLineEndings(output) === expected;
+}
+
+function groundedModelVisibleOutputChecks(expectation, before, toolCalls, rawRecords) {
+  const specification = expectation.modelVisibleOutput;
+  const notRequired = {
+    authorizedEngagementIdsGrounded: true,
+    engagementDetailFactsGrounded: true,
+  };
+  if (!specification) return notRequired;
+  const matchingCalls = toolCalls.filter((call) => call.name === expectation.toolCall?.name);
+  if (specification.kind === "authorizedEngagementList") {
+    return {
+      authorizedEngagementIdsGrounded: matchingCalls.length > 0 && matchingCalls.every((call) =>
+        modelVisibleOutputMatches(
+          productEvidenceFor(call, rawRecords)?.model_visible_output,
+          renderAuthorizedEngagementList(before),
+        )),
+      engagementDetailFactsGrounded: true,
+    };
+  }
+  if (specification.kind === "engagementDetail") {
+    return {
+      authorizedEngagementIdsGrounded: true,
+      engagementDetailFactsGrounded: matchingCalls.length > 0 && matchingCalls.every((call) =>
+        modelVisibleOutputMatches(
+          productEvidenceFor(call, rawRecords)?.model_visible_output,
+          renderEngagementDetail(before, specification.engagementId),
+        )),
+    };
+  }
+  return {
+    authorizedEngagementIdsGrounded: false,
+    engagementDetailFactsGrounded: false,
+  };
 }
 
 export function requireLoopbackUrl(value, label) {
@@ -289,6 +452,7 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
       && engagement.status === target.status
       && (target.statusNote === undefined || engagement.statusNote === target.statusNote);
   })();
+  const modelVisibleOutputChecks = groundedModelVisibleOutputChecks(expectation, before, toolCalls, rawRecords);
   const checks = {
     validEventSequence: validEventSequence(events),
     terminalExpected: terminals.length === 1 && events.at(-1) === terminals[0] && terminals[0].type === (expectation.terminal ?? "RUN_FINISHED"),
@@ -318,6 +482,7 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
         && evidence.model_visible_output.length > 0
         && JSON.stringify(evidence.product_result) === JSON.stringify(call.result);
     }),
+    ...modelVisibleOutputChecks,
     expectedSkillInvocation: !expectation.skill || skillInvocations(rawRecords).some((record) =>
       record.skill.name === expectation.skill.name
       && (!expectation.skill.sha256 || record.skill.sha256 === expectation.skill.sha256)),

@@ -433,11 +433,11 @@ export function EngagementScreen({
         />
       </div>
     );
-  if (sub === "documents")
+  if (sub === "artifacts")
     return (
-      <div className="tw-screen" data-testid="engagement-documents-screen">
+      <div className="tw-screen" data-testid="engagement-artifacts-screen">
         {header}
-        <EngagementDocuments
+        <EngagementArtifacts
           engagement={engagement}
           editable={editable}
           onRefresh={onRefresh}
@@ -507,7 +507,7 @@ function EngagementHeader({
   const tabs: [string, string][] = [
     ["", "Overview"],
     ["tasks", "Tasks"],
-    ["documents", "Artifacts"],
+    ["artifacts", "Artifacts"],
     ["settings", "Team & conventions"],
   ];
   return (
@@ -1212,7 +1212,7 @@ function OwnerMemberControls({ engagementId, member, busy, run }: { engagementId
   );
 }
 
-function EngagementDocuments({
+function EngagementArtifacts({
   engagement,
   editable,
   onRefresh,
@@ -1241,13 +1241,23 @@ function EngagementDocuments({
   };
   const open = async (artifact: Artifact) => {
     setError("");
+    const preview = window.open("", "_blank");
+    if (!preview) {
+      setError("Artifact preview was blocked. Allow pop-ups and try again.");
+      return;
+    }
+    preview.opener = null;
+    let url: string | null = null;
     try {
       const blob = await openEngagementArtifact(engagement.id, artifact.id);
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      const previewUrl = URL.createObjectURL(blob);
+      url = previewUrl;
+      preview.location.href = previewUrl;
+      setTimeout(() => URL.revokeObjectURL(previewUrl), 60_000);
     } catch (err) {
-      setError(friendlyError(err, "Artifact action failed."));
+      if (url) URL.revokeObjectURL(url);
+      preview.close();
+      setError(friendlyError(err, "Unable to open artifact preview."));
     }
   };
   const remove = async (artifact: Artifact) => {

@@ -4,15 +4,17 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
-import { evidencePath, evaluateCase, evaluateWorkflow, parseSse, requireCleanWorktree, requireLoopbackUrl } from "./mvp_evidence.mjs";
+import { evidencePath, evaluateCase, evaluateWorkflow, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, selectMvpEvalScope } from "./mvp_evidence.mjs";
 import { buildMvpScorecard, renderMvpScorecard } from "./mvp_scorecard.mjs";
 
 const startedAt = new Date().toISOString();
+const scope = parseMvpEvalScope(process.env.MVP_EVAL_SCOPE);
 const API = requireLoopbackUrl(process.env.MVP_API_URL || "http://localhost:8000", "MVP_API_URL");
 const runId = process.env.MVP_RUN_ID || new Date().toISOString().replace(/[:.]/g, "-") + `-${randomUUID().slice(0, 8)}`;
 const out = evidencePath("agent-evals", runId);
-const cases = JSON.parse(readFileSync("tests/evals/mvp-cases.json", "utf8"));
-const workflowSuite = JSON.parse(readFileSync("tests/evals/mvp-workflows.json", "utf8"));
+const cases = scope === "workflow" ? null : JSON.parse(readFileSync("tests/evals/mvp-cases.json", "utf8"));
+const workflowSuite = scope === "atomic" ? null : JSON.parse(readFileSync("tests/evals/mvp-workflows.json", "utf8"));
+const selectedSuites = selectMvpEvalScope(scope, cases, workflowSuite);
 const harness = process.env.AGENT_BACKEND || "deepagents";
 if (harness !== "deepagents") throw new Error("The MVP workflow lane is Deep Agents product-runtime evidence; run Waza separately for skill-laboratory evidence.");
 const skillPath = "session-container/product-skills/engagement-meeting-prep/SKILL.md";
@@ -36,8 +38,8 @@ function resetFixture() {
 }
 
 function requireFixtureIdentity(actual, expected = null) {
-  if (actual?.fixtureVersion !== cases.fixtureVersion) {
-    throw new Error(`fixture version mismatch: ${actual?.fixtureVersion} != ${cases.fixtureVersion}`);
+  if (actual?.fixtureVersion !== selectedSuites.fixtureVersion) {
+    throw new Error(`fixture version mismatch: ${actual?.fixtureVersion} != ${selectedSuites.fixtureVersion}`);
   }
   if (typeof actual?.fixtureHash !== "string" || !actual.fixtureHash) {
     throw new Error("fixture reset did not return its stable SHA-256 identity");
@@ -94,7 +96,7 @@ async function turn(session, prompt) {
 mkdirSync(out, { recursive: true });
 const results = [];
 let fixture = null;
-for (const item of cases.cases) {
+for (const item of selectedSuites.atomicCases) {
   const caseFixture = resetFixture();
   requireFixtureIdentity(caseFixture, fixture);
   fixture ??= caseFixture;
@@ -108,11 +110,11 @@ for (const item of cases.cases) {
   results.push({ id: item.id, actor: item.actor, observerActor, prompt: item.prompt, fixture: caseFixture, ...verdict, latencyMs: observed.latencyMs, before, after, events: observed.events, rawRecords: observed.rawRecords });
 }
 
-if (workflowSuite.fixtureVersion !== cases.fixtureVersion) throw new Error("atomic and workflow fixture versions must match");
 const workflows = [];
-for (const sourceDefinition of workflowSuite.workflows) {
+for (const sourceDefinition of selectedSuites.workflowDefinitions) {
   const workflowFixture = resetFixture();
   requireFixtureIdentity(workflowFixture, fixture);
+  fixture ??= workflowFixture;
   const definition = structuredClone(sourceDefinition);
   const skillTurn = definition.turns.find((entry) => entry.id === "prepare") ?? definition.turns[0];
   skillTurn.expectation.skill = { name: skill.name, sha256: skill.sha256 };
@@ -153,7 +155,7 @@ if (endingSourceRevision !== sourceRevision) throw new Error("source revision ch
 requireCleanWorktree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
 const completedAt = new Date().toISOString();
 const report = {
-  schemaVersion: 2, kind: "mvp-agent-eval", runId, sourceRevision,
+  schemaVersion: 3, kind: "mvp-agent-eval", runId, sourceRevision, scope,
   fixture, environment: "local-synthetic", harness, model: process.env.AZURE_DEPLOYMENT || "UNSPECIFIED",
   skill, api: API, startedAt, completedAt, results, workflows,
   summary: {

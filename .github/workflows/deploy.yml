@@ -16,10 +16,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install focused test runner
-        run: python -m pip install pytest
-      - name: Run Entra and infrastructure contracts
-        run: python -m pytest -q tests/test_infra_entra_contract.py
+      - uses: astral-sh/setup-uv@v6
+      - name: Check Python locks
+        run: |
+          uv lock --check
+          (cd session-container && uv lock --check)
+      - name: Run deployment and release-boundary contracts
+        run: >-
+          PYTHONPATH="$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/session-container"
+          uv run --project session-container --locked --with pytest pytest -q
+          tests/test_infra_entra_contract.py tests/test_release_boundaries.py
       - name: Build Bicep
         uses: azure/cli@v2
         with:
@@ -27,3 +33,5 @@ jobs:
             az bicep install
             az bicep build --file infra/foundation.bicep
             az bicep build --file infra/apps.bicep
+      - name: Check deploy script syntax
+        run: bash -n infra/deploy.sh

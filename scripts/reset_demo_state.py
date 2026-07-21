@@ -3,7 +3,7 @@
 This is deliberately a *local emulator only* utility.  It refuses an Entra
 environment, an Azure/non-loopback Cosmos endpoint, a remote artifact backend,
 or any target without an unambiguous reset acknowledgement.  It rebuilds the deterministic demo
-actors, their personal spaces/context, Engagements, and local artifact tree.
+actors, Engagements, and local artifact tree.
 
 Usage (from the repository root, with the emulator already running)::
 
@@ -23,15 +23,18 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURE_VERSION = "mvp-demo-v1"
+FIXTURE_VERSION = "mvp-demo-v2"
 RESET_OPT_IN = "CONFIRM_DEMO_RESET"
 MVP_ARTIFACT_ROOT = ROOT / ".mvp-artifacts"
+LOCAL_RUNS_ROOT = ROOT / ".local-runs"
+_RUN_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def load_local_env(path: Path) -> None:
@@ -72,6 +75,15 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _run_id(env: dict[str, str]) -> str | None:
+    value = env.get("CSA_LOCAL_RUN_ID", "")
+    if not value:
+        return None
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError("CSA_LOCAL_RUN_ID must be a conservative lowercase slug")
+    return value
+
+
 def reset_guard(env: dict[str, str]) -> dict[str, str]:
     """Validate the entire destructive target before importing storage code."""
     if env.get("IDENTITY_MODE", "").strip().lower() != "demo":
@@ -90,16 +102,29 @@ def reset_guard(env: dict[str, str]) -> dict[str, str]:
         raise ValueError("COSMOS_DATABASE and COSMOS_CONTAINER must be explicitly named local/demo targets")
     if env.get("ARTIFACTS_ACCOUNT", "").strip():
         raise ValueError("reset refuses ARTIFACTS_ACCOUNT; only the local artifact directory is permitted")
+    run_id = _run_id(env)
     artifacts_dir = env.get("ARTIFACTS_DIR", "./artifacts").strip()
     artifact_path = Path(artifacts_dir).expanduser().resolve()
     if artifact_path == Path(artifact_path.anchor):
         raise ValueError("ARTIFACTS_DIR must name a local directory, not its filesystem root")
-    try:
-        artifact_path.relative_to(MVP_ARTIFACT_ROOT.resolve())
-    except ValueError as exc:
-        raise ValueError("reset only clears the dedicated .mvp-artifacts subtree") from exc
+    if run_id:
+        expected_artifact_path = (MVP_ARTIFACT_ROOT / run_id).resolve()
+        if artifact_path != expected_artifact_path:
+            raise ValueError("isolated reset only clears the exact .mvp-artifacts/<CSA_LOCAL_RUN_ID> directory")
+        if run_id not in database.lower() or run_id not in container.lower():
+            raise ValueError("isolated reset requires COSMOS_DATABASE and COSMOS_CONTAINER to include CSA_LOCAL_RUN_ID")
+    else:
+        try:
+            artifact_path.relative_to(MVP_ARTIFACT_ROOT.resolve())
+        except ValueError as exc:
+            raise ValueError("reset only clears the dedicated .mvp-artifacts subtree") from exc
     workspace_path = Path(env.get("WORKSPACE", str(ROOT / "workspace"))).expanduser().resolve()
-    if workspace_path != (ROOT / "workspace").resolve():
+    expected_workspace_path = (
+        (LOCAL_RUNS_ROOT / run_id / "workspace") if run_id else (ROOT / "workspace")
+    ).resolve()
+    if workspace_path != expected_workspace_path:
+        if run_id:
+            raise ValueError("isolated reset only clears the exact .local-runs/<CSA_LOCAL_RUN_ID>/workspace directory")
         raise ValueError("reset only clears the repository-local WORKSPACE path")
     return {
         "endpoint": endpoint,
@@ -133,7 +158,6 @@ def fixture_summary(appdb) -> dict:
     payload = {
         "fixtureVersion": FIXTURE_VERSION,
         "actors": sorted({user["id"] for user in users}),
-        "personalSpaces": [appdb.load_state(actor) for actor in ("dan", "ava", "sam")],
         "engagements": sorted(unique.values(), key=lambda entry: entry["id"]),
     }
     normalized = _normalize(payload)
@@ -143,7 +167,6 @@ def fixture_summary(appdb) -> dict:
         "fixtureHash": digest,
         "counts": {
             "actors": len(users),
-            "personalSpaces": 3,
             "engagements": len(unique),
             "artifacts": sum(len(entry.get("library", [])) for entry in unique.values()),
         },

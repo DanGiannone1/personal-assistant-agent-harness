@@ -50,6 +50,7 @@ from ag_ui.core.events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
+from azure.identity import DefaultAzureCredential as SyncDefaultAzureCredential
 from azure.identity.aio import DefaultAzureCredential
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -104,7 +105,7 @@ description matches the user's request. It is not a product action and must not 
 product tool.
 
 Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
-`engagement_tasks`, `engagement_artifacts`, and `workbench`. For an Engagement destination,
+`engagement_tasks`, and `engagement_artifacts`. For an Engagement destination,
 first obtain its stable ID with `list_engagements`; never pass user wording as a destination.
 
 Engagement membership and roles are enforced by tools. Use stable Engagement IDs for get,
@@ -195,6 +196,16 @@ def _artifact_result(result) -> ProductToolResult | None:
         return ProductToolResult.from_dict(artifact["product_result"])
     except (TypeError, ValueError):
         return None
+
+
+def _safe_error_message(error: object) -> str:
+    """Map provider failures to fixed browser-safe messages."""
+    message = str(error).lower()
+    if "too many requests" in message or "429" in message or "rate limit" in message:
+        return "The AI service is temporarily rate-limited. Please wait 30–60 seconds and try again."
+    if any(marker in message for marker in ("content_filter", "content management policy", "responsible ai", "filtered")):
+        return "I can't act on that request — it was flagged by the safety filter. I won't take actions that try to override my guardrails or operate outside your workspace."
+    return "The assistant could not complete that request. Please retry."
 
 
 # ───────────────────────── CSA Workbench tools as LangChain tools ─────────────────────────
@@ -342,6 +353,7 @@ class AgentSession:
         self._tool_names: set[str] = set()
         self._internal_tool_names: set[str] = set(INTERNAL_SKILL_TOOLS)
         self._credential: DefaultAzureCredential | None = None
+        self._sync_credential: SyncDefaultAzureCredential | None = None
 
         self._thread_id: str = str(uuid.uuid4())
         self._run_id: str = ""
@@ -389,18 +401,47 @@ class AgentSession:
             Path(self._raw_sdk_log_path).write_text("", encoding="utf-8")
 
         token = self._token or self._initial_token or os.getenv("AZURE_OPENAI_TOKEN")
-        if not token:
+        model_auth: dict = {}
+        if token:
+            # An explicitly forwarded or configured bearer token remains a static
+            # compatibility mode. The runtime may replace this session when a new
+            # inbound token arrives (see server._get_or_create_session).
+            self._token = token
+            model_auth["azure_ad_token"] = token
+        else:
+            # Do not pin a managed-identity token at session creation. LangChain
+            # constructs both synchronous and asynchronous Azure OpenAI clients,
+            # so each needs its matching refreshable provider.
             self._credential = DefaultAzureCredential()
-            tok = await self._credential.get_token("https://cognitiveservices.azure.com/.default")
-            token = tok.token
-        self._token = token
+            self._sync_credential = SyncDefaultAzureCredential()
+
+            def azure_ad_sync_token_provider() -> str:
+                credential = self._sync_credential
+                if credential is None:
+                    raise RuntimeError("Azure credential is unavailable")
+                access_token = credential.get_token(
+                    "https://cognitiveservices.azure.com/.default"
+                )
+                return access_token.token
+
+            async def azure_ad_async_token_provider() -> str:
+                credential = self._credential
+                if credential is None:
+                    raise RuntimeError("Azure credential is unavailable")
+                access_token = await credential.get_token(
+                    "https://cognitiveservices.azure.com/.default"
+                )
+                return access_token.token
+
+            model_auth["azure_ad_token_provider"] = azure_ad_sync_token_provider
+            model_auth["azure_ad_async_token_provider"] = azure_ad_async_token_provider
 
         # AZURE_ENDPOINT points at the Foundry/Cognitive-Services resource and may be
         # given as `…/openai` or `…/openai/v1/`. AzureChatOpenAI wants the bare resource
         # endpoint plus the deployment + api-version (the classic deployments path,
         # verified working against this resource); derive it defensively by stripping
-        # anything from `/openai` onward. The forwarded Cognitive-Services bearer token
-        # is passed as azure_ad_token (AAD auth — no key), mirroring the Copilot backend.
+        # anything from `/openai` onward. Explicit Cognitive-Services bearer tokens
+        # use azure_ad_token; managed identity uses LangChain's refreshable AAD providers.
         base_endpoint = os.environ["AZURE_ENDPOINT"].split("/openai")[0].rstrip("/")
         deployment = os.environ["AZURE_DEPLOYMENT"]
         # gpt-5 reasoning models (non-chat) only honor reasoning_effort via the Responses
@@ -416,8 +457,8 @@ class AgentSession:
             azure_endpoint=base_endpoint,
             azure_deployment=deployment,
             api_version=api_version,
-            azure_ad_token=token,
             streaming=True,
+            **model_auth,
             **reasoning_kwargs,
         )
 
@@ -455,6 +496,8 @@ class AgentSession:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         self._agent = None
+        if self._sync_credential:
+            self._sync_credential.close()
         if self._credential:
             await self._credential.close()
 
@@ -592,12 +635,7 @@ class AgentSession:
 
         except Exception as exc:
             self._status = "error"
-            msg = str(exc) or "Unknown error"
-            low = msg.lower()
-            if "too many requests" in low or "429" in msg or "rate limit" in low:
-                msg = "The AI service is temporarily rate-limited. Please wait 30–60 seconds and try again."
-            elif "content_filter" in low or "content management policy" in low or "responsible ai" in low or "filtered" in low:
-                msg = "I can't act on that request — it was flagged by the safety filter. I won't take actions that try to override my guardrails or operate outside your workspace."
+            msg = _safe_error_message(exc)
             self._write_raw_sdk_record({"kind": "turn_exception", "run_id": self._run_id, "error": repr(exc)})
             _trace("agent.error", session_id=self._session_id, run_id=self._run_id, message=msg)
             yield _sse_event(RunErrorEvent(message=msg))

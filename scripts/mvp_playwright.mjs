@@ -1,5 +1,5 @@
 /*
- * MVP real-browser evidence: UI assertions are reconciled with /app/state and
+ * MVP real-browser evidence: UI assertions are reconciled with the public app-state API and
  * typed SSE events.  It never treats assistant prose or a rendered tool label as
  * success.  Run only against the local demo stack:
  *
@@ -184,7 +184,7 @@ try {
   const avaIds = (avaSeed.engagements ?? []).map((entry) => entry.id).sort();
   check(
     "MVP-P1-deterministic-personal-portfolios",
-    report.fixture?.fixtureVersion === "mvp-demo-v1" &&
+    report.fixture?.fixtureVersion === "mvp-demo-v2" &&
       sameCanonical(danIds, fixturePortfolios.dan) &&
       sameCanonical(avaIds, fixturePortfolios.ava),
     `fixture=${report.fixture?.fixtureVersion ?? "missing"} expectedDan=${fixturePortfolios.dan.join(",")} dan=${danIds.join(",")} expectedAva=${fixturePortfolios.ava.join(",")} ava=${avaIds.join(",")}`,
@@ -348,6 +348,29 @@ try {
   await narrowContent.evaluate((element) => element.scrollTo({ top: 0 }));
   await eventually(() => narrowContent.evaluate((element) => element.scrollTop === 0));
   await capture(narrow.page, `${out}/narrow-dan-workspace.png`);
+
+  // The full assistant workbench is a supported surface. At 390px it must stack
+  // chat above the session-file canvas instead of keeping a split layout off-screen.
+  await narrow.page.goto(`${APP}/assistant`, { waitUntil: "networkidle" });
+  await narrow.page.getByTestId("assistant-workspace").waitFor({ state: "visible" });
+  await narrow.page.getByTestId("chat-input").waitFor({ state: "visible" });
+  await narrow.page.getByTestId("artifact-canvas").waitFor({ state: "visible" });
+  const assistantNarrowLayout = await narrow.page.evaluate(() => {
+    const bounds = (testid) => {
+      const rect = document.querySelector(`[data-testid="${testid}"]`)?.getBoundingClientRect();
+      return rect && { x: rect.x, y: rect.y, right: rect.right, bottom: rect.bottom };
+    };
+    return { chat: bounds("chat-input"), artifacts: bounds("artifact-canvas") };
+  });
+  check("MVP-P36-narrow-assistant-no-horizontal-overflow", await noHorizontalOverflow(narrow.page));
+  check("MVP-P37-narrow-assistant-stacks-chat-and-artifacts",
+    !!assistantNarrowLayout.chat && !!assistantNarrowLayout.artifacts &&
+      assistantNarrowLayout.chat.x >= 0 && assistantNarrowLayout.chat.right <= 390 &&
+      assistantNarrowLayout.artifacts.x >= 0 && assistantNarrowLayout.artifacts.right <= 390 &&
+      assistantNarrowLayout.artifacts.y > assistantNarrowLayout.chat.y,
+    JSON.stringify(assistantNarrowLayout),
+  );
+  await capture(narrow.page, `${out}/narrow-assistant-workspace.png`);
 
   report.pageErrors = { dan: dan.errors, ava: ava.errors, sam: sam.errors, narrow: narrow.errors };
   check("MVP-P26-no-page-errors", Object.values(report.pageErrors).every((errors) => errors.length === 0), JSON.stringify(report.pageErrors));

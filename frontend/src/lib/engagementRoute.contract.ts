@@ -35,9 +35,9 @@ expectRoute("/engagements/eng-1/tasks", {
   sub: "tasks",
   recordId: "",
 });
-expectRoute("/engagements/eng-1/documents", {
+expectRoute("/engagements/eng-1/artifacts", {
   id: "eng-1",
-  sub: "documents",
+  sub: "artifacts",
   recordId: "",
 });
 expectRoute("/engagements/eng-1/settings", {
@@ -55,7 +55,8 @@ expectInvalidRoute("/engagements");
 expectInvalidRoute("/engagements//tasks");
 expectInvalidRoute("/engagements/eng-1/unknown");
 expectInvalidRoute("/engagements/eng-1/tasks/task-1/extra");
-expectInvalidRoute("/engagements/eng-1/documents/doc-1");
+expectInvalidRoute("/engagements/eng-1/artifacts/artifact-1");
+expectInvalidRoute("/engagements/eng-1/documents");
 expectInvalidRoute("/engagements/eng-1/settings/member-1");
 expectInvalidRoute("/engagements/eng 1");
 expectInvalidRoute("/engagements/eng-1/tasks/task.1");

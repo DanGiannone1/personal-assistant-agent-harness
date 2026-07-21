@@ -7,20 +7,17 @@ accepts chat text or generates a route from it.
 from __future__ import annotations
 
 import re
-from typing import Any
-
 import appdb
 from workbench_core import ProductToolResult
 
 
 _STATIC = {
     "engagements": ("/engagements", "Engagements"),
-    "workbench": ("/home", "Workbench"),
 }
 _SCOPED_SUFFIX = {
     "engagement_overview": ("", "Overview"),
     "engagement_tasks": ("/tasks", "Tasks"),
-    "engagement_artifacts": ("/documents", "Artifacts"),
+    "engagement_artifacts": ("/artifacts", "Artifacts"),
 }
 _ENGAGEMENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -48,35 +45,3 @@ def destination_for(actor_id: str, destination_id: str, engagement_id: str | Non
         resource={"kind": "engagement", "id": engagement_id},
         destination={"id": destination_id, "path": f"/engagements/{engagement_id}{suffix}", "label": label, "engagementId": engagement_id},
     )
-
-
-def quick_links(actor_id: str, limit: int = 8) -> list[dict[str, Any]]:
-    """Context-only manual convenience links; never used by agent navigation."""
-    links = [{"id": key, "path": path, "title": title} for key, (path, title) in _STATIC.items()]
-    for engagement in appdb.list_engagements_for(actor_id):
-        links.append({"id": "engagement_overview", "path": f"/engagements/{engagement['id']}", "title": engagement["name"], "engagementId": engagement["id"]})
-    return links[:limit]
-
-
-def rank_destinations(
-    personal: dict[str, Any], engagements: list[dict[str, Any]], visits: list[dict[str, Any]],
-    utterance: str | None = None, today: str | None = None, limit: int = 8,
-) -> list[dict[str, Any]]:
-    """Compatibility surface for manual quick links only.
-
-    Natural-language resolution is intentionally absent: callers must pass no
-    utterance.  Recency can rank known destinations but cannot create a route.
-    """
-    if utterance:
-        return []
-    entries = [
-        {"path": "/engagements", "title": "Engagements", "kind": "page"},
-        {"path": "/home", "title": "Workbench", "kind": "page"},
-        *[
-            {"path": f"/engagements/{engagement['id']}", "title": engagement["name"], "kind": "engagement-page"}
-            for engagement in engagements
-        ],
-    ]
-    recent = {visit.get("path"): index for index, visit in enumerate(visits or [])}
-    entries.sort(key=lambda entry: recent.get(entry["path"], len(recent) + 1))
-    return entries[:limit]

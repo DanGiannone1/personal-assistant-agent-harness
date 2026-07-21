@@ -16,21 +16,25 @@ import navsvc
 
 
 def test_product_tool_result_only_allows_destinations_on_navigation_success() -> None:
-    destination = {"id": "workbench", "path": "/home"}
+    destination = {"id": "engagements", "path": "/engagements"}
     assert ProductToolResult("resolved", "navigation.resolved", "navigate", destination=destination).to_dict()["destination"] == destination
     with pytest.raises(ValueError, match="only committed or resolved"):
         ProductToolResult("failed", "navigation.failed", "navigate", destination=destination)
     with pytest.raises(ValueError, match="unknown destination"):
         ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "url", "path": "https://example.test"})
     with pytest.raises(ValueError, match="does not match catalog"):
-        ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "workbench", "path": "/engagements"})
+        ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "engagements", "path": "/home"})
     with pytest.raises(ValueError, match="engagement ID is invalid"):
         ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "engagement_tasks", "engagementId": "", "path": "/engagements//tasks"})
+    artifact_destination = {"id": "engagement_artifacts", "engagementId": "eng-7", "path": "/engagements/eng-7/artifacts"}
+    assert ProductToolResult("resolved", "navigation.resolved", "navigate", destination=artifact_destination).to_dict()["destination"] == artifact_destination
+    with pytest.raises(ValueError, match="does not match catalog"):
+        ProductToolResult("resolved", "navigation.resolved", "navigate", destination={**artifact_destination, "path": "/engagements/eng-7/documents"})
 
 
 def test_product_tool_result_round_trip_and_rejects_untyped_extensions() -> None:
-    payload = ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "workbench", "path": "/home"}).to_dict()
-    assert ProductToolResult.from_dict(payload) == ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "workbench", "path": "/home"})
+    payload = ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "engagements", "path": "/engagements"}).to_dict()
+    assert ProductToolResult.from_dict(payload) == ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "engagements", "path": "/engagements"})
     with pytest.raises(ValueError, match="unsupported tool result fields"):
         ProductToolResult.from_dict({**payload, "card": {}})
 
@@ -64,7 +68,10 @@ def test_navigation_is_catalog_only_and_checks_live_membership(monkeypatch: pyte
     resolved = navsvc.destination_for("sam", "engagement_tasks", "eng-7")
     assert resolved.status == "resolved"
     assert resolved.destination == {"id": "engagement_tasks", "path": "/engagements/eng-7/tasks", "label": "Tasks", "engagementId": "eng-7"}
+    artifacts = navsvc.destination_for("sam", "engagement_artifacts", "eng-7")
+    assert artifacts.destination == {"id": "engagement_artifacts", "path": "/engagements/eng-7/artifacts", "label": "Artifacts", "engagementId": "eng-7"}
     assert navsvc.destination_for("sam", "https://example.test").status == "invalid"
+    assert navsvc.destination_for("sam", "workbench").status == "invalid"
     assert navsvc.destination_for("outsider", "engagement_tasks", "eng-7").status == "not_found"
 
 
@@ -73,7 +80,7 @@ def test_copilot_telemetry_is_native_and_validated() -> None:
     from copilot.tools import ToolResult
     import agent
 
-    payload = ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "workbench", "path": "/home"}).to_dict()
+    payload = ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "engagements", "path": "/engagements"}).to_dict()
     completion = ToolExecutionCompleteData(success=True, tool_call_id="call-1", tool_telemetry=ToolResult(tool_telemetry={"product_result": payload}).tool_telemetry)
     assert agent._telemetry_result(completion) == ProductToolResult.from_dict(payload)
     assert agent._telemetry_result({"content": "NAVIGATE: /engagements"}) is None
@@ -84,7 +91,7 @@ def test_deep_artifact_is_native_and_validated() -> None:
     from langchain_core.messages import ToolMessage
     import agent_deepagents
 
-    payload = ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "workbench", "path": "/home"}).to_dict()
+    payload = ProductToolResult("resolved", "navigation.resolved", "navigate", destination={"id": "engagements", "path": "/engagements"}).to_dict()
     message = ToolMessage(content="inert model text", tool_call_id="call-1", artifact={"product_result": payload})
     assert agent_deepagents._artifact_result(message) == ProductToolResult.from_dict(payload)
     assert agent_deepagents._artifact_result(ToolMessage(content="NAVIGATE: /engagements", tool_call_id="call-2")) is None
@@ -207,8 +214,8 @@ def test_framed_proxy_validator_accepts_split_lf_crlf_and_rejects_bad_sequences(
 def test_proxy_lifecycle_state_machine_and_interruption_closures() -> None:
     from session_manager import _UpstreamEventValidator
     start = {"type": "RUN_STARTED", "run_id": "r", "thread_id": "t"}
-    result = {"type": "TOOL_CALL_RESULT", "tool_call_id": "c", "result": {"status": "resolved", "code": "n", "operation": "navigate", "destination": {"id": "workbench", "path": "/home"}}}
-    valid = _UpstreamEventValidator(); valid.validate(start); valid.validate({"type": "TOOL_CALL_START", "tool_call_id": "c", "tool_call_name": "navigate"}); valid.validate(result); valid.validate({"type": "NAVIGATION_RESOLVED", "runId": "r", "destination": {"id": "workbench", "path": "/home"}, "requestedAtNavigationVersion": 0}); valid.validate({"type": "TOOL_CALL_END", "tool_call_id": "c"}); valid.validate({"type": "RUN_FINISHED", "run_id": "r", "thread_id": "t"})
+    result = {"type": "TOOL_CALL_RESULT", "tool_call_id": "c", "result": {"status": "resolved", "code": "n", "operation": "navigate", "destination": {"id": "engagements", "path": "/engagements"}}}
+    valid = _UpstreamEventValidator(); valid.validate(start); valid.validate({"type": "TOOL_CALL_START", "tool_call_id": "c", "tool_call_name": "navigate"}); valid.validate(result); valid.validate({"type": "NAVIGATION_RESOLVED", "runId": "r", "destination": {"id": "engagements", "path": "/engagements"}, "requestedAtNavigationVersion": 0}); valid.validate({"type": "TOOL_CALL_END", "tool_call_id": "c"}); valid.validate({"type": "RUN_FINISHED", "run_id": "r", "thread_id": "t"})
     for event in ({"type": "NAVIGATION_RESOLVED", "runId": "r", "destination": {}, "requestedAtNavigationVersion": 0}, {"type": "RUN_FINISHED", "run_id": "bad", "thread_id": "t"}):
         bad = _UpstreamEventValidator(); bad.validate(start)
         with pytest.raises(ValueError): bad.validate(event)
@@ -235,7 +242,7 @@ def test_proxy_preserves_held_valid_terminal_when_iterator_raises() -> None:
     class Http:
         def stream(self, *args, **kwargs): return Context()
     async def collect():
-        manager = object.__new__(SessionManager); manager._http = Http(); manager._pool_url = lambda *_: "url"
+        manager = object.__new__(SessionManager); manager._http = Http(); manager._runtime_url = lambda *_: "url"
         async def token(): return None
         manager._get_cogservices_token = token
         return [item async for item in manager.send_message("s", "p", "u")]

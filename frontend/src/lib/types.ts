@@ -17,7 +17,7 @@ export type AGUIEvent =
 export type ProductToolStatus = "committed" | "resolved" | "succeeded" | "noop" | "needs_confirmation" | "ambiguous" | "invalid" | "not_found" | "forbidden" | "conflict" | "failed";
 
 export interface Destination {
-  id: "engagements" | "engagement_overview" | "engagement_tasks" | "engagement_artifacts" | "workbench";
+  id: "engagements" | "engagement_overview" | "engagement_tasks" | "engagement_artifacts";
   path: string;
   label?: string;
   engagementId?: string;
@@ -30,13 +30,6 @@ export interface ProductToolResult {
   message?: string;
   resource?: Record<string, unknown>;
   destination?: Destination;
-}
-
-// A navigate chip, fully bound to a real route by the resolver. Clicking one is a
-// plain manual navigation — no second resolution pass, no chat round-trip.
-export interface NavCandidate {
-  title: string;
-  path: string;
 }
 
 export type MessagePart =
@@ -74,8 +67,8 @@ export interface AppFile {
   has_markdown: boolean;
 }
 
-// ── CSA Workbench application state (rendered by the right-pane app) ───────────────────────
-// Two record types: Tasks (a to-do board) and calendar Events.
+// ── CSA Workbench application state ─────────────────────────────────────────
+// Tasks are nested inside Engagements; there is no personal task surface.
 export type TaskStatus = "To do" | "In progress" | "Blocked" | "Done";
 export type TaskPriority = "Low" | "Medium" | "High";
 
@@ -94,52 +87,6 @@ export interface Task {
   subtasks?: Subtask[];
   notes?: string;
   createdAt?: string;
-}
-
-// Named CalendarEvent so it never clashes with the DOM `Event` type.
-export interface CalendarEvent {
-  id: string;
-  title: string;
-  date: string;           // YYYY-MM-DD
-  start?: string;         // 24h HH:MM
-  end?: string;           // 24h HH:MM
-  type?: string;          // Meeting | Reminder | Focus | …
-  notes?: string;
-}
-
-export interface Schedule {
-  id: string;
-  title: string;
-  prompt: string;
-  frequency: "daily" | "weekly";
-  time: string;             // 24h HH:MM, in `timezone`
-  timezone: string;         // IANA, e.g. America/New_York
-  daysOfWeek?: number[];    // weekly only; Mon=0 … Sun=6
-  enabled: boolean;
-  channel?: string;         // "email"
-  lastRunAt?: string | null;
-  lastStatus?: string | null;
-  nextRunAt?: string | null;
-}
-
-export interface LibraryDoc {
-  id: string;
-  filename: string;
-  title: string;
-  savedAt?: string;
-  source?: string;          // "reference" (seeded) | "upload" (promoted)
-}
-
-// Structured preview card a mutating tool attaches to its result: the UI renders the
-// record (or the pending action) so prose can never stand in for what happened.
-export interface ToolCard {
-  kind: "confirm" | "record";
-  action?: string;      // confirm: the tool to re-call with confirmed=true
-  title?: string;
-  detail?: string;
-  recordKind?: string;  // record: task | event | …
-  scope?: string;       // record: personal | engagement name
-  fields?: Record<string, string>;
 }
 
 export interface ContextBundle {
@@ -172,8 +119,8 @@ export interface ActivityEntry {
   detail: string;
 }
 
-// The v1 delivery record is deliberately slim: a G/Y/R status that always carries a
-// why. (Stage, milestones, risks, and actions are parked — docs/mvp-requirements.md R7.)
+// The MVP delivery record is deliberately slim: a G/Y/R status that always carries
+// a reason. Stage, milestones, risks, and actions are parked.
 export type EngagementStatus = "green" | "yellow" | "red";
 
 // Artifact metadata (bytes live in the orchestrator's artifact store; open/download
@@ -205,17 +152,6 @@ export interface Engagement {
   createdBy: string;
 }
 
-export interface VisitEntry {
-  path: string;
-  title: string;
-  ts: string;
-}
-
-export interface UserContext {
-  visits: VisitEntry[];
-  workingContext: { activeEngagementId?: string; lastRoute?: string };
-}
-
 export interface AppUserRecord {
   id: string;
   username: string;
@@ -223,21 +159,8 @@ export interface AppUserRecord {
   persona?: { role?: string; tone?: string; outputPrefs?: string; language?: string };
 }
 
-export interface QuickLink {
-  path: string;
-  title: string;
-  kind: string;
-}
-
 export interface AppState {
   currentRoute: string;
-  tasks: Task[];
-  events: CalendarEvent[];
-  routes: { path: string; title: string; keywords?: string[] }[];
-  schedules: Schedule[];
-  library: LibraryDoc[];
-  // Multi-user additions (served by /app/state in one fetch)
-  engagements?: Engagement[];
-  user?: AppUserRecord;
-  context?: UserContext;
+  engagements: Engagement[];
+  user: AppUserRecord;
 }

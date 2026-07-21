@@ -1,9 +1,8 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, MessagePart, ProductToolResult } from "@/lib/types";
+import { AGUIEvent, AppFile, AppState, ChatMessage, ContextBundle, Destination, MessagePart, ProductToolResult } from "@/lib/types";
 import { streamSSE } from "@/lib/sse";
-import { shouldApplyAgentNavigation } from "@/lib/navigation";
-import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, saveToLibrary as apiSaveToLibrary, deleteFromLibrary as apiDeleteFromLibrary, getContextBundle, getQuickLinks, recordVisit } from "@/lib/api";
-import type { QuickLink } from "@/lib/types";
+import { normalizeHostRoute, shouldApplyAgentNavigation, shouldQueueAgentNavigation } from "@/lib/navigation";
+import { createSession, deleteSession, getSession, getAppState, listFiles, uploadFile, getContextBundle } from "@/lib/api";
 import { clearSessionId, getSessionId, getStoredMessages, storeSessionId, storeMessages } from "@/lib/session";
 import { friendlyError } from "@/lib/utils";
 
@@ -31,7 +30,6 @@ type Action =
   | { type: "FILES_LOADED"; files: AppFile[] }
   | { type: "APP_STATE_LOADED"; appState: AppState; follow: boolean }
   | { type: "SET_VIEW_ROUTE"; route: string }
-  | { type: "QUICKLINKS_LOADED"; links: QuickLink[] }
   | { type: "BUNDLE_USED"; bundle: ContextBundle | null }
   | { type: "SESSION_ERROR"; error: string | null }
   | { type: "WORKSPACE_REFRESH_FAILED"; error: string | null };
@@ -45,9 +43,6 @@ interface State {
   files: AppFile[];
   appState: AppState | null;
   viewRoute: string;
-  appRoute: string;        // last server-side currentRoute we observed
-  newRecordIds: string[];  // task/event ids that appeared on the latest refetch (for highlight)
-  quickLinks: QuickLink[]; // rank_destinations(context) — the no-AI quick links
   lastBundle: ContextBundle | null; // what personalized the most recent turn (inspector)
   sessionError: string | null;
   workspaceStale: string | null;
@@ -106,11 +101,11 @@ function reducer(state: State, action: Action): State {
     case "RESET_FOR_NEW_CHAT":
       return {
         ...state, messages: [], isStreaming: false, sessionId: null, currentRunId: null,
-        files: [], appState: null, viewRoute: "/engagements", appRoute: "/engagements", newRecordIds: [], sessionError: null, workspaceStale: null,
+        files: [], appState: null, viewRoute: "/engagements", sessionError: null, workspaceStale: null,
       };
     case "USER_SEND":
       return {
-        ...state, isStreaming: true, newRecordIds: [],  // "New" badges mean "created this turn"
+        ...state, isStreaming: true,
         messages: [
           ...state.messages,
           createUserMessage(action.content),
@@ -243,30 +238,16 @@ function reducer(state: State, action: Action): State {
       return { ...state, files: [...stillPending, ...action.files] };
     }
     case "APP_STATE_LOADED": {
-      const serverRoute = action.appState.currentRoute || "/engagements";
-      // Tasks/events that appeared since the last snapshot — highlight them in the pane.
-      const prevIds = new Set<string>([
-        ...(state.appState?.tasks ?? []).map((t) => t.id),
-        ...(state.appState?.events ?? []).map((e) => e.id),
-      ]);
-      const newRecordIds = state.appState
-        ? [...action.appState.tasks, ...action.appState.events].map((r) => r.id).filter((id) => !prevIds.has(id))
-        : [];
+      const serverRoute = normalizeHostRoute(action.appState.currentRoute || "/engagements");
       return {
         ...state,
         appState: action.appState,
         workspaceStale: null,
-        appRoute: serverRoute,
-        // Follow the server route only when a navigation-intent tool ran this
-        // turn — NOT on every value change. A human clicking back to the
-        // dashboard leaves the server route untouched, so re-navigating to the
-        // same place must still move the pane (the old change-heuristic dropped it).
-        viewRoute: action.follow ? serverRoute : state.viewRoute,
-        newRecordIds: newRecordIds.length > 0 ? newRecordIds : state.newRecordIds,
+        // Follow a server route only during initialization; manual route changes remain local.
+        viewRoute: action.follow ? serverRoute : normalizeHostRoute(state.viewRoute),
       };
     }
     case "SET_VIEW_ROUTE": return { ...state, viewRoute: action.route };
-    case "QUICKLINKS_LOADED": return { ...state, quickLinks: action.links };
     case "BUNDLE_USED": return { ...state, lastBundle: action.bundle };
     default: return state;
   }
@@ -275,7 +256,7 @@ function reducer(state: State, action: Action): State {
 const initialState: State = {
   messages: [], isStreaming: false, sessionId: null, isInitializing: true,
   currentRunId: null, files: [], appState: null, viewRoute: "/engagements",
-  appRoute: "/engagements", newRecordIds: [], quickLinks: [], lastBundle: null, sessionError: null, workspaceStale: null,
+  lastBundle: null, sessionError: null, workspaceStale: null,
 };
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -289,13 +270,7 @@ function viewLabel(appState: AppState | null, route: string): string {
   if (!appState) return "Engagements";
   if (route === "/engagements") return "Engagements";
   if (route.startsWith("/engagements/")) return "Engagement";
-  if (route.startsWith("/todo/")) {
-    const t = appState.tasks.find((x) => x.id === route.split("/").pop());
-    return t ? `the "${t.title}" task` : "Tasks";
-  }
-  if (route === "/todo") return "Tasks";
-  if (route === "/calendar") return "Calendar";
-  if (route === "/documents") return "Documents";
+  if (route === "/settings") return "Settings";
   return "Engagements";
 }
 
@@ -313,7 +288,9 @@ export function useAgentSession() {
   const stepCountRef = useRef<number>(0);
   const inFlightRef = useRef(false);
   const navigationVersionRef = useRef(0);
-  const activeRunIdRef = useRef<string | null>(null);
+  // Unlike reducer state, this remains bound through RUN_FINISHED while a route
+  // waits for its authoritative refresh. A newer RUN_STARTED replaces it.
+  const navigationRunIdRef = useRef<string | null>(null);
   // Monotonic sequence so out-of-order app-state refetches can't apply a stale snapshot:
   // only the most-recently-issued refresh's result is allowed to dispatch (last-issued-wins).
   const appStateSeqRef = useRef(0);
@@ -322,12 +299,12 @@ export function useAgentSession() {
   const latestAppStateRefreshRef = useRef<Promise<void> | null>(null);
   // Set on Stop so buffered events arriving after abort don't re-finalize/re-refresh a cancelled turn.
   const cancelledRef = useRef(false);
+  const pendingNavigationRef = useRef<{ runId: string; destination: Destination; requestedAtNavigationVersion: number } | null>(null);
 
   useEffect(() => { sessionIdRef.current = state.sessionId; }, [state.sessionId]);
   useEffect(() => { streamingRef.current = state.isStreaming; }, [state.isStreaming]);
   useEffect(() => { viewRouteRef.current = state.viewRoute; }, [state.viewRoute]);
   useEffect(() => { appStateRef.current = state.appState; }, [state.appState]);
-  useEffect(() => { activeRunIdRef.current = state.currentRunId; }, [state.currentRunId]);
 
   const clearAndDeleteSession = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
@@ -354,12 +331,8 @@ export function useAgentSession() {
         // A superseded caller must adopt the latest request's result. This chains
         // naturally if that request is itself superseded before it settles.
         if (seq !== appStateSeqRef.current) return await awaitLatest();
+        appStateRef.current = appState;
         dispatch({ type: "APP_STATE_LOADED", appState, follow });
-        // Quick links ride along with every state refresh (non-fatal, last-wins).
-        try {
-          const links = await getQuickLinks();
-          if (seq === appStateSeqRef.current) dispatch({ type: "QUICKLINKS_LOADED", links });
-        } catch { /* non-fatal */ }
         if (seq !== appStateSeqRef.current) await awaitLatest();
       } catch (err) {
         if (seq !== appStateSeqRef.current) return await awaitLatest();
@@ -413,9 +386,8 @@ export function useAgentSession() {
 
   const navigateView = useCallback((route: string) => {
     navigationVersionRef.current += 1;
-    dispatch({ type: "SET_VIEW_ROUTE", route });
-    // Every route change — manual click included — feeds the visit log (fire-and-forget).
-    void recordVisit(route, "");
+    pendingNavigationRef.current = null;
+    dispatch({ type: "SET_VIEW_ROUTE", route: normalizeHostRoute(route) });
     // A manual destination may expose changes another member made since this tab's
     // last read. Keep navigation immediate while reconciling the owned session.
     if (sessionIdRef.current) void refreshAppState(sessionIdRef.current).catch(() => undefined);
@@ -426,7 +398,7 @@ export function useAgentSession() {
     // don't re-finalize it or re-refresh state the user chose to stop watching.
     if (cancelledRef.current && event.type !== "RUN_STARTED") return;
     switch (event.type) {
-      case "RUN_STARTED": runStartRef.current = performance.now(); stepCountRef.current = 0; cancelledRef.current = false; activeRunIdRef.current = event.run_id; dispatch({ type: "RUN_STARTED", runId: event.run_id }); break;
+      case "RUN_STARTED": runStartRef.current = performance.now(); stepCountRef.current = 0; cancelledRef.current = false; navigationRunIdRef.current = event.run_id; dispatch({ type: "RUN_STARTED", runId: event.run_id }); break;
       case "TEXT_MESSAGE_START": dispatch({ type: "ASSISTANT_START", messageId: event.message_id }); break;
       case "TEXT_MESSAGE_CONTENT": dispatch({ type: "DELTA", delta: event.delta }); break;
       case "TEXT_MESSAGE_END": dispatch({ type: "MESSAGE_END" }); break;
@@ -440,9 +412,16 @@ export function useAgentSession() {
       case "TOOL_CALL_ARGS": dispatch({ type: "TOOL_ARGS", toolCallId: event.tool_call_id, delta: event.delta }); break;
       case "TOOL_CALL_RESULT": dispatch({ type: "TOOL_RESULT", toolCallId: event.tool_call_id, result: event.result }); break;
       case "NAVIGATION_RESOLVED":
-        if (shouldApplyAgentNavigation({ activeRunId: activeRunIdRef.current, navigationVersion: navigationVersionRef.current, cancelled: cancelledRef.current, event, appState: appStateRef.current })) {
-          dispatch({ type: "SET_VIEW_ROUTE", route: event.destination.path });
-        }
+        if (!shouldQueueAgentNavigation({ activeRunId: navigationRunIdRef.current, navigationVersion: navigationVersionRef.current, cancelled: cancelledRef.current, event }) || !sessionIdRef.current) break;
+        pendingNavigationRef.current = event;
+        void refreshAppState(sessionIdRef.current).then(() => {
+          const pending = pendingNavigationRef.current;
+          if (!pending) return;
+          pendingNavigationRef.current = null;
+          if (shouldApplyAgentNavigation({ activeRunId: navigationRunIdRef.current, navigationVersion: navigationVersionRef.current, cancelled: cancelledRef.current, event: pending, appState: appStateRef.current })) {
+            dispatch({ type: "SET_VIEW_ROUTE", route: pending.destination.path });
+          }
+        }).catch(() => { pendingNavigationRef.current = null; });
         break;
       case "TOOL_CALL_END":
         dispatch({ type: "TOOL_END", toolCallId: event.tool_call_id });
@@ -454,6 +433,7 @@ export function useAgentSession() {
         if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current).catch(() => undefined); void refreshFiles(sessionIdRef.current); }
         break;
       case "RUN_ERROR":
+        pendingNavigationRef.current = null;
         dispatch({ type: "ERROR", message: event.message || "Error during generation." });
         if (sessionIdRef.current) { void refreshAppState(sessionIdRef.current).catch(() => undefined); void refreshFiles(sessionIdRef.current); }
         break;
@@ -524,27 +504,7 @@ export function useAgentSession() {
     }
   }, [state.sessionId, refreshFiles]);
 
-  // Manual upload from the Documents screen (no AI) — reuses the chat-upload path.
-  const uploadDocument = useCallback(async (file: File) => {
-    await handleChatUpload(file);
-  }, [handleChatUpload]);
-
-  // Promote a session file into the persistent Library, then refresh state + files so it
-  // moves from "This session" to "Library". Manual (works without the AI).
-  const saveToLibrary = useCallback(async (filename: string) => {
-    if (!state.sessionId) return;
-    await apiSaveToLibrary(state.sessionId, filename);
-    await Promise.all([refreshAppState(state.sessionId), refreshFiles(state.sessionId)]);
-  }, [state.sessionId, refreshAppState, refreshFiles]);
-
-  const removeFromLibrary = useCallback(async (filename: string) => {
-    if (!state.sessionId) return;
-    await apiDeleteFromLibrary(state.sessionId, filename);
-    await Promise.all([refreshAppState(state.sessionId), refreshFiles(state.sessionId)]);
-  }, [state.sessionId, refreshAppState, refreshFiles]);
-
-  // Re-pull app state after a manual CRUD mutation (tasks/events/reminders), so the UI
-  // reflects the same owner doc the agent mutates.
+  // Re-pull state after a manual Engagement mutation.
   const refresh = useCallback(async () => {
     if (state.sessionId) await refreshAppState(state.sessionId);
   }, [state.sessionId, refreshAppState]);
@@ -552,6 +512,7 @@ export function useAgentSession() {
   const handleStop = useCallback(() => {
     if (streamingRef.current) {  // synchronous — not the render-captured state
       cancelledRef.current = true;  // ignore any buffered events from the cancelled turn
+      pendingNavigationRef.current = null;
       abortRef.current?.abort();
       abortRef.current = null;
       dispatch({ type: "DONE" });
@@ -570,6 +531,6 @@ export function useAgentSession() {
   return {
     state, statusMessage, isChatUploading, chatUploadName,
     handleSend, handleStop, handleChatUpload, doNewChat, startSession, navigateView,
-    uploadDocument, saveToLibrary, removeFromLibrary, refresh,
+    refresh,
   };
 }

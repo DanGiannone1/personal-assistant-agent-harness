@@ -1,10 +1,5 @@
-# Use-case Path Moved
+# Use-case compatibility pointer
 
-> **Authority:** Compatibility pointer only; superseded 2026-07-14 by issue #15.
+> **Authority:** Compatibility pointer only; it defines no product requirement.
 
-Priority product journeys are defined in the [authoritative design](design.md#mvp-outcomes-and-boundary).
-Executable acceptance journeys live in [requirements.md](requirements.md#acceptance-journeys),
-with interaction detail in [UI/UX](capabilities/ui-ux.md).
-
-The former Personal Assistant examples remain in Git history at
-`master@1fcaac6:docs/use-cases.md`.
+Use the manual Engagement create/open and Assistant workflow in the [eval reference architecture](evals-reference-architecture.md), with [requirements](requirements.md) for acceptance intent.

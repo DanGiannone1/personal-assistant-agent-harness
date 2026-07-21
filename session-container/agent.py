@@ -86,7 +86,7 @@ You are the CSA Workbench assistant for shared Engagements. Use only these tools
 `update_engagement`, `set_engagement_status`, and `share_engagement`.
 
 Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
-`engagement_tasks`, `engagement_artifacts`, and `workbench`. For an Engagement destination,
+`engagement_tasks`, and `engagement_artifacts`. For an Engagement destination,
 first obtain its stable ID with `list_engagements`; never pass user wording as a destination.
 
 Engagement membership and roles are enforced by tools. Use stable Engagement IDs for get,
@@ -166,6 +166,16 @@ def _telemetry_result(result) -> ProductToolResult | None:
         return ProductToolResult.from_dict(telemetry["product_result"])
     except (TypeError, ValueError):
         return None
+
+
+def _safe_error_message(error: object) -> str:
+    """Map provider failures to fixed browser-safe messages."""
+    message = str(error).lower()
+    if "too many requests" in message or "429" in message or "rate limit" in message:
+        return "The AI service is temporarily rate-limited. Please wait 30–60 seconds and try again."
+    if any(marker in message for marker in ("content management policy", "content_filter", "responsible ai", "filtered")):
+        return "I can't act on that request — it was flagged by the safety filter. I won't take actions that try to override my guardrails or operate outside your workspace."
+    return "The assistant could not complete that request. Please retry."
 
 
 # ── Tool builders (closures over the session workspace) ─────────────────────
@@ -570,14 +580,7 @@ class AgentSession:
 
         elif isinstance(data, SessionErrorData):
             self._status = "error"
-            msg = getattr(data, "message", None) or "Unknown error"
-            low = msg.lower()
-            if "too many requests" in low or "429" in msg or "rate limit" in low:
-                msg = "The AI service is temporarily rate-limited. Please wait 30–60 seconds and try again."
-            elif "content management policy" in low or "content_filter" in low or "responsible ai" in low or "filtered" in low:
-                # Surface a contained, on-brand refusal instead of leaking the raw Azure 400 +
-                # support URL — the request tripped a safety filter; we decline plainly.
-                msg = "I can't act on that request — it was flagged by the safety filter. I won't take actions that try to override my guardrails or operate outside your workspace."
+            msg = _safe_error_message(getattr(data, "message", None) or "")
             _trace("agent.error", session_id=self._session_id, run_id=self._run_id, message=msg)
             self._enqueue(RunErrorEvent(message=msg))
             self._finish()

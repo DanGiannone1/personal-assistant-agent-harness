@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": "mvp-demo-v1",
+  "fixtureVersion": "mvp-demo-v2",
   "cases": [
     {
       "id": "MVP-E1-list-authorized",
@@ -9,7 +9,9 @@
         "operation": "list", "status": "succeeded", "stateChanged": false,
         "toolCall": { "name": "list_engagements", "args": {} },
         "forbiddenToolNames": ["navigate", "create_engagement", "get_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
-        "completeToolEvidence": true
+        "completeToolEvidence": true,
+        "assistantResponseRequired": true,
+        "modelVisibleOutput": { "kind": "authorizedEngagementList" }
       }
     },
     {
@@ -22,7 +24,8 @@
         "toolCall": { "name": "get_engagement", "args": { "engagement_id": "eng-product-launch" } },
         "forbiddenToolNames": ["navigate", "create_engagement", "update_engagement", "set_engagement_status", "share_engagement"],
         "completeToolEvidence": true,
-        "assistantResponseRequired": true
+        "assistantResponseRequired": true,
+        "modelVisibleOutput": { "kind": "engagementDetail", "engagementId": "eng-product-launch" }
       }
     },
     {

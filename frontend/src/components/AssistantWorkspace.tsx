@@ -17,32 +17,31 @@ export default function AssistantWorkspace() {
   // Responsive: below ~1100px the 3 columns overflow (the canvas got pushed off-screen), so
   // drop the redundant host nav rail (a Back control already exists) and let chat + canvas share.
   const [narrow, setNarrow] = useState(false);
+  const [stacked, setStacked] = useState(false);
   useEffect(() => {
-    const onResize = () => setNarrow(window.innerWidth < 1100);
+    const onResize = () => { setNarrow(window.innerWidth < 1100); setStacked(window.innerWidth < 768); };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // When the agent navigates the host app to a place the user should see IN CONTEXT (a task,
-  // the home agenda, the calendar), bring them back to the host app. But the Documents route
-  // must NOT eject the user out of the workspace — a drafted document belongs in the canvas
-  // here. Ejecting on that was the headline UX wound (asking for a deliverable yanked you out).
+  // Assistant navigation is applied only after authoritative state has confirmed the
+  // Engagement. Return to the host so the resolved destination is visible in context.
   const prevRoute = useRef(state.viewRoute);
   useEffect(() => {
     if (state.viewRoute === prevRoute.current) return;
     const r = state.viewRoute;
     prevRoute.current = r;
-    const hostContext = r === "/home" || r === "/todo" || r.startsWith("/todo/") || r === "/calendar";
+    const hostContext = r === "/engagements" || r.startsWith("/engagements/") || r === "/settings";
     if (hostContext) router.push("/");
   }, [state.viewRoute, router]);
 
   return (
-    <div className="relative flex h-screen w-full bg-app p-3 gap-3 text-text-primary font-sans overflow-hidden">
+    <div className={`relative flex h-screen w-full bg-app p-3 gap-3 text-text-primary font-sans ${stacked ? "overflow-y-auto" : "overflow-hidden"}`} data-testid="assistant-workspace">
       <div className="ambient-orb-1 animate-blob" />
       <div className="ambient-orb-2 animate-blob" />
 
-      <div className="relative z-10 flex h-full w-full gap-3">
+      <div className={`relative z-10 flex w-full gap-3 ${stacked ? "min-h-full flex-col" : "h-full"}`}>
         {/* Host app shell rail — so the workspace reads as a page OF CSA Workbench, not a
             separate chatbot. Hidden on narrow viewports (the Back control covers returning). */}
         {!narrow && (
@@ -60,7 +59,7 @@ export default function AssistantWorkspace() {
           </div>
         )}
 
-        <div className={`${narrow ? "w-1/2 min-w-[320px]" : "w-[40%] min-w-[400px] max-w-[600px]"} shrink-0 h-full`}>
+        <div className={`${stacked ? "w-full min-h-[500px] h-[62svh]" : narrow ? "w-1/2 min-w-[320px]" : "w-[40%] min-w-[400px] max-w-[600px]"} shrink-0 h-full`}>
           <AssistantPanel
             headerActions={
               <button
@@ -75,7 +74,7 @@ export default function AssistantWorkspace() {
             }
           />
         </div>
-        <div className="flex-1 min-w-0 h-full">
+        <div className={`${stacked ? "w-full min-h-[400px] h-[52svh]" : "flex-1 min-w-0 h-full"}`}>
           <ArtifactCanvas />
         </div>
       </div>

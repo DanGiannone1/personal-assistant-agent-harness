@@ -57,6 +57,45 @@ def test_api_credential_mode_matrix(mode: str, headers: dict[str, str], expected
     assert (result.status_code if result else None) == expected
 
 
+def test_entra_api_token_requires_the_delegated_access_as_user_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = IdentityConfig(
+        mode="entra", demo_password=None, tenant_id="tenant", api_client_id="api",
+        allowed_audiences=("api",),
+    )
+    auth = api_auth.APIAuthenticator(api_auth.AuthConfig(
+        identity, identity.tenant_id, identity.api_client_id, identity.allowed_audiences,
+    ))
+
+    class SigningKey:
+        key = object()
+
+    class Keys:
+        def get_signing_key_from_jwt(self, _token: str) -> SigningKey:
+            return SigningKey()
+
+    auth._jwks_client = Keys()
+    base_claims = {
+        "tid": "tenant", "iss": "https://login.microsoftonline.com/tenant/v2.0",
+    }
+    monkeypatch.setattr(api_auth.jwt, "decode", lambda *_args, **_kwargs: {
+        **base_claims, "scp": "openid profile access_as_user",
+    })
+    assert asyncio.run(auth._validate_token("token"))["scp"] == "openid profile access_as_user"
+
+    for claims in (
+        base_claims,
+        {**base_claims, "scp": "openid profile"},
+        {**base_claims, "roles": ["access_as_user"]},
+        {**base_claims, "scp": ["access_as_user"]},
+    ):
+        monkeypatch.setattr(api_auth.jwt, "decode", lambda *_args, claims=claims, **_kwargs: claims)
+        with pytest.raises(api_auth.InvalidTokenError):
+            asyncio.run(auth._validate_token("token"))
+        rejected = asyncio.run(auth.authenticate(request({"Authorization": "Bearer token"})))
+        assert rejected is not None
+        assert (rejected.status_code, rejected.body) == (401, b'{"detail":"Unauthorized"}')
+
+
 def test_demo_and_entra_actor_resolution_rejects_dual_and_requires_tid_oid(monkeypatch: pytest.MonkeyPatch) -> None:
     auth_users._TOKENS.clear()
     auth_users._TOKENS["demo-token"] = {"userId": "dan", "issuedAt": 0 + __import__("time").time()}
@@ -105,6 +144,35 @@ def test_clean_entra_registry_starts_without_demo_actors(monkeypatch: pytest.Mon
     registry = appdb._ensure_user_registry()
     assert registry["users"] == []
     assert set(container.items) == {"users"}
+
+
+def test_demo_seeding_creates_only_actors_and_shared_engagement_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    import appdb
+    from azure.cosmos import exceptions as cosmos_exceptions
+
+    class Container:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+
+        def read_item(self, *, item: str, partition_key: str) -> dict:
+            if item not in self.items:
+                raise cosmos_exceptions.CosmosResourceNotFoundError(message="missing", response=None)
+            return self.items[item]
+
+        def create_item(self, item: dict) -> None:
+            if item["id"] in self.items:
+                raise cosmos_exceptions.CosmosResourceExistsError(message="exists", response=None)
+            self.items[item["id"]] = dict(item)
+
+        def replace_item(self, *, item: str, body: dict) -> None:
+            self.items[item] = dict(body)
+
+    container = Container()
+    monkeypatch.setattr(appdb, "_container", lambda: container)
+    appdb.ensure_seeded("test-secret")
+    assert set(container.items) == {
+        "users", "eng-website-launch", "eng-product-launch", "eng-q3-budget",
+    }
 
 
 def test_identity_registry_rejects_mixed_mode_actor_stores(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,7 @@
 import { notifyAuthExpired, withAppAuth } from "./appAuth";
 import { STARTUP_REQUEST_TIMEOUT_MS } from "./startupRequestPolicy";
 import type { AppState, FileInfo } from "./types";
+import { decodeAppState, decodeContextBundle, decodeEngagement, decodeEngagementList, decodeFileContent, decodeFilesPayload, decodeFileWrite, decodeSessionMetadata, decodeSessionUpload } from "./payload";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -27,7 +28,7 @@ export async function getAppState(sessionId: string): Promise<AppState> {
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Failed to load app state: ${res.status}`);
-  return res.json();
+  return decodeAppState(await res.json());
 }
 
 export async function getSession(sessionId: string): Promise<SessionMetadata | null> {
@@ -36,7 +37,7 @@ export async function getSession(sessionId: string): Promise<SessionMetadata | n
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Session check failed: ${res.status}`);
-  return res.json();
+  return decodeSessionMetadata(await res.json());
 }
 
 export async function createSession(): Promise<SessionMetadata> {
@@ -47,7 +48,7 @@ export async function createSession(): Promise<SessionMetadata> {
     signal: AbortSignal.timeout(STARTUP_REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Failed to create session: ${res.status}`);
-  return res.json();
+  return decodeSessionMetadata(await res.json());
 }
 
 export async function uploadFile(
@@ -64,7 +65,7 @@ export async function uploadFile(
     const detail = await res.text();
     throw new Error(`Upload failed (${res.status}): ${detail}`);
   }
-  return res.json();
+  return decodeSessionUpload(await res.json());
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -84,7 +85,7 @@ export async function listFiles(
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Failed to list files: ${res.status}`);
-  return res.json();
+  return decodeFilesPayload(await res.json());
 }
 
 export interface FileContentResponse {
@@ -106,7 +107,7 @@ export async function getFileContent(
     const detail = await res.text();
     throw new Error(`Failed to load file content (${res.status}): ${detail}`);
   }
-  return res.json();
+  return decodeFileContent(await res.json());
 }
 
 export async function saveFileContent(
@@ -124,54 +125,9 @@ export async function saveFileContent(
     const detail = await res.text();
     throw new Error(`Failed to save (${res.status}): ${detail}`);
   }
-  return res.json();
+  return decodeFileWrite(await res.json());
 }
 
-// ── Library (persistent KB) ──────────────────────────────────────────────────
-export async function saveToLibrary(
-  sessionId: string,
-  filename: string,
-): Promise<{ filename: string; chunks: number; status: string }> {
-  const res = await apiFetch(`/sessions/${sessionId}/library`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Failed to save to Library (${res.status}): ${detail}`);
-  }
-  return res.json();
-}
-
-export async function deleteFromLibrary(sessionId: string, filename: string): Promise<void> {
-  const res = await apiFetch(`/sessions/${sessionId}/library/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok && res.status !== 204) {
-    const detail = await res.text();
-    throw new Error(`Failed to remove from Library (${res.status}): ${detail}`);
-  }
-}
-
-export async function getLibraryContent(
-  sessionId: string,
-  filename: string,
-): Promise<FileContentResponse> {
-  const params = new URLSearchParams({ filename });
-  const res = await apiFetch(`/sessions/${sessionId}/library/content?${params.toString()}`, {
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Failed to load Library document (${res.status}): ${detail}`);
-  }
-  return res.json();
-}
-
-// ── Manual CRUD (tasks / events / reminders) — AI-free, hits the orchestrator ──
 async function jsonReq<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await apiFetch(path, {
     method,
@@ -186,39 +142,13 @@ async function jsonReq<T = unknown>(method: string, path: string, body?: unknown
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-export const createTask = (sid: string, body: { title: string; status?: string; priority?: string; group?: string; dueDate?: string }) =>
-  jsonReq("POST", `/sessions/${sid}/tasks`, body);
-export const updateTask = (sid: string, id: string, body: Partial<{ title: string; status: string; priority: string; group: string; dueDate: string }>) =>
-  jsonReq("PATCH", `/sessions/${sid}/tasks/${id}`, body);
-export const deleteTask = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/tasks/${id}`);
-export const addSubtask = (sid: string, id: string, text: string) => jsonReq("POST", `/sessions/${sid}/tasks/${id}/subtasks`, { text });
-export const toggleSubtask = (sid: string, id: string, index: number, done: boolean) =>
-  jsonReq("PATCH", `/sessions/${sid}/tasks/${id}/subtasks/${index}`, { done });
-export const deleteSubtask = (sid: string, id: string, index: number) =>
-  jsonReq("DELETE", `/sessions/${sid}/tasks/${id}/subtasks/${index}`);
-
-export const createEvent = (sid: string, body: { title: string; date: string; start?: string; end?: string; type?: string }) =>
-  jsonReq("POST", `/sessions/${sid}/events`, body);
-export const updateEvent = (sid: string, id: string, body: Partial<{ title: string; date: string; start: string; end: string; type: string }>) =>
-  jsonReq("PATCH", `/sessions/${sid}/events/${id}`, body);
-export const deleteEvent = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/events/${id}`);
-
-export const createSchedule = (sid: string, body: { title: string; prompt: string; frequency: string; time: string; timezone?: string; daysOfWeek?: number[] }) =>
-  jsonReq("POST", `/sessions/${sid}/schedules`, body);
-export const updateSchedule = (sid: string, id: string, body: Partial<{ enabled: boolean; title: string; prompt: string }>) =>
-  jsonReq("PATCH", `/sessions/${sid}/schedules/${id}`, body);
-export const deleteSchedule = (sid: string, id: string) => jsonReq("DELETE", `/sessions/${sid}/schedules/${id}`);
-
-
 // ── Engagements (shared customer-delivery workspaces) ───────────────────────────
-import type { Engagement, QuickLink } from "./types";
-
-export const listEngagements = () => jsonReq<Engagement[]>("GET", "/engagements");
+export const listEngagements = () => jsonReq<unknown>("GET", "/engagements").then(decodeEngagementList);
 export const createEngagement = (body: { name: string; description?: string; customer?: string; targetDate?: string }) =>
-  jsonReq<Engagement>("POST", "/engagements", body);
-export const getEngagement = (pid: string) => jsonReq<Engagement>("GET", `/engagements/${pid}`);
+  jsonReq<unknown>("POST", "/engagements", body).then(decodeEngagement);
+export const getEngagement = (pid: string) => jsonReq<unknown>("GET", `/engagements/${pid}`).then(decodeEngagement);
 export const updateEngagement = (pid: string, body: Partial<{ name: string; description: string; customer: string; status: string; statusNote: string; startDate: string; targetDate: string }>) =>
-  jsonReq<Engagement>("PATCH", `/engagements/${pid}`, body);
+  jsonReq<unknown>("PATCH", `/engagements/${pid}`, body).then(decodeEngagement);
 export const addEngagementMember = (pid: string, userId: string, role: string) =>
   jsonReq("POST", `/engagements/${pid}/members`, { userId, role });
 export const listUsers = () =>
@@ -237,7 +167,7 @@ export const updateEngagementTask = (pid: string, tid: string, body: Partial<{ t
 export const deleteEngagementTask = (pid: string, tid: string) =>
   jsonReq("DELETE", `/engagements/${pid}/tasks/${tid}`);
 
-// ── Engagement artifacts (bytes stream through the authed API — R9/R10) ──────
+// ── Engagement artifacts (bytes stream through the authenticated API) ─────────
 export async function uploadEngagementArtifact(pid: string, file: File): Promise<void> {
   const form = new FormData();
   form.append("file", file);
@@ -256,14 +186,8 @@ export const deleteEngagementArtifact = (pid: string, aid: string) =>
   jsonReq("DELETE", `/engagements/${pid}/artifacts/${aid}`);
 
 // ── Navigation context ───────────────────────────────────────────────────────
-export const recordVisit = (path: string, title: string) =>
-  jsonReq("POST", "/visits", { path, title }).catch(() => undefined); // fire-and-forget
-export const getQuickLinks = () => jsonReq<QuickLink[]>("GET", "/quicklinks");
-
 // ── Settings + context bundle ────────────────────────────────────────────────
-import type { ContextBundle } from "./types";
-
 export const putPersona = (p: { role: string; tone: string; outputPrefs: string; language: string }) =>
   jsonReq("PUT", "/settings/persona", p);
 export const getContextBundle = (view: string) =>
-  jsonReq<ContextBundle>("GET", `/context-bundle?view=${encodeURIComponent(view)}`);
+  jsonReq<unknown>("GET", `/context-bundle?view=${encodeURIComponent(view)}`).then(decodeContextBundle);

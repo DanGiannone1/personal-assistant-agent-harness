@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Sparkles } from "lucide-react";
 import WorkbenchApp from "./workbench/WorkbenchApp";
 import CoPilotDock from "./CoPilotDock";
@@ -15,9 +15,6 @@ export default function HostApp() {
     state,
     navigateView,
     isChatUploading,
-    saveToLibrary,
-    removeFromLibrary,
-    uploadDocument,
     refresh,
     startSession,
   } = useSession();
@@ -59,14 +56,6 @@ export default function HostApp() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [closeDock, dockOpen, narrow]);
 
-  const uploadedFiles = useMemo(
-    () => state.files.filter((f) => f.origin === "uploaded"),
-    [state.files],
-  );
-  const generatedFiles = useMemo(
-    () => state.files.filter((f) => f.origin === "generated"),
-    [state.files],
-  );
   const agentWorking = state.isStreaming || isChatUploading;
 
   return (
@@ -83,15 +72,7 @@ export default function HostApp() {
             loading={state.isInitializing}
             viewRoute={state.viewRoute}
             onNavigate={navigateView}
-            sessionId={state.sessionId}
-            uploadedFiles={uploadedFiles}
-            generatedFiles={generatedFiles}
-            newRecordIds={state.newRecordIds}
             agentWorking={agentWorking}
-            quickLinks={state.quickLinks}
-            onSaveToLibrary={saveToLibrary}
-            onRemoveFromLibrary={removeFromLibrary}
-            onUpload={uploadDocument}
             onRefresh={refresh}
             workspaceStale={state.workspaceStale}
             sessionError={state.sessionError}

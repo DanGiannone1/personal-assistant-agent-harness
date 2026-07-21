@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, stateFingerprint } from "../scripts/mvp_evidence.mjs";
+import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
@@ -38,6 +38,33 @@ test("parses only one JSON event per SSE frame", () => {
   const events = parseSse('data: {"type":"RUN_STARTED"}\n\ndata: {"type":"RUN_FINISHED"}\n\n');
   assert.equal(events.length, 2);
   assert.throws(() => parseSse("data: {}\ndata: {}\n\n"), /exactly one/);
+});
+
+test("MVP eval scope defaults to all and selects only the requested versioned suite", () => {
+  const atomicSuite = { fixtureVersion: "fixture-v1", cases: [{ id: "atomic-1" }] };
+  const workflowSuite = { fixtureVersion: "fixture-v1", workflows: [{ id: "workflow-1" }] };
+
+  assert.equal(parseMvpEvalScope(undefined), "all");
+  assert.equal(parseMvpEvalScope("all"), "all");
+  assert.equal(parseMvpEvalScope("atomic"), "atomic");
+  assert.equal(parseMvpEvalScope("workflow"), "workflow");
+  assert.throws(() => parseMvpEvalScope(""), /MVP_EVAL_SCOPE must be one of: all, atomic, workflow/);
+  assert.throws(() => parseMvpEvalScope("workflows"), /MVP_EVAL_SCOPE/);
+
+  const atomic = selectMvpEvalScope("atomic", atomicSuite, null);
+  assert.deepEqual(atomic.atomicCases, atomicSuite.cases);
+  assert.deepEqual(atomic.workflowDefinitions, []);
+  assert.equal(atomic.fixtureVersion, "fixture-v1");
+
+  const workflow = selectMvpEvalScope("workflow", null, workflowSuite);
+  assert.deepEqual(workflow.atomicCases, []);
+  assert.deepEqual(workflow.workflowDefinitions, workflowSuite.workflows);
+  assert.equal(workflow.fixtureVersion, "fixture-v1");
+
+  assert.throws(
+    () => selectMvpEvalScope("all", atomicSuite, { ...workflowSuite, fixtureVersion: "fixture-v2" }),
+    /atomic and workflow fixture versions must match/,
+  );
 });
 
 test("the evaluation oracle requires structured evidence, one terminal, and state effect", () => {
@@ -238,7 +265,7 @@ test("navigation expectations require exactly one matching resolved route event"
       start,
       { type: "TOOL_CALL_START", tool_call_id: "call-nav", tool_call_name: "navigate" },
       { type: "TOOL_CALL_RESULT", tool_call_id: "call-nav", result: { operation: "navigate", status: "resolved", code: "navigation.resolved", destination: { id: "engagements", path: "/engagements" } } },
-      { type: "NAVIGATION_RESOLVED", runId: "run-1", requestedAtNavigationVersion: 0, destination: { id: "workbench", path: "/home" } },
+      { type: "NAVIGATION_RESOLVED", runId: "run-1", requestedAtNavigationVersion: 0, destination: { id: "engagement_overview", engagementId: "eng-a", path: "/engagements/eng-a" } },
       { type: "TOOL_CALL_END", tool_call_id: "call-nav" },
       finish,
     ],

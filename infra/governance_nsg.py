@@ -10,13 +10,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from typing import Any
 
 
-ACA_NSG_NAME = "csa-workbench-vnet-aca-infrastructure-nsg-eastus2"
-PRIVATE_ENDPOINT_NSG_NAME = "csa-workbench-vnet-private-endpoints-nsg-eastus2"
-VNET_NAME = "csa-workbench-vnet"
+INSTANCE_SLUG_RE = re.compile(r"^[a-z][a-z0-9]{2,9}$")
+
+
+def expected_names(instance_slug: str, location: str) -> tuple[str, str, str]:
+    if not INSTANCE_SLUG_RE.fullmatch(instance_slug):
+        raise ValueError("instance slug must match ^[a-z][a-z0-9]{2,9}$")
+    if not isinstance(location, str) or not location:
+        raise ValueError("location is required")
+    base = f"csa-wb-{instance_slug}"
+    return (
+        f"{base}-vnet-aca-infrastructure-nsg-{location.lower()}",
+        f"{base}-vnet-private-endpoints-nsg-{location.lower()}",
+        f"{base}-vnet",
+    )
 
 
 def _association_ids(nsg: dict[str, Any], name: str) -> list[str]:
@@ -39,6 +51,7 @@ def select_governance_nsgs(
     subscription_id: str,
     resource_group: str,
     location: str,
+    instance_slug: str,
 ) -> dict[str, str]:
     if not isinstance(inventory, list):
         raise ValueError("tenant-governance NSG inventory is malformed")
@@ -53,21 +66,22 @@ def select_governance_nsgs(
         if not isinstance(name, str) or not name or name in by_name:
             raise ValueError("tenant-governance NSG inventory drifted")
         by_name[name] = nsg
-    if set(by_name) != {ACA_NSG_NAME, PRIVATE_ENDPOINT_NSG_NAME}:
+    aca_nsg_name, private_endpoint_nsg_name, vnet_name = expected_names(instance_slug, location)
+    if set(by_name) != {aca_nsg_name, private_endpoint_nsg_name}:
         raise ValueError("tenant-governance NSG inventory drifted")
 
     network_base = (
         f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
         "/providers/Microsoft.Network"
     )
-    vnet_id = f"{network_base}/virtualNetworks/{VNET_NAME}".lower()
+    vnet_id = f"{network_base}/virtualNetworks/{vnet_name}".lower()
     expected = {
-        ACA_NSG_NAME: (
-            f"{network_base}/networkSecurityGroups/{ACA_NSG_NAME}",
+        aca_nsg_name: (
+            f"{network_base}/networkSecurityGroups/{aca_nsg_name}",
             f"{vnet_id}/subnets/aca-infrastructure",
         ),
-        PRIVATE_ENDPOINT_NSG_NAME: (
-            f"{network_base}/networkSecurityGroups/{PRIVATE_ENDPOINT_NSG_NAME}",
+        private_endpoint_nsg_name: (
+            f"{network_base}/networkSecurityGroups/{private_endpoint_nsg_name}",
             f"{vnet_id}/subnets/private-endpoints",
         ),
     }
@@ -93,8 +107,8 @@ def select_governance_nsgs(
         selected[name] = resource_id
 
     return {
-        "aca_nsg_id": selected[ACA_NSG_NAME],
-        "private_endpoint_nsg_id": selected[PRIVATE_ENDPOINT_NSG_NAME],
+        "aca_nsg_id": selected[aca_nsg_name],
+        "private_endpoint_nsg_id": selected[private_endpoint_nsg_name],
     }
 
 
@@ -103,6 +117,7 @@ def main() -> int:
     parser.add_argument("--subscription-id", required=True)
     parser.add_argument("--resource-group", required=True)
     parser.add_argument("--location", required=True)
+    parser.add_argument("--instance-slug", required=True)
     args = parser.parse_args()
     try:
         inventory = json.load(sys.stdin)
@@ -111,6 +126,7 @@ def main() -> int:
             args.subscription_id,
             args.resource_group,
             args.location,
+            args.instance_slug,
         )
     except (json.JSONDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

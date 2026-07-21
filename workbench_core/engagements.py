@@ -231,12 +231,15 @@ class EngagementService:
                 errors["status"] = "must be green, yellow, or red"
         for field in ("startDate", "targetDate"):
             if normalized.get(field):
-                if len(normalized[field]) > 10:
+                if len(normalized[field]) != 10:
                     errors[field] = "must be an ISO calendar date"
                     continue
                 try:
-                    date.fromisoformat(normalized[field])
+                    parsed = date.fromisoformat(normalized[field])
                 except ValueError:
+                    errors[field] = "must be an ISO calendar date"
+                    continue
+                if parsed.isoformat() != normalized[field]:
                     errors[field] = "must be an ISO calendar date"
         return normalized, errors
 

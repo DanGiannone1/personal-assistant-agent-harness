@@ -1,3 +1,5 @@
+import { MVP_EVAL_MANIFEST, hasExactCanonicalIds } from "./mvp_eval_manifest.mjs";
+
 function countPassed(items = []) {
   return items.filter((item) => item.pass).length;
 }
@@ -119,8 +121,11 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
     && typeof fixtureHash === "string" && !!fixtureHash
     && [...atomic, ...workflows].every((item) =>
       item.fixture?.fixtureVersion === fixtureVersion && item.fixture?.fixtureHash === fixtureHash);
-  const productHardGatePass = atomic.length > 0 && workflows.length > 0
-    && fixtureConsistent && atomic.every((item) => item.pass) && workflows.every((item) => item.pass);
+  const canonicalAtomicSuite = hasExactCanonicalIds(atomic, MVP_EVAL_MANIFEST.atomicCaseIds);
+  const canonicalWorkflowSuite = hasExactCanonicalIds(workflows, MVP_EVAL_MANIFEST.workflowIds);
+  const productHardGatePass = productReport.scope === "all"
+    && fixtureConsistent && canonicalAtomicSuite && canonicalWorkflowSuite
+    && atomic.every((item) => item.pass) && workflows.every((item) => item.pass);
   const grounding = bindGroundingReviews(productReport, groundingReviewRecord);
   const groundingReviews = grounding.reviews;
   const waza = summarizeWaza(wazaReport);
@@ -145,9 +150,12 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
       productRuntime: {
         provenance: `${productReport.harness}/${productReport.model}`,
         environment: productReport.environment,
+        scope: productReport.scope ?? "UNSPECIFIED",
         atomic: { passed: countPassed(atomic), total: atomic.length, failed: atomic.filter((item) => !item.pass).map((item) => item.id) },
         workflows: { passed: countPassed(workflows), total: workflows.length, failed: workflows.filter((item) => !item.pass).map((item) => item.id) },
         fixtureConsistent,
+        canonicalAtomicSuite,
+        canonicalWorkflowSuite,
         hardGatePass: productHardGatePass,
         groundingReviewBinding: grounding.binding,
         groundingReviews,
@@ -184,10 +192,13 @@ export function renderMvpScorecard(scorecard) {
 | Source revision | ${scorecard.sourceRevision} |
 | Product runtime | ${product.provenance} |
 | Product environment | ${product.environment} |
+| Product scope | ${product.scope} |
 | Skill | ${scorecard.skill?.name ?? "UNSPECIFIED"} @ ${scorecard.skill?.sha256 ?? "UNSPECIFIED"} |
 | Atomic checks | ${product.atomic.passed}/${product.atomic.total} |
 | Workflow checks | ${product.workflows.passed}/${product.workflows.total} |
 | Fixture consistency | ${product.fixtureConsistent ? "PASS" : "FAIL"} |
+| Canonical atomic suite | ${product.canonicalAtomicSuite ? "PASS" : "FAIL"} |
+| Canonical workflow suite | ${product.canonicalWorkflowSuite ? "PASS" : "FAIL"} |
 | Product hard gate | ${product.hardGatePass ? "PASS" : "FAIL"} |
 | Grounding review binding | ${product.groundingReviewBinding.status} |
 | Waza lane | ${waza.status} (${waza.provenance}) |

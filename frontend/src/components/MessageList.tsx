@@ -7,14 +7,9 @@ import MessageBubble from "./MessageBubble";
 interface MessageListProps {
   messages: ChatMessage[];
   onSuggestion?: (text: string) => void;
-  // Instant, client-side navigation targets — no agent turn, no LLM. The common case.
-  quickNav?: { label: string; route: string }[];
-  onQuickNav?: (route: string) => void;
-  // Overdue / needs-attention items surfaced on open, one click to the right work area.
-  attention?: { label: string; sublabel: string; route: string }[];
 }
 
-// Showcase the assistant's active Engagement capabilities (quick navigation is one-click above).
+// Showcase the assistant's active Engagement capabilities.
 const SUGGESTIONS = [
   { icon: "gauge", label: "Review engagements", description: "See the Engagements available to you", prompt: "List my engagements." },
   { icon: "strategy", label: "Open an Engagement", description: "Navigate to an Engagement you can access", prompt: "Open an Engagement for me. If you need to know which one, ask me to choose." },
@@ -40,7 +35,7 @@ function SuggestionIcon({ icon }: { icon: string }) {
   }
 }
 
-export default function MessageList({ messages, onSuggestion, quickNav, onQuickNav, attention }: MessageListProps) {
+export default function MessageList({ messages, onSuggestion }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
   const rafRef = useRef<number>(0);
@@ -78,48 +73,6 @@ export default function MessageList({ messages, onSuggestion, quickNav, onQuickN
           <div className="mx-auto flex min-h-[68vh] flex-col justify-center">
             <h2 className="text-3xl font-extrabold tracking-tight text-text-primary md:text-4xl">How can I help?</h2>
             <p className="mt-4 text-lg text-text-secondary">Ask me to review, navigate, create, or update your Engagements.</p>
-
-            {onQuickNav && attention && attention.length > 0 && (
-              <div className="mt-7 rounded-2xl border border-brand-warning/30 bg-brand-warning/5 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-brand-warning mb-2 px-1">Needs attention · {attention.length} overdue</p>
-                <div className="flex flex-col gap-1">
-                  {attention.map((a) => (
-                    <button
-                      key={a.route + a.label}
-                      type="button"
-                      data-testid="attention-item"
-                      onClick={() => onQuickNav(a.route)}
-                      className="interactive-control flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-left hover:bg-surface-2 transition-all"
-                    >
-                      <span className="flex flex-col min-w-0">
-                        <span className="text-[13px] font-semibold text-text-primary truncate">{a.label}</span>
-                        <span className="text-[11px] text-text-muted truncate">{a.sublabel}</span>
-                      </span>
-                      <span className="text-[11px] font-bold text-brand-warning shrink-0">Go →</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {onQuickNav && quickNav && quickNav.length > 0 && (
-              <div className="mt-7">
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-text-muted mb-2">Jump to</p>
-                <div className="flex flex-wrap gap-2">
-                  {quickNav.map((q) => (
-                    <button
-                      key={q.route}
-                      type="button"
-                      data-testid={`quicknav-${q.route.replace(/\//g, "-")}`}
-                      onClick={() => onQuickNav(q.route)}
-                      className="interactive-control rounded-full border border-border-subtle bg-surface-1 px-3.5 py-1.5 text-[12px] font-semibold text-text-secondary hover:border-brand-primary hover:text-text-primary transition-all"
-                    >
-                      {q.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {onSuggestion && (
               <div className="mt-10 grid w-full grid-cols-1 gap-3 sm:grid-cols-2">

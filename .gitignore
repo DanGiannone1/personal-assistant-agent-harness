@@ -212,6 +212,7 @@ test-results/
 playwright-report/
 evidence/mvp/local-synthetic/
 /.mvp-artifacts/
+/.local-runs/
 
 # RFP agent workspace
 workspace/
@@ -220,6 +221,7 @@ workspace-debug/
 # Frontend
 frontend/node_modules/
 frontend/.next/
+frontend/.next-local-runs/
 !frontend/src/lib/
 
 # Dev artifacts (local screenshots, traces, caches)
