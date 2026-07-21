@@ -280,18 +280,18 @@ def test_local_cors_accepts_only_the_documented_loopback_aliases() -> None:
     assert orchestrator._cors_origins("https://demo.example.test") == ["https://demo.example.test"]
 
 
-def test_legacy_personal_scheduler_and_library_surfaces_are_absent() -> None:
+def test_manual_personal_routes_exist_without_scheduler_or_library_surfaces() -> None:
     routes = {route.path for route in orchestrator.app.routes}
-    assert not any(route.startswith("/sessions/{session_id}/tasks") for route in routes)
-    assert not any(route.startswith("/sessions/{session_id}/events") for route in routes)
-    assert not any(route.startswith("/sessions/{session_id}/schedules") for route in routes)
+    assert "/sessions/{session_id}/tasks" in routes
+    assert "/sessions/{session_id}/events" in routes
+    assert "/sessions/{session_id}/schedules" in routes
     assert not any(route.startswith("/sessions/{session_id}/library") for route in routes)
     assert not (ROOT / "scheduler.py").exists()
     assert not (ROOT / "email_acs.py").exists()
     assert not (ROOT / "session-container" / "library.py").exists()
 
 
-def test_supported_app_state_and_context_bundle_are_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supported_app_state_includes_private_and_engagement_records(monkeypatch: pytest.MonkeyPatch) -> None:
     import appdb
 
     user = {
@@ -301,11 +301,19 @@ def test_supported_app_state_and_context_bundle_are_minimal(monkeypatch: pytest.
         "persona": {"role": "Product lead", "tone": "concise", "outputPrefs": "", "language": "English"},
     }
     engagements = [{"id": "eng-product-launch", "name": "Product Launch"}]
+    personal = {
+        "currentRoute": "/home", "personalTasks": [{"id": "t-1"}],
+        "calendarEvents": [{"id": "e-1"}], "reminders": [{"id": "s-1"}],
+    }
     monkeypatch.setattr(appdb, "get_user", lambda uid: user if uid == "dan" else None)
+    monkeypatch.setattr(appdb, "load_personal_workspace", lambda uid: personal if uid == "dan" else None)
     monkeypatch.setattr(appdb, "list_engagements_for", lambda uid: engagements if uid == "dan" else [])
     state = appdb.supported_app_state_for("dan")
-    assert set(state) == {"currentRoute", "engagements", "user"}
-    assert state["currentRoute"] == "/engagements"
+    assert set(state) == {"currentRoute", "personalTasks", "calendarEvents", "reminders", "engagements", "user"}
+    assert state["currentRoute"] == "/home"
+    assert state["personalTasks"] == personal["personalTasks"]
+    assert state["calendarEvents"] == personal["calendarEvents"]
+    assert state["reminders"] == personal["reminders"]
     assert state["engagements"] == engagements
     assert state["user"] == {
         "id": "dan", "username": "dan", "displayName": "Dan", "persona": user["persona"],
@@ -696,9 +704,13 @@ def test_library_search_is_not_started_or_routed() -> None:
     assert "import library" not in source
     assert "ensure_seeded_indexed" not in source
     assert '"/sessions/{session_id}/library' not in source
+    # The legacy unattended scheduler stays out: no legacy module/env names and no
+    # global recipient address. Reminder email ships via workbench_core.reminder_dispatch
+    # (identity-derived recipients, claim-before-send) per the issue #18 recovery record.
     assert "scheduler_loop" not in source
     assert "SCHEDULER_ENABLED" not in source
-    assert "azure-communication-email" not in (ROOT / "pyproject.toml").read_text()
+    assert "import email_acs" not in source
+    assert "REMINDER_EMAIL" not in source
     assert "library.py" not in (ROOT / "Dockerfile").read_text()
     assert "library.py" not in (ROOT / "session-container" / "Dockerfile").read_text()
 
