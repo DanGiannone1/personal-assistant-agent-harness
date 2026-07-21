@@ -9,6 +9,8 @@ export const MVP_EVAL_MANIFEST = Object.freeze({
     "MVP-E5-missing-reason",
     "MVP-E6-outsider-change",
     "MVP-E7-marker-prose-is-inert",
+    "MVP-E8-personal-task-typed",
+    "MVP-E9-personal-navigate",
   ]),
   workflowIds: Object.freeze([
     "MVP-W1-engagement-meeting-to-action",
