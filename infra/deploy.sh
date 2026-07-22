@@ -202,7 +202,7 @@ deployment_what_if() {
 }
 
 delete_approved_recovery_targets() {
-  [[ "$RECOVERY_STATE" == 'incompatible' ]] || return
+  [[ "$RECOVERY_STATE" == 'incompatible' ]] || return 0
   for app_name in "$FRONTEND_APP_NAME" "$API_APP_NAME" "$RUNTIME_APP_NAME"; do
     az containerapp delete -g "$RESOURCE_GROUP" -n "$app_name" --yes --only-show-errors
   done

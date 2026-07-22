@@ -218,6 +218,20 @@ def test_malformed_or_stale_confirmation_cannot_mutate(tmp_path: Path) -> None:
     assert len(plan_id) == 64
 
 
+def test_confirmed_fresh_apply_skips_recovery_deletion_and_reaches_foundation_create(tmp_path: Path) -> None:
+    plan, _ = _run_deploy(tmp_path / "plan")
+    plan_id = next(line.split("=", 1)[1] for line in plan.stdout.splitlines() if line.startswith("PLAN_ID="))
+
+    apply, log = _run_deploy(
+        tmp_path / "apply", "apply", "--confirm", f"apply:{plan_id}:csa-wb-mvp1-rg",
+    )
+
+    assert apply.returncode != 0  # the stub stops at the first real foundation create
+    assert "containerapp delete" not in log and "containerapp env delete" not in log
+    assert "deployment sub what-if" in log
+    assert "deployment sub create" in log
+
+
 @pytest.mark.parametrize('overrides', [
     {'ACR_LOCATION': 'westus3'},
     {'IDENTITY_MODE': 'demo', 'DEMO_PASSWORD': 'different-demo-secret'},
