@@ -1,34 +1,30 @@
 # Testing Charter
 
-> **HUMAN-OWNED GOVERNING SOURCE OF TRUTH**
+> **Human-owned document**
 >
-> Agents must not edit, replace, move, delete, or create a competing version of
-> this file unless the user explicitly authorizes changes to this named file in
-> the current conversation.
+> Agents must not edit, replace, move, delete, or create another file that competes with this one
+> unless the user explicitly approves changes to this named file in the current conversation.
 
-Testing is evidence that user-relevant behavior satisfies a stated oracle: the
-expected result for a defined action, input, or state. A green command is not
-proof unless it exercises that behavior and asserts the expected result.
+Tests show whether user-relevant behavior matches a stated expectation for a defined action, input,
+and starting state. A successful command matters only when it exercises the behavior being changed
+and checks the expected result.
 
-## Evidence standard
+## Testing standard
 
-- State the behavior, starting conditions, action, expected result, and observed
-  evidence.
-- Verify behavior dynamically whenever it has an executable runtime surface.
-- Cover failure paths, boundaries, permissions, data effects, and interactions
-  when relevant to risk.
-- Use static review to find defects, but label runtime behavior `UNVERIFIED`
-  when dynamic execution was not possible.
-- Report what ran, what it proved, failures, and what remains unverified.
+- State the behavior, starting conditions, action, expected result, and observed result.
+- Exercise running behavior whenever the repository provides a practical way to do so.
+- Include failures, boundaries, permissions, stored changes, and component interactions when they
+  matter to the risk.
+- Use source review to find problems, but do not describe runtime behavior as checked when the
+  application was not run.
+- Report what ran, what passed, what failed, and what was not checked.
 
-## Repository verification
+## Repository commands
 
-Use [../development.md](../development.md) as the canonical command source. The
-primary behavioral proof is Playwright driving the real frontend and reconciling
-screenshots with application state and traces. Relevant supporting checks
-include frontend lint/build and focused backend tests, but they do not replace
-the affected end-to-end behavior.
+Use the [local development guide](../guides/local-development.md) for current commands. Browser
+checks should drive the real frontend and compare the displayed result with application state and
+the structured assistant events. Supporting unit, contract, lint, and build checks do not replace an
+affected end-to-end user journey.
 
-Choose verification depth by the consequence of error and changed surface.
-Security, access, data, public contracts, concurrency, recovery, and deployment
-changes require stronger independent proof.
+Choose the amount of testing based on the likely impact of an error. Access control, stored data,
+public contracts, concurrency, recovery, and deployment changes need stronger independent checks.

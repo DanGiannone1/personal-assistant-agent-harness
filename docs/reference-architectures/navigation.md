@@ -1,9 +1,5 @@
 # Navigation (target design)
 
-> **Authority:** Target design. Not a description of current behavior — [../design.md](../design.md)
-> owns the current boundary. See "Where the current MVP stands" below for the honest gap to what is
-> implemented today.
-
 ## The simple version
 
 Navigation should feel like using an app, not operating an AI system.
@@ -50,10 +46,10 @@ guess. The destination catalog is the boundary between those mistakes.
 
 ## The destination catalog
 
-The backend owns one canonical catalog of destinations. It contains static application surfaces and
+The backend owns one canonical catalog of destinations. It contains static application pages and
 dynamic destinations derived from live state, including Engagements and their records.
 
-A destination has this logical shape:
+A destination has this logical structure:
 
 ```json
 {
@@ -81,7 +77,7 @@ The catalog follows five rules:
 5. **One registry.** The sidebar, quick links, semantic search, and route generation consume the same
    definitions rather than maintaining separate route lists.
 
-The vector index is an acceleration structure, not authority. It stores searchable catalog fields and
+The vector index speeds up search but does not decide access. It stores searchable catalog fields and
 embeddings, but a search hit is never enough to navigate without a live catalog lookup.
 
 ## Personalized quick links
@@ -102,7 +98,7 @@ The deterministic ranker consumes the [turn context](context.md), including:
 The ranker returns both a score and reason codes, for example `recent`, `active_engagement`, and
 `overdue_items`. Those reasons power the context inspector and make personalization explainable.
 
-Context **ranks but never gates**. It cannot add an unauthorized destination, and low-ranked surfaces
+Context **ranks but never gates**. It cannot add an unauthorized destination, and low-ranked pages
 remain reachable through the complete navigation UI. Recency decays and frequency is capped so
 yesterday's habit does not permanently bury the long tail.
 
@@ -186,7 +182,7 @@ The frontend follows these rules:
 - A later successful agent navigation may supersede an earlier manual click in the same turn.
 - Last-issued state refresh wins; stale snapshots cannot replace newer app data.
 - Cancellation invalidates buffered route effects from the cancelled turn.
-- Refetch authoritative app data after tool completion, but do not make the visible route wait for
+- Reload saved application data after tool completion, but do not make the visible route wait for
   that refetch.
 
 ## CRUD composes without semantic navigation
@@ -230,17 +226,17 @@ For Deep Agents:
 - Forward the structured result as AG-UI; do not parse status markers.
 
 Harness parity then follows from shared execution rather than duplicated implementations. Copilot, the
-retained local portability/evaluation lane, calls the same shared navigation service.
+retained local portability/evaluation option, calls the same shared navigation service.
 
-## Where the current MVP stands
+## Current implementation
 
-Today's navigation surface deliberately implements only a fraction of this design:
+Today's navigation feature deliberately implements only a fraction of this design:
 
 - `navigate` exists as a typed, closed tool (`workbench_core.tool_protocol.DESTINATION_IDS`), and only
   a successful, catalog-validated, membership-checked result can carry a route — matching this
   design's "one safety rule" and revalidate-before-navigate principle.
-- The catalog is static: exactly eight destinations (five static surfaces plus three Engagement-scoped
-  surfaces), not the dynamic per-record catalog this design describes. There is no destination for an
+- The catalog is static: exactly eight destinations (five static pages plus three Engagement-scoped
+  pages), not the dynamic per-record catalog this design describes. There is no destination for an
   individual task, event, or reminder.
 - There are no personalized quick links, no visit/frequency ranking, no pins, and no working-Engagement
   restoration.
@@ -249,15 +245,14 @@ Today's navigation surface deliberately implements only a fraction of this desig
 - `ambiguous` exists in the shared outcome vocabulary but the navigation service never returns it — an
   unresolved request must be clarified in conversation before any tool call.
 
-This is a deliberate MVP boundary, not an oversight — see
-[../capabilities/navigation.md](../capabilities/navigation.md) for the authoritative current-state
-contract and its evidence status.
+See [current experience architecture](../architecture/capabilities/experience.md) for today's
+navigation behavior.
 
 ## Architecture checklist
 
 - [ ] Quick links rank only permitted destinations and include explanation reasons.
 - [ ] A known destination navigates immediately with no model or semantic search.
-- [ ] The complete navigation surface remains available outside personalized links.
+- [ ] The complete navigation feature remains available outside personalized links.
 - [ ] Natural-language navigation is one embed -> search -> pick -> revalidate operation.
 - [ ] The picker can select only an opaque ID from the supplied candidates.
 - [ ] Context ranks candidates but never makes an irrelevant candidate viable.

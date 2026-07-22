@@ -1,83 +1,54 @@
 # Reference architectures
 
-> **Authority:** These are TARGET designs. They do not change the current MVP boundary;
-> [../design.md](../design.md) and [../capabilities/](../capabilities/) own what exists today.
+These documents explore how CSA Workbench could grow beyond the current MVP. They preserve detailed
+design reasoning, data formats, processing steps, failure handling, security rules, and implementation
+guidance. They do not set delivery dates or replace the current product documentation.
 
-## Why target designs live apart from capability docs
+For current behavior, start with the [product overview](../product/overview.md) and
+[architecture overview](../architecture/README.md).
 
-The [capability](../capabilities/) documents are the honest, evidenced record of what CSA Workbench
-does today: implemented tools, current outcomes, and what has (and has not) been verified. Mixing
-forward-looking design into that record would blur the MVP boundary that
-[requirements](../requirements.md) and the
-[reference eval architecture](../evals-reference-architecture.md) depend on.
-
-This directory holds the opposite kind of document: design intent for capabilities the product does
-not yet have, or has only partly built. Each file states what a mature version of a capability should
-look like — the rules, the data shapes, the failure modes — without asserting that any of it exists,
-is scheduled, or has been verified. When a target design becomes real, that fact belongs in the
-matching capability document, not here.
+Use these documents to understand or discuss a proposed design. Use the current architecture for
+questions about what the application does today, the guides for running or deploying it, and the
+product requirements for the MVP commitment. When part of a proposal is implemented, document that
+behavior in the current architecture rather than treating the proposal as the operating guide.
 
 ## Shared foundations
 
-Every design in this directory assumes the same foundation the current MVP already establishes, and
-none of them relax it:
+Every design keeps the same foundations:
 
-- **Typed tools and structured outcomes only.** The model calls narrow, typed tools and receives a
-  structured result; nothing is inferred by parsing chat text.
-- **Actor identity is bound outside the model.** The acting user, session, and role are never a
-  model-visible tool argument.
-- **One shared application service backs every caller.** The manual UI and the assistant reach the
-  same authorization, validation, and mutation logic through thin adapters, never two competing
-  implementations.
-- **State is re-read, not assumed.** Every operation re-checks live authorization and durable state at
-  execution time; a permission or context snapshot is a hint, never a cached grant.
-- **A claim never outruns reality.** The UI applies a result only after a committed outcome, and it
-  refreshes from authoritative state rather than trusting assistant wording.
+- The server binds the signed-in user, session, and role outside model-controlled arguments.
+- The web application and assistant use the same application services.
+- Tools accept typed input and return structured results.
+- Every read or change checks current access and current stored data.
+- The application refreshes saved data after a completed action instead of trusting assistant text.
 
-## The five designs
+## Designs
 
-| Design | Scope |
+| Design | Focus |
 |---|---|
-| [context.md](context.md) | One composed per-turn context snapshot, projected differently for the prompt, the tool layer, UI ranking, and an explainability inspector. |
-| [navigation.md](navigation.md) | Personalized quick links plus natural-language destination resolution over one grounded, permission-trimmed catalog. |
-| [crud.md](crud.md) | Create/update/delete from any screen, with scope resolved from context instead of requiring pre-navigation, through one application service. |
-| [document-ai.md](document-ai.md) | Broad-format document intake, conversion to normalized markdown, and typed extraction/summarization tools over Engagement-scoped storage. |
-| [rag-qa.md](rag-qa.md) | Citation-grounded question answering over per-actor and per-Engagement corpora with membership-checked retrieval. |
+| [Context](context.md) | One composed set of relevant information for the prompt, application tools, interface ranking, and a user explanation |
+| [Navigation](navigation.md) | Personalized links and natural-language destination selection over one permission-filtered catalog |
+| [CRUD](crud.md) | Create, update, and delete from any page, with scope and target selected from context |
+| [Document AI](document-ai.md) | Broad file intake, conversion to normalized Markdown, extraction, and summarization |
+| [RAG question answering](rag-qa.md) | Citation-based answers over per-user and per-Engagement document collections |
+| [Agent evaluation](agent-evaluation.md) | Repeatable assessment of capability, safety, consistency, performance, and change impact |
 
-Context is the foundation the other four build on: navigation and CRUD both rank or default from the
-same context snapshot, and the retrieval scoping in `document-ai.md` and `rag-qa.md` follows the same
-actor/Engagement authorization boundary context establishes.
+Context supports the other designs. Navigation and CRUD use it to rank or default permitted choices.
+Document intake and retrieval use its user and Engagement scope. Context never grants access; each
+application service still checks current permissions.
 
-## How each design is structured
+## Document organization
 
-Every file in this directory follows the same shape so the current/target boundary stays legible
-without re-deriving it per document:
+Each reference architecture contains:
 
-1. An authority banner at the top stating it is a target design and naming the capability document
-   that owns current behavior.
-2. A plain-language description of the experience the design targets.
-3. The rules and data shapes that make the design safe — authorization, typed contracts, and
-   structured outcomes, not prose.
-4. A closing section — usually "Where the current MVP stands" — that honestly states what already
-   exists, what is partial, and what does not exist at all, linking the matching capability document.
+1. a plain-language explanation of the intended experience;
+2. design rules and technical details;
+3. how it connects to the assistant runtime and shared application services;
+4. a description of the current implementation.
 
-A reader who wants to know what CSA Workbench does right now should start at that closing section, or
-skip straight to the linked capability document; the rest of the file describes where the capability
-could go, not where it currently is.
+The larger system designs end with an implementation checklist. Agent evaluation uses a phased
+roadmap instead. Document AI and RAG end after describing the gap between the proposal and the
+current product because their next implementation steps depend on later product decisions.
 
-## What this directory is not
-
-- Not a roadmap or a schedule. No dates, no phase numbers, no "next" claims.
-- Not a record of Azure resources, deployments, or run results. See
-  [Infrastructure](../capabilities/infrastructure.md) and [deployment](../deployment.md) for what is
-  actually provisioned.
-- Not a second design authority. Where a target design and [design.md](../design.md) appear to
-  disagree about current scope, design.md wins; these documents describe a possible future state, not
-  a competing present one.
-
-## Authority
-
-These are **target designs**. They do not change the current MVP boundary.
-[../design.md](../design.md) and [../capabilities/](../capabilities/) own what exists today; treat
-every statement in this directory as intent, not implementation, unless the linked capability document
-confirms otherwise.
+The current-implementation section is a bridge to today's architecture. The rest of each document
+describes the proposed design in depth.
