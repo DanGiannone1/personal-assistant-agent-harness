@@ -211,6 +211,7 @@ __marimo__/
 test-results/
 playwright-report/
 evidence/mvp/local-synthetic/
+evidence/mvp/azure-demo/
 /.mvp-artifacts/
 /.local-runs/
 

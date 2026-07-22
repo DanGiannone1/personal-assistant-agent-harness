@@ -7,7 +7,7 @@
 `infra/deploy.sh` creates an isolated instance from an explicit `INSTANCE_SLUG` and explicit model
 inputs (`MODEL_DEPLOYMENT_NAME`, `MODEL_NAME`, `MODEL_VERSION`, `MODEL_SKU_NAME`,
 `MODEL_CAPACITY`) — there is no fixed model or single shared deployment. The script plans by
-default, performs guarded Azure reads/what-if, and requires a human-provided exact confirmation
+default, performs guarded Azure reads/what-if, and requires the current plan's exact target-bound confirmation
 before apply; see [deployment](../deployment.md) for the plan/apply procedure.
 
 Each instance runs as three Container Apps in one Consumption environment. The frontend and API are

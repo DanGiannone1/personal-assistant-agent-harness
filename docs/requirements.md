@@ -22,7 +22,7 @@ The internal POC should let a colleague understand and demonstrate a small, trut
 4. The product skill set contains `engagement-meeting-prep`, `tasks`, `calendar`, and `weekly-review`.
 5. The versioned MVP evidence has nine atomic cases and one three-turn workflow in `tests/evals/`.
 6. Documentation says exactly which evidence is deterministic/source-scoped and which requires live browser, Entra, Azure, or model observation.
-7. Azure deployment is isolated by explicit instance slug and model inputs, with human-owned plan and apply confirmation.
+7. Azure deployment is isolated by explicit instance slug and model inputs, with user-authorized, target-bound plan/apply confirmation that an authenticated CLI coding agent may execute.
 8. Reminder email delivery goes only to the owning actor's identity-derived address, is at-most-once, and records failures on the reminder rather than dropping them; with ACS unconfigured, reminders still work in-app without crashing.
 
 ## Acceptance journeys
@@ -38,7 +38,7 @@ The internal POC should let a colleague understand and demonstrate a small, trut
 - **Responsive UI.** The Engagement and "My work" journeys remain usable at wide, compact, and 390
   CSS-pixel widths, including loading, empty, validation, permission, and failure states.
 - **Clean, isolated Azure deployment.** A release revision deploys into its own `INSTANCE_SLUG`
-  resource group behind an explicit human plan/apply confirmation. The resource inventory shows the
+  resource group behind an explicit user-authorized, target-bound plan/apply confirmation. The resource inventory shows the
   intended scale-to-zero, private-network profile, and observed cold-start latency is recorded
   rather than hidden.
 

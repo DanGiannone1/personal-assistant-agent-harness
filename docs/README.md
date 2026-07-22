@@ -11,7 +11,7 @@ Start at the [root README](../README.md), the sole colleague-facing front door.
 | [capabilities/](capabilities/) | Focused current-boundary notes; subordinate to design and requirements |
 | [reference-architectures/](reference-architectures/) | Target capability designs; subordinate to design.md for current scope |
 | [development.md](development.md) | Local run and deterministic verification runbook |
-| [deployment.md](deployment.md) | Human-owned Azure plan/apply runbook |
+| [deployment.md](deployment.md) | User-authorized CLI-agent Azure plan/apply runbook |
 | [evals-reference-architecture.md](evals-reference-architecture.md) | Canonical customer-demo and evidence architecture |
 | [coding-agent-setup.md](coding-agent-setup.md) | CLI coding-agent collaboration guardrails |
 | [governance/](governance/) | Governing SDLC, engineering, testing, and agent-design rules |

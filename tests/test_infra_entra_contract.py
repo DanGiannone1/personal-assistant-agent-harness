@@ -185,6 +185,27 @@ def test_plan_requires_explicit_inputs_and_never_mutates(tmp_path: Path) -> None
     assert whitespace_log == ''
 
 
+def test_deployment_guidance_allows_an_explicitly_authorized_cli_agent_without_weakening_confirmation() -> None:
+    deployment = (ROOT / 'docs' / 'deployment.md').read_text()
+    agent_setup = (ROOT / 'docs' / 'coding-agent-setup.md').read_text()
+
+    assert 'the agent may run the exact `apply --confirm ...` command emitted by that plan' in deployment
+    assert 'a plan-only request never authorizes apply' in deployment
+    assert 'stale\nconfirmation or changed target/input fails closed' in deployment
+    assert 'requires a current issue containing the objective, target, owner, risk, acceptance criteria' in deployment
+    assert 'recovery deletions, changes the requested target or identity/model profile' in deployment
+    assert 'using these exact model inputs:' in deployment
+    assert 'MVP_ALLOW_REMOTE=1' in deployment and 'evidence/mvp/azure-demo/' in deployment
+    assert 'az account get-access-token --scope "api://${API_CLIENT_ID}/access_as_user"' in deployment
+    assert '"https://${API_FQDN}/auth/me"' in deployment
+    assert 'value.get("identity") == "entra"' in deployment
+    assert 'Any other unexpected resource fails the\ninventory check' in deployment
+    assert 'Defender-for-Storage Event Grid topic' not in deployment
+    assert 'the agent may run `apply` with the exact target-bound' in agent_setup
+    assert 'The agent must then stop' not in agent_setup
+    assert 'an agent must never run apply' not in agent_setup
+
+
 def test_malformed_or_stale_confirmation_cannot_mutate(tmp_path: Path) -> None:
     plan, _ = _run_deploy(tmp_path / "plan")
     plan_id = next(line.split("=", 1)[1] for line in plan.stdout.splitlines() if line.startswith("PLAN_ID="))

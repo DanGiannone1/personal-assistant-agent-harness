@@ -1,25 +1,29 @@
 /*
  * MVP real-browser evidence: UI assertions are reconciled with the public app-state API and
- * typed SSE events.  It never treats assistant prose or a rendered tool label as
- * success.  Run only against the local demo stack:
+ * typed SSE events. It never treats assistant prose or a rendered tool label as
+ * success. Run against an isolated local demo stack, or explicitly opt into a dedicated
+ * Azure demo Container Apps target:
  *
  * MVP_RESET_BEFORE_RUN=1 IDENTITY_MODE=demo DEMO_PASSWORD=... npm run playwright:mvp
+ * MVP_ALLOW_REMOTE=1 MVP_APP_URL=https://... MVP_API_URL=https://... DEMO_PASSWORD=... npm run playwright:mvp
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { chromium } from "@playwright/test";
 import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireTargetUrl, terminalEvents } from "./mvp_evidence.mjs";
 
 const startedAt = new Date().toISOString();
+const REMOTE = process.env.MVP_ALLOW_REMOTE === "1";
+const EVIDENCE_ENVIRONMENT = REMOTE ? "azure-demo" : "local-synthetic";
 const APP = requireTargetUrl(process.env.MVP_APP_URL || "http://localhost:3000", "MVP_APP_URL");
 const API = requireTargetUrl(process.env.MVP_API_URL || "http://localhost:8000", "MVP_API_URL");
 const runId = process.env.MVP_RUN_ID || new Date().toISOString().replace(/[:.]/g, "-") + `-${randomUUID().slice(0, 8)}`;
-const out = evidencePath("playwright", runId);
+const out = evidencePath("playwright", runId, EVIDENCE_ENVIRONMENT);
+const expectedFixtureVersion = JSON.parse(readFileSync("tests/evals/mvp-cases.json", "utf8")).fixtureVersion;
 if (!process.env.DEMO_PASSWORD) throw new Error("DEMO_PASSWORD is required; this runner never supplies a static password.");
 // Remote (live Azure demo) runs rely on the instance's idempotent boot-seed instead of the
 // local-only reset_demo_state.py fixture; local runs still require the guarded reset.
-const REMOTE = process.env.MVP_ALLOW_REMOTE === "1";
 if (!REMOTE && process.env.MVP_RESET_BEFORE_RUN !== "1") throw new Error("Set MVP_RESET_BEFORE_RUN=1; browser evidence starts only after a guarded fixture reset.");
 
 function resetFixture() {
@@ -164,12 +168,14 @@ async function newPage(browser, viewport, user) {
 }
 
 mkdirSync(out, { recursive: true });
-const report = { schemaVersion: 1, kind: "mvp-playwright", runId, sourceRevision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), fixture: null, environment: "local-synthetic", harness: process.env.AGENT_BACKEND || "deepagents", model: process.env.AZURE_DEPLOYMENT || "UNSPECIFIED", app: APP, api: API, startedAt };
+const report = { schemaVersion: 1, kind: "mvp-playwright", runId, sourceRevision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), fixture: null, environment: EVIDENCE_ENVIRONMENT, harness: process.env.AGENT_BACKEND || "deepagents", model: process.env.AZURE_DEPLOYMENT || "UNSPECIFIED", app: APP, api: API, startedAt };
 let browser;
 
 try {
   requireCleanWorktree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
-  report.fixture = REMOTE ? { mode: "remote-boot-seed", note: "Azure demo self-seeds on boot; local reset skipped" } : resetFixture();
+  report.fixture = REMOTE
+    ? { mode: "remote-boot-seed", expectedFixtureVersion, observedFixtureVersion: "UNVERIFIED", note: "Azure demo self-seeds on boot; local reset skipped" }
+    : resetFixture();
   browser = await chromium.launch({ headless: process.env.MVP_HEADLESS !== "0" });
   const dan = await newPage(browser, { width: 1440, height: 900 }, "dan");
   const ava = await newPage(browser, { width: 1440, height: 900 }, "ava");
@@ -184,10 +190,10 @@ try {
   const avaIds = (avaSeed.engagements ?? []).map((entry) => entry.id).sort();
   check(
     "MVP-P1-deterministic-personal-portfolios",
-    report.fixture?.fixtureVersion === "mvp-demo-v2" &&
+    (REMOTE || report.fixture?.fixtureVersion === expectedFixtureVersion) &&
       sameCanonical(danIds, fixturePortfolios.dan) &&
       sameCanonical(avaIds, fixturePortfolios.ava),
-    `fixture=${report.fixture?.fixtureVersion ?? "missing"} expectedDan=${fixturePortfolios.dan.join(",")} dan=${danIds.join(",")} expectedAva=${fixturePortfolios.ava.join(",")} ava=${avaIds.join(",")}`,
+    `fixture=${REMOTE ? report.fixture?.observedFixtureVersion : report.fixture?.fixtureVersion ?? "missing"} expectedFixture=${expectedFixtureVersion} expectedDan=${fixturePortfolios.dan.join(",")} dan=${danIds.join(",")} expectedAva=${fixturePortfolios.ava.join(",")} ava=${avaIds.join(",")}`,
   );
   await capture(dan.page, `${out}/wide-dan-portfolio.png`);
   check("MVP-P2-wide-no-horizontal-overflow", await noHorizontalOverflow(dan.page));

@@ -8,6 +8,6 @@ Work from the current checkout, preserve unrelated changes, and keep changes sco
 npm run verify
 ```
 
-Do not treat a source check as proof of browser, Entra, Azure, or model behavior. Live evals and Azure apply require deliberate human authorization. See [coding-agent setup](docs/coding-agent-setup.md) and the [deployment runbook](docs/deployment.md).
+Do not treat a source check as proof of browser, Entra, Azure, or model behavior. Live evals and Azure apply require deliberate user authorization; an authorized CLI coding agent may execute the target-bound plan/apply procedure. See [coding-agent setup](docs/coding-agent-setup.md) and the [deployment runbook](docs/deployment.md).
 
 Do not add an external-sharing, license, security-contact, or release policy without a human decision.

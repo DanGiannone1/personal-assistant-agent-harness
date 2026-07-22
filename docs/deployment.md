@@ -1,6 +1,6 @@
 # Azure deployment runbook
 
-> **Purpose:** Human-owned plan/apply procedure for an isolated CSA Workbench instance. It is not a claim that any deployment currently exists or is verified.
+> **Purpose:** User-authorized, agent-operated plan/apply procedure for an isolated CSA Workbench instance. It is not a claim that any deployment currently exists or is verified.
 
 Read the current [`infra/deploy.sh`](../infra/deploy.sh) before use. The script requires a clean worktree and explicit model selection; it does not silently choose a model. Environment-specific inventory (resource groups, URLs, deployed revisions) is operator knowledge recorded with the tracking issue, not in this repository.
 
@@ -35,23 +35,63 @@ The resource group is always `csa-wb-<instance-slug>-rg`. The script defaults to
 
 Plan authenticates and reads Azure state, checks guarded recovery conditions, and runs foundation what-if when applicable. It makes no Azure mutation. Its fresh-instance what-if cannot preview later Entra registration creation, image builds, or app deployment.
 
+## Preferred CLI-agent workflow
+
+The human collaborator owns the Azure account and the decision to deploy. Sign in, select the exact
+tenant and subscription, and verify the active target before asking a CLI coding agent to deploy:
+
+```bash
+az login --tenant '<tenant-id-or-domain>'
+az account set --subscription '<subscription-id-or-name>'
+az account show --query '{subscription:name,subscriptionId:id,tenantId:tenantId,user:user.name}' -o json
+```
+
+Then tell the agent which instance slug or slugs to deploy, the identity mode for each instance,
+and the model profile. Secrets such as `DEMO_PASSWORD` stay in the local environment or an ignored
+secret file; do not paste, print, or commit them. Tracked delivery and external-system work also
+requires a current issue containing the objective, target, owner, risk, acceptance criteria, and
+approval required by the [Master SDLC](governance/master-sdlc.md). The agent must confirm that work
+record before apply. A request such as the following supplies the execution approval for the
+selected account and named instances when it matches the approved work record:
+
+```text
+Deploy dev in demo mode and prod in Entra mode to the Azure tenant/subscription I selected,
+using these exact model inputs: deployment <deployment>, model <model>, version <version>,
+SKU <sku>, capacity <capacity>. Plan, apply, and validate both environments.
+```
+
+The agent must re-read `az account show`, compare the live tenant/subscription and requested inputs,
+and summarize the plan before mutation. When the user asked the agent to **deploy** (not merely
+plan), the agent may run the exact `apply --confirm ...` command emitted by that plan. A plan that
+introduces recovery deletions, changes the requested target or identity/model profile, or reveals a
+new material security/cost decision requires fresh user approval before apply.
+
 Record and review the printed `PLAN_ID` and the exact confirmation form:
 
 ```text
 apply:<plan-id>:<resource-group>
 ```
 
-Before any apply, the responsible human reviews the target, public surfaces, managed identities, cost-bearing resources, and any reported recovery deletion targets. Source checks and a plan do not prove a live deployment, browser journey, Entra sign-in, Azure behavior, or model response.
+Before any apply, the responsible operator reviews the target, public surfaces, managed identities,
+cost-bearing resources, and any reported recovery deletion targets. For an agent-operated deploy,
+the agent performs and reports this review under the user's explicit deployment authorization.
+Source checks and a plan do not prove a live deployment, browser journey, Entra sign-in, Azure
+behavior, or model response.
 
-## Apply is human-owned
+## Apply is target-bound and user-authorized
 
-Only the responsible human may apply, using the exact confirmation emitted by the immediately preceding plan:
+Apply uses the exact confirmation emitted by the immediately preceding plan:
 
 ```bash
 ./infra/deploy.sh apply --confirm 'apply:<plan-id>:<resource-group>'
 ```
 
-There is no `APPLY=true` path. Do not use unattended apply, and do not let a coding agent apply with a copied confirmation. Apply re-computes and rechecks the plan before mutation. Depending on the guarded recovery state, it may delete only explicitly approved recovery targets before foundation deployment, then creates Entra registrations, builds images, deploys applications, and verifies the declared Azure inventory.
+There is no `APPLY=true` path and a plan-only request never authorizes apply. An explicitly
+authorized CLI coding agent may pass the current plan's confirmation; a human operator may also run
+the command directly. Apply re-computes and rechecks the plan before mutation, so a stale
+confirmation or changed target/input fails closed. Depending on the guarded recovery state, it may
+delete only explicitly approved recovery targets before foundation deployment, then creates Entra
+registrations, builds images, deploys applications, and verifies the declared Azure inventory.
 
 Any legacy resource names, model revisions, URLs, or prior run results are historical observations only and are not portable proof for this instance.
 
@@ -72,8 +112,62 @@ success. It requires exactly the three named Container Apps with their declared 
 private-DNS shape for Cosmos and Blob; disabled Cosmos local/public access and disabled Storage
 public/shared-key/public-blob access; the exact managed-identity role assignments contained within
 the resource group; and the full expected resource inventory with nothing extra. A tenant-governance
-NSG pair or Defender-for-Storage Event Grid topic may legitimately exist outside the application's own
-Bicep; the verifier tolerates their absence and validates their exact shape only when present.
+NSG pair may legitimately exist outside the application's own Bicep; the verifier tolerates its
+absence and validates its exact shape only when present. Any other unexpected resource fails the
+inventory check.
+
+## Live post-apply validation
+
+The script's successful verifier proves the declared infrastructure inventory; it does not prove
+that a scaled-to-zero app can start, a user can authenticate, or a browser journey works. After each
+apply, resolve the public endpoints and exercise their health surfaces:
+
+```bash
+export RESOURCE_GROUP="csa-wb-${INSTANCE_SLUG}-rg"
+export FRONTEND_FQDN="$(az containerapp show -g "$RESOURCE_GROUP" -n "csa-wb-${INSTANCE_SLUG}-frontend" --query properties.configuration.ingress.fqdn -o tsv)"
+export API_FQDN="$(az containerapp show -g "$RESOURCE_GROUP" -n "csa-wb-${INSTANCE_SLUG}-api" --query properties.configuration.ingress.fqdn -o tsv)"
+curl --fail --retry 12 --retry-all-errors --max-time 30 "https://${FRONTEND_FQDN}/"
+curl --fail --retry 12 --retry-all-errors --max-time 30 "https://${API_FQDN}/health"
+```
+
+On a new or otherwise dedicated `demo` instance, the real-browser suite can validate login,
+authorization boundaries, CRUD, agent behavior, responsive layout, and screenshots against Azure.
+It mutates the demo fixture and skips the local destructive reset, so do not aim it at an Entra or
+shared environment:
+
+```bash
+export MVP_ALLOW_REMOTE=1
+export MVP_APP_URL="https://${FRONTEND_FQDN}"
+export MVP_API_URL="https://${API_FQDN}"
+export IDENTITY_MODE=demo
+export AZURE_DEPLOYMENT='<deployed-model-name>'
+# DEMO_PASSWORD must already be present without printing it.
+npm run playwright:mvp
+```
+
+Remote screenshots and results are written under ignored `evidence/mvp/azure-demo/`. Inspect the
+result JSON and screenshots rather than relying on the command's exit code alone. The run observes
+the expected demo portfolio/data contract but labels the deployed fixture version `UNVERIFIED`
+because the application does not expose a fixture-version attestation.
+
+For an `entra` instance, the Azure CLI registration is pre-authorized for the API's delegated
+`access_as_user` scope. Use the signed-in real tenant identity for a nonsecret token smoke test:
+
+```bash
+export API_CLIENT_ID="$(az ad app list --display-name "CSA Workbench [${INSTANCE_SLUG}] API" --query '[0].appId' -o tsv)"
+test -n "$API_CLIENT_ID"
+ACCESS_TOKEN="$(az account get-access-token --scope "api://${API_CLIENT_ID}/access_as_user" --query accessToken -o tsv)"
+ENTRA_ME="$(curl --fail --retry 6 --retry-all-errors --max-time 30 -H "Authorization: Bearer ${ACCESS_TOKEN}" "https://${API_FQDN}/auth/me")"
+unset ACCESS_TOKEN
+ENTRA_ME="$ENTRA_ME" python3 -c 'import json,os; value=json.loads(os.environ["ENTRA_ME"]); assert value.get("identity") == "entra" and value.get("id", "").startswith("u-")'
+unset ENTRA_ME
+```
+
+Success is an HTTP 200 actor document with `identity: entra` and a canonical `u-<oid>` ID. This
+proves tenant/audience/signature/scope validation and first-use actor provisioning; it does not
+prove the frontend's interactive redirect, which must be recorded separately when that browser
+journey is required. The demo browser harness is not Entra evidence. Mark any journey that cannot
+be performed `UNVERIFIED` rather than inferring it from infrastructure health.
 
 ## Workflow boundary
 

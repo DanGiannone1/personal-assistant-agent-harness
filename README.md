@@ -25,7 +25,7 @@ surfaces have their own typed tools and skills (`tasks`, `calendar`, `weekly-rev
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md), [coding-agent setup](docs/coding-agent-setup.md), and the
 [local development runbook](docs/development.md). They route you to repository governance, safe
-local verification, and the human-owned Azure deployment path.
+local verification, and the user-authorized CLI-agent Azure deployment path.
 
 ## Run it locally
 
