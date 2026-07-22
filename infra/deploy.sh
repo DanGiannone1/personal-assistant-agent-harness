@@ -141,7 +141,14 @@ if len(attached) != len(set(attached)):
 properties = environment.get('properties', {})
 profiles = properties.get('workloadProfiles') if isinstance(properties, dict) else None
 subnet = properties.get('vnetConfiguration', {}).get('infrastructureSubnetId') if isinstance(properties.get('vnetConfiguration', {}), dict) else None
-compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profiles == [{'name': 'Consumption', 'workloadProfileType': 'Consumption'}])
+profile_compatible = (
+    isinstance(profiles, list) and len(profiles) == 1 and isinstance(profiles[0], dict)
+    and profiles[0].get('name') == 'Consumption'
+    and profiles[0].get('workloadProfileType') == 'Consumption'
+    and set(profiles[0]) <= {'name', 'workloadProfileType', 'enableFips'}
+    and (profiles[0].get('enableFips') is None or profiles[0].get('enableFips') is False)
+)
+compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profile_compatible)
 if compatible:
     print('compatible|[]')
 elif set(attached) == set(expected):

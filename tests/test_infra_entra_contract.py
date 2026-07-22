@@ -120,7 +120,7 @@ def test_governance_nsg_is_instance_and_location_parameterized() -> None:
         helper.select_governance_nsgs(inventory, "sub", "csa-wb-other-rg", "westus3", "other")
 
 
-def _write_command_stubs(tmp_path: Path, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected') -> tuple[Path, Path]:
+def _write_command_stubs(tmp_path: Path, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', recovery_profile: str = 'incompatible') -> tuple[Path, Path]:
     bin_dir, log = tmp_path / "bin", tmp_path / "az.log"
     bin_dir.mkdir(parents=True)
     (bin_dir / "git").write_text("""#!/usr/bin/env bash
@@ -133,6 +133,10 @@ case "$1" in rev-parse) echo 0123456789abcdef0123456789abcdef01234567 ;; status)
         'missing': '[]',
         'extra': '[{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"unrelated","properties":{"managedEnvironmentId":"env-id"}}]',
     }['missing' if bad_recovery else recovery_apps_order]
+    environment_properties = {
+        'incompatible': '"vnetConfiguration":{},"workloadProfiles":[]',
+        'azure-enriched': '"vnetConfiguration":{"infrastructureSubnetId":"/subscriptions/subscription/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Network/virtualNetworks/csa-wb-mvp1-vnet/subnets/aca-infrastructure"},"workloadProfiles":[{"enableFips":false,"name":"Consumption","workloadProfileType":"Consumption"}]',
+    }[recovery_profile]
     (bin_dir / "az").write_text(f"""#!/usr/bin/env bash
 set -eu
 echo "$*" >> "$AZ_LOG"
@@ -144,7 +148,7 @@ case "$*" in
   "group exists -n csa-wb-mvp1-rg -o tsv") echo {'true' if recovery else 'false'} ;;
   "network nsg list "*) echo '[]' ;;
   "containerapp env list "*) {'echo \'[{"name":"csa-wb-mvp1-env","id":"env-id"}]\'' if recovery else "echo '[]'"} ;;
-  "containerapp env show "*) echo '{{"name":"csa-wb-mvp1-env","properties":{{"vnetConfiguration":{{}},"workloadProfiles":[]}}}}' ;;
+  "containerapp env show "*) echo '{{"name":"csa-wb-mvp1-env","properties":{{{environment_properties}}}}}' ;;
   "containerapp list "*) echo '{recovery_apps}' ;;
   "deployment sub create "*) exit 9 ;;
   *) exit 0 ;;
@@ -155,8 +159,8 @@ esac
     return bin_dir, log
 
 
-def _run_deploy(tmp_path: Path, *args: str, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', overrides: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
-    bin_dir, log = _write_command_stubs(tmp_path, recovery, bad_recovery, recovery_apps_order)
+def _run_deploy(tmp_path: Path, *args: str, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', recovery_profile: str = 'incompatible', overrides: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
+    bin_dir, log = _write_command_stubs(tmp_path, recovery, bad_recovery, recovery_apps_order, recovery_profile)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}", "AZ_LOG": str(log), "INSTANCE_SLUG": "mvp1",
@@ -358,6 +362,20 @@ def test_recovery_accepts_expected_apps_in_any_azure_list_order(tmp_path: Path) 
     assert '"recovery_state":"incompatible"' in result.stdout
     assert 'containerapp delete' not in log and 'containerapp env delete' not in log
     assert 'deployment sub what-if' not in log
+
+
+def test_recovery_accepts_azure_enriched_compatible_consumption_profile(tmp_path: Path) -> None:
+    result, log = _run_deploy(
+        tmp_path,
+        recovery=True,
+        recovery_apps_order='missing',
+        recovery_profile='azure-enriched',
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert '"recovery_state":"compatible"' in result.stdout
+    assert 'containerapp delete' not in log and 'containerapp env delete' not in log
+    assert 'deployment sub what-if' in log
 
 
 @pytest.mark.parametrize('recovery_apps_order', ['missing', 'extra'])
