@@ -146,7 +146,10 @@ async function finalCardHitPoints(page) {
       if (!rect || rect.width <= 0 || rect.height <= 0) return { name, bounds: rect, resolves: false };
       const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       const hit = document.elementFromPoint(point.x, point.y);
-      const resolves = !!hit && (hit === element || element.contains(hit) || hit === intendedAncestor);
+      const resolves = !!hit && (
+        hit === element || element.contains(hit) ||
+        hit === intendedAncestor || intendedAncestor?.contains(hit)
+      );
       return {
         name,
         bounds: rect,
