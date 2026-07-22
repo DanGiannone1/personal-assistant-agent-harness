@@ -148,11 +148,19 @@ profile_compatible = (
     and set(profiles[0]) <= {'name', 'workloadProfileType', 'enableFips'}
     and (profiles[0].get('enableFips') is None or profiles[0].get('enableFips') is False)
 )
-compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profile_compatible)
-if compatible:
+spec_compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profile_compatible)
+healthy = (
+    spec_compatible
+    and properties.get('provisioningState') == 'Succeeded'
+    and isinstance(properties.get('staticIp'), str)
+    and bool(properties['staticIp'].strip())
+)
+if healthy:
     print('compatible|[]')
-elif set(attached) == set(expected):
-    print('incompatible|' + json.dumps(['containerapp/' + name for name in expected] + ['managedEnvironment/' + os.environ['ENVIRONMENT_NAME']], separators=(',', ':')))
+elif not attached or set(attached) == set(expected):
+    targets = ['containerapp/' + name for name in expected if name in attached]
+    targets.append('managedEnvironment/' + os.environ['ENVIRONMENT_NAME'])
+    print('incompatible|' + json.dumps(targets, separators=(',', ':')))
 else:
     raise SystemExit('incompatible environment app inventory is unsafe')
 PY
@@ -209,11 +217,35 @@ deployment_what_if() {
 }
 
 delete_approved_recovery_targets() {
+  local target_lines target
+  local -a targets
   [[ "$RECOVERY_STATE" == 'incompatible' ]] || return 0
-  for app_name in "$FRONTEND_APP_NAME" "$API_APP_NAME" "$RUNTIME_APP_NAME"; do
-    az containerapp delete -g "$RESOURCE_GROUP" -n "$app_name" --yes --only-show-errors
+  target_lines="$(RECOVERY_DELETION_TARGETS="$RECOVERY_DELETION_TARGETS" FRONTEND_APP_NAME="$FRONTEND_APP_NAME" API_APP_NAME="$API_APP_NAME" RUNTIME_APP_NAME="$RUNTIME_APP_NAME" ENVIRONMENT_NAME="$ENVIRONMENT_NAME" python3 - <<'PY'
+import json, os
+targets = json.loads(os.environ['RECOVERY_DELETION_TARGETS'])
+allowed = [
+    'containerapp/' + os.environ['FRONTEND_APP_NAME'],
+    'containerapp/' + os.environ['API_APP_NAME'],
+    'containerapp/' + os.environ['RUNTIME_APP_NAME'],
+    'managedEnvironment/' + os.environ['ENVIRONMENT_NAME'],
+]
+if not isinstance(targets, list) or not targets or len(targets) != len(set(targets)):
+    raise SystemExit('recovery deletion targets are malformed')
+if any(not isinstance(target, str) for target in targets) or targets != [target for target in allowed if target in targets] or targets[-1] != allowed[-1]:
+    raise SystemExit('recovery deletion targets are not an approved ordered subset')
+print('\n'.join(targets))
+PY
+)" || fail 'recovery deletion target validation failed'
+  mapfile -t targets <<<"$target_lines"
+  for target in "${targets[@]}"; do
+    case "$target" in
+      "containerapp/$FRONTEND_APP_NAME") az containerapp delete -g "$RESOURCE_GROUP" -n "$FRONTEND_APP_NAME" --yes --only-show-errors ;;
+      "containerapp/$API_APP_NAME") az containerapp delete -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --yes --only-show-errors ;;
+      "containerapp/$RUNTIME_APP_NAME") az containerapp delete -g "$RESOURCE_GROUP" -n "$RUNTIME_APP_NAME" --yes --only-show-errors ;;
+      "managedEnvironment/$ENVIRONMENT_NAME") az containerapp env delete -g "$RESOURCE_GROUP" -n "$ENVIRONMENT_NAME" --yes --only-show-errors ;;
+      *) fail "unapproved recovery deletion target: $target" ;;
+    esac
   done
-  az containerapp env delete -g "$RESOURCE_GROUP" -n "$ENVIRONMENT_NAME" --yes --only-show-errors
 }
 
 foundation_output() {

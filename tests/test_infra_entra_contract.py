@@ -132,10 +132,13 @@ case "$1" in rev-parse) echo 0123456789abcdef0123456789abcdef01234567 ;; status)
         'reordered': '[{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}}]',
         'missing': '[]',
         'extra': '[{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"unrelated","properties":{"managedEnvironmentId":"env-id"}}]',
-    }['missing' if bad_recovery else recovery_apps_order]
+    }[recovery_apps_order]
+    if bad_recovery:
+        recovery_apps = '[{"name":42}]'
     environment_properties = {
-        'incompatible': '"vnetConfiguration":{},"workloadProfiles":[]',
-        'azure-enriched': '"vnetConfiguration":{"infrastructureSubnetId":"/subscriptions/subscription/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Network/virtualNetworks/csa-wb-mvp1-vnet/subnets/aca-infrastructure"},"workloadProfiles":[{"enableFips":false,"name":"Consumption","workloadProfileType":"Consumption"}]',
+        'incompatible': '"provisioningState":"Failed","staticIp":null,"vnetConfiguration":{},"workloadProfiles":[]',
+        'azure-enriched': '"provisioningState":"Succeeded","staticIp":"20.42.33.145","vnetConfiguration":{"infrastructureSubnetId":"/subscriptions/subscription/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Network/virtualNetworks/csa-wb-mvp1-vnet/subnets/aca-infrastructure"},"workloadProfiles":[{"enableFips":false,"name":"Consumption","workloadProfileType":"Consumption"}]',
+        'azure-shell': '"provisioningState":"Succeeded","staticIp":null,"vnetConfiguration":{"infrastructureSubnetId":"/subscriptions/subscription/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Network/virtualNetworks/csa-wb-mvp1-vnet/subnets/aca-infrastructure"},"workloadProfiles":[{"enableFips":false,"name":"Consumption","workloadProfileType":"Consumption"}]',
     }[recovery_profile]
     (bin_dir / "az").write_text(f"""#!/usr/bin/env bash
 set -eu
@@ -378,9 +381,34 @@ def test_recovery_accepts_azure_enriched_compatible_consumption_profile(tmp_path
     assert 'deployment sub what-if' in log
 
 
-@pytest.mark.parametrize('recovery_apps_order', ['missing', 'extra'])
-def test_recovery_rejects_missing_or_extra_attached_apps_before_mutation(tmp_path: Path, recovery_apps_order: str) -> None:
-    result, log = _run_deploy(tmp_path, recovery=True, recovery_apps_order=recovery_apps_order)
+def test_recovery_recreates_azure_shell_without_static_ingress_ip(tmp_path: Path) -> None:
+    result, log = _run_deploy(tmp_path, recovery=True, recovery_profile='azure-shell')
+
+    assert result.returncode == 0, result.stderr
+    assert '"recovery_state":"incompatible"' in result.stdout
+    assert '"recovery_deletion_targets":["containerapp/csa-wb-mvp1-frontend","containerapp/csa-wb-mvp1-api","containerapp/csa-wb-mvp1-runtime","managedEnvironment/csa-wb-mvp1-env"]' in result.stdout
+    assert 'containerapp delete' not in log and 'containerapp env delete' not in log
+    assert 'deployment sub what-if' not in log
+
+
+def test_recovery_of_unattached_failed_environment_deletes_only_environment(tmp_path: Path) -> None:
+    plan, _ = _run_deploy(tmp_path / 'plan', recovery=True, recovery_apps_order='missing')
+    plan_id = next(line.split('=', 1)[1] for line in plan.stdout.splitlines() if line.startswith('PLAN_ID='))
+    apply, log = _run_deploy(
+        tmp_path / 'apply',
+        'apply', '--confirm', f'apply:{plan_id}:csa-wb-mvp1-rg',
+        recovery=True,
+        recovery_apps_order='missing',
+    )
+
+    assert apply.returncode != 0  # the stub stops at the first foundation create
+    assert 'containerapp delete' not in log
+    assert 'containerapp env delete -g csa-wb-mvp1-rg -n csa-wb-mvp1-env --yes --only-show-errors' in log
+    assert 'deployment sub what-if' in log and 'deployment sub create' in log
+
+
+def test_recovery_rejects_extra_attached_apps_before_mutation(tmp_path: Path) -> None:
+    result, log = _run_deploy(tmp_path, recovery=True, recovery_apps_order='extra')
 
     assert result.returncode != 0
     assert 'containerapp delete' not in log and 'containerapp env delete' not in log and 'deployment sub what-if' not in log
