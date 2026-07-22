@@ -1,4 +1,4 @@
 interface:
   display_name: "Testing"
-  short_description: "Apply behavioral testing and evidence rules"
-  default_prompt: "Use $testing to design or verify behavioral evidence for this change."
+  short_description: "Apply the repository's behavioral testing rules"
+  default_prompt: "Use $testing to design or check the behavior affected by this change."

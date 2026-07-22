@@ -1,9 +1,5 @@
 # Document AI (target design)
 
-> **Authority:** Target design. Not a description of current behavior — [../design.md](../design.md)
-> owns the current boundary. See "Where the current MVP stands" below for the honest gap to what is
-> implemented today.
-
 ## The simple version
 
 An Engagement accumulates real documents: statements of work, architecture diagrams, spreadsheets,
@@ -13,8 +9,8 @@ office/document format, get back a normalized, readable rendition, and let typed
 summarize from it — scoped to the Engagement (or actor) that owns it.
 
 Document AI is intake and understanding, not search. It converts and extracts; it does not decide
-where a document is stored or who may read it — that authority stays with Engagement/personal-
-workspace membership rules, exactly as it does for [CRUD](crud.md). Retrieval and question answering
+where a document is stored or who may read it — those decisions stay with the Engagement and
+personal-workspace access rules used by [CRUD](crud.md). Retrieval and question answering
 over many documents at once is a separate concern — see [rag-qa.md](rag-qa.md).
 
 ## What it adds beyond today
@@ -22,12 +18,12 @@ over many documents at once is a separate concern — see [rag-qa.md](rag-qa.md)
 Today, the only durable document capability is manual Engagement-artifact upload/list/download/delete,
 byte-for-byte, with no reading or understanding step; the only place a document is converted at all is
 a session upload, and only markdown is accepted there — see
-[Documents and retrieval](../capabilities/documents-retrieval.md). This design adds three things:
+[Documents and retrieval](../architecture/capabilities/data.md). This design adds three things:
 
 1. **Broad-format intake.** Accept common office and document formats (PDF, DOCX, XLSX, PPTX, and
    similar), not only markdown.
 2. **Normalization.** Convert an accepted upload into a normalized markdown rendition alongside the
-   original, so every downstream tool reads one predictable text shape regardless of source format.
+   original, so every downstream tool reads one predictable text structure regardless of source format.
 3. **Typed extraction and summarization.** Expose reading a converted document's content, and
    producing a bounded summary of it, as typed tools with structured results — not a bare byte
    download the model can never see, and not free-text "read this file" instructions.
@@ -44,17 +40,17 @@ in this directory assumes:
   summarizing a document requires the same membership/ownership check its storage scope already
   requires for any other operation on that Engagement or personal aggregate.
 - **Managed identity only.** Any Azure conversion or extraction service this design uses is reached
-  with the workload's managed identity ([Identity and access](../capabilities/identity-access.md)),
+  with the workload's managed identity ([Identity and access](../architecture/capabilities/identity-and-access.md)),
   never a shared key or connection string embedded in application configuration.
 - **Typed tools only.** The model calls a narrow, typed tool (for example, `read_document` or
   `summarize_document`) closed over the actor's authorized scope, and gets back a structured result
-  with the extracted text or summary and its provenance — never a raw file-system path or an
+  with the extracted text or summary and its source information — never a raw file-system path or an
   instruction to shell out.
 - **Engagement-artifact-first storage.** A converted rendition is stored alongside the document it
   came from, in the same scope and under the same role rules — not in a side channel that escapes
   Engagement authorization.
 
-## Shape of the pipeline
+## Structure of the pipeline
 
 ```text
 upload (actor- or Engagement-scoped, authorized)
@@ -68,7 +64,7 @@ upload (actor- or Engagement-scoped, authorized)
 A conversion failure leaves the original byte upload intact and reports a typed failure outcome; it
 never silently substitutes an empty or partial rendition.
 
-## Typed tool result shape
+## Typed tool result structure
 
 Following the same structured-outcome pattern as [CRUD](crud.md):
 
@@ -93,7 +89,7 @@ Following the same structured-outcome pattern as [CRUD](crud.md):
 | `failed` | Conversion or extraction infrastructure failed; no content is fabricated |
 
 This reuses the same status vocabulary [CRUD](crud.md) and
-[Documents and retrieval](../capabilities/documents-retrieval.md) already use, rather than inventing a
+[Documents and retrieval](../architecture/capabilities/data.md) already use, rather than inventing a
 parallel one.
 
 ## Heritage, not existing capability
@@ -104,13 +100,13 @@ via an Azure document-understanding service) and mirrored bytes to a data-lake s
 conversion dependencies, and the data-lake mirror step were deliberately removed from this codebase —
 `tests/test_release_boundaries.py` currently asserts that `content_processing.py` does not exist and
 that `ContentProcessor` does not appear in `session_manager.py` or `pyproject.toml`. This design
-borrows the shape of that prior conversion step, not its authorization model: the prior version was
+borrows the structure of that prior conversion step, not its authorization model: the prior version was
 not Engagement/actor-scoped the way [CRUD](crud.md) requires, and reintroducing conversion means
 reintroducing it inside that boundary, not restoring the removed module.
 
-## Where the current MVP stands
+## Current implementation
 
-Today's document surface is deliberately narrow:
+Today's document feature is deliberately narrow:
 
 - Session uploads accept Markdown (`.md`) only — no conversion step exists.
 - Engagement artifacts are a manual-only byte store: upload, list, download, delete, with no model
@@ -118,5 +114,4 @@ Today's document surface is deliberately narrow:
 - There is no broad-format intake, no normalized-markdown rendition, and no extraction/summarization
   tool of any kind.
 
-See [../capabilities/documents-retrieval.md](../capabilities/documents-retrieval.md) for the
-authoritative current-state contract and its evidence status.
+See [current data architecture](../architecture/capabilities/data.md) for today's file behavior.

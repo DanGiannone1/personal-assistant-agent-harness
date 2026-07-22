@@ -1,127 +1,66 @@
 # CSA Workbench
 
-CSA Workbench is an internal MVP vertical-slice POC for solution-architect Engagement work. Its
-supported user surfaces are **Engagements** (the default landing surface), a private **My work**
-group (**Home**, **Tasks**, **Calendar**, **Reminders**), **Assistant**, and **Settings**. The
-product is deliberately small: it is not a Library, Search, quick-links, or generic workbench
-product.
+CSA Workbench is an internal workspace for Cloud Solution Architects. It brings shared customer
+Engagements, private tasks and calendar work, and an assistant into one application.
 
-An embedded assistant can read and change the same records the UI renders, through typed tools and
-structured outcomes rather than parsed chat text — so a claim cannot outrun the state that was
-actually read or changed. The application is useful without it: every Engagement and personal-work
-operation has a complete manual path.
+The product is designed to be useful without AI. People can create and update Engagements, manage
+their own work, and share Engagements through the web application. The assistant provides another
+way to perform supported actions through the same application services.
 
-## Choose a route
+## What you can do
 
-### Understand or demo the MVP
+- Create and share customer Engagements with owner, editor, and viewer roles.
+- Track Engagement status, dates, tasks, conventions, and artifacts.
+- Manage private Tasks, Calendar events, and Reminders.
+- Ask the assistant to read or update supported records and open supported pages.
+- Prepare an Engagement meeting brief or run a personal weekly review.
 
-Start with the [MVP design](docs/design.md), then the [release and acceptance intent](docs/requirements.md).
-The [reference eval architecture](docs/evals-reference-architecture.md) defines the demo slice and
-evidence boundaries. For a manual demo, create or open an Engagement, then use the Assistant for the
-versioned meeting-prep, status-update, and open workflow; the personal Tasks/Calendar/Reminders
-surfaces have their own typed tools and skills (`tasks`, `calendar`, `weekly-review`).
+## Main workflow
 
-### Contribute or run it with a CLI coding agent
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [coding-agent setup](docs/coding-agent-setup.md), and the
-[local development runbook](docs/development.md). They route you to repository governance, safe
-local verification, and the human-owned Azure deployment path.
+A CSA creates or opens a customer Engagement, reviews its current status and delivery information,
+and shares it with the right team members. They can then ask the assistant to prepare a meeting
+brief, make a supported status change, and open the updated Engagement. Private Tasks, Calendar
+events, and Reminders remain available only to the signed-in user throughout that work.
 
 ## Run it locally
 
+Install Python 3.12 or later, `uv`, Node.js and npm, Azure CLI, and a local Cosmos DB emulator. Then:
+
 ```bash
 cp .env.example .env
+npm ci
 uv sync
 (cd session-container && uv sync)
 (cd frontend && npm ci)
 uv run dev.py
 ```
 
-Set `IDENTITY_MODE=demo`, a local `DEMO_PASSWORD`, and Azure OpenAI/Cosmos-emulator values in
-`.env` first — see [local development](docs/development.md) for the exact variables and for an
-isolated multi-instance run. The launcher starts a frontend, FastAPI API, and session runtime as
-three separate processes.
+Set the local identity, model, and Cosmos values in `.env` before starting. The
+[local development guide](docs/guides/local-development.md) lists the required settings and shows
+how to run an isolated copy.
 
-## MVP shape
-
-The web frontend, FastAPI API, and session runtime are separate processes. Engagement data is
-durable application state: durable Engagement artifact metadata lives with the Engagement record in
-Cosmos DB and its bytes use the configured durable artifact backend (a local isolated directory in
-development, Azure Blob for an Entra release). Personal Tasks, Calendar events, and Reminders are
-durable, actor-owned records held on their own `personal-{uid}` Cosmos aggregate — never scoped to
-or shared through an Engagement. Session files instead belong to an ephemeral assistant session, and
-uploads to a session are Markdown (`.md`) only.
-
-Deep Agents is the product lane. Copilot is retained only as a local portability and evaluation
-lane; it is not a release claim. The product skills are `engagement-meeting-prep`, `tasks`,
-`calendar`, and `weekly-review`, layered over thirteen typed personal tools and the Engagement/
-navigation tools.
-
-## Architecture at a glance
+## How it works
 
 ```text
-Browser -> Next.js frontend -> FastAPI API -> session runtime -> Azure OpenAI
-                              |                 |
-                              +-- Cosmos DB: actors, Engagements, personal aggregates
-                              +-- durable Engagement artifact bytes (local dir / Blob)
+Browser -> Next.js frontend -> FastAPI API -> assistant runtime -> Azure OpenAI
+                              |
+                              +-- Cosmos DB
+                              +-- Engagement artifact storage
 ```
 
-`workbench_core` is a dependency-light package shared by the API and the session runtime for
-Engagement rules, the personal-workspace service, product-tool result types, and the navigation
-destination catalog — so the manual UI and the assistant enforce the same authorization and
-validation rules rather than two parallel implementations.
+The API and assistant runtime use shared application services for Engagements and personal work.
+This keeps authorization, validation, and saved results consistent whether an action starts in the
+web application or through the assistant.
 
-## Documentation authority
+## Where to go next
 
-| Authority | Use it for |
-|---|---|
-| This README | Colleague-facing entry point and routing |
-| [Design](docs/design.md) | High-level MVP product and system boundary |
-| [Requirements](docs/requirements.md) | Release and acceptance intent |
-| [Capability notes](docs/capabilities/) | Current focused boundaries |
-| [Reference architectures](docs/reference-architectures/) | Target capability designs, subordinate to design.md for current scope |
-| [Development](docs/development.md) and [deployment](docs/deployment.md) | Operating runbooks |
-| [Evals reference architecture](docs/evals-reference-architecture.md) | Canonical demo/evidence architecture |
-| [Governance](docs/governance/README.md) | Governing lifecycle, engineering, test, and agent rules |
+- [Understand the product](docs/product/overview.md)
+- [Read the current architecture](docs/architecture/README.md)
+- [Run it locally](docs/guides/local-development.md)
+- [Demonstrate the main workflow](docs/guides/demo.md)
+- [Contribute](CONTRIBUTING.md)
+- [Deploy an isolated Azure instance](docs/guides/deployment.md)
+- [Browse all documentation](docs/README.md)
 
-The compatibility pointers in `docs/` (`architecture.md`, `spec.md`, `use-cases.md`,
-`projects-spec.md`, `mvp-requirements.md`, `navigation-reference-architecture.md`) are historical
-routes, not competing product or release requirements. Source and deterministic checks establish
-only what they actually inspect. They do not by themselves prove a live browser, Entra, Azure, or
-model interaction — see the evidence status below.
-
-## Repository layout
-
-There is no separate `orchestrator/` directory; the API lives at the repository root.
-
-| Area | Important paths |
-|---|---|
-| API and shared application state | `app.py`, `session_manager.py`, `api_auth.py`, `auth_users.py`, `identity_config.py`, `artifact_store.py` |
-| Shared Engagement/personal-workspace rules | `workbench_core/` (`engagements.py`, `personal_workspace.py`, `tool_protocol.py`, `acs_email.py`, `reminder_dispatch.py`) |
-| Session runtime and harnesses | `session-container/server.py`, `session-container/agent_deepagents.py`, `session-container/agent.py`, `session-container/appdb.py` |
-| Product skills | `session-container/product-skills/` |
-| Frontend | `frontend/src/components/`, `frontend/src/hooks/`, `frontend/src/lib/` |
-| Infrastructure | `infra/`, `.github/workflows/` |
-| Tests and check scripts | `scripts/`, `tests/` |
-
-## Evidence honesty
-
-The committed local browser journey covers the full page inventory and a live agent turn;
-`npm run verify` is the deterministic gate. Run results are recorded on the tracking issue and in
-ignored local evidence bundles — never committed to this repository. **Not verified from this repository:** a deployed Azure instance, a real Entra sign-in
-against this code, a real Azure Communication Services email send, or a live-model eval run of the
-`MVP-E8`/`MVP-E9` personal-work cases. Do not infer any of those from source inspection or a passing
-deterministic check alone; see [requirements](docs/requirements.md) and
-[evals reference architecture](docs/evals-reference-architecture.md) for the exact evidence
-boundary.
-
-## Useful links
-
-- [Local development](docs/development.md)
-- [Azure deployment runbook](docs/deployment.md)
-- [Reference eval architecture](docs/evals-reference-architecture.md)
-- [Coding-agent setup](docs/coding-agent-setup.md)
-- [Governance](docs/governance/README.md)
-
-External distribution, security policy, and sharing approval are human-owned decisions; this
-repository is documented for internal colleague sharing.
+CSA Workbench is an internal MVP. It does not claim production readiness, external distribution,
+or a complete project-management and enterprise-search feature set.

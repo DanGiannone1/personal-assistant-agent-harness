@@ -1,16 +1,12 @@
 # RAG question answering (target design)
 
-> **Authority:** Target design. Not a description of current behavior — [../design.md](../design.md)
-> owns the current boundary. See "Where the current MVP stands" below for the honest gap to what is
-> implemented today.
-
 ## The simple version
 
 A CSA should be able to ask "what did we agree on data residency for this Engagement?" and get an
 answer grounded in the Engagement's own documents, with a citation to the specific source — not a
 guess, and not an answer pulled from someone else's Engagement.
 
-This design keeps the two-tier shape a prior implementation used — an ephemeral session workspace for
+This design keeps the two-tier structure a prior implementation used — an ephemeral session workspace for
 the document someone is actively working on, and a persistent, indexed corpus for material worth
 searching later — but redesigns the indexed tier's authorization from the ground up. See "Not the
 target" below for exactly what that replaces.
@@ -19,7 +15,7 @@ target" below for exactly what that replaces.
 
 | Tier | Scope | How the agent uses it |
 |---|---|---|
-| Session workspace | One ephemeral assistant session | Listed and read directly; current and quick, gone when the session ends — see [Session and state](../capabilities/session-state.md) |
+| Session workspace | One ephemeral assistant session | Listed and read directly; current and quick, gone when the session ends — see [Session and state](../architecture/capabilities/data.md) |
 | Indexed corpus | One actor's personal corpus, or one Engagement's corpus | Retrieved by a typed search tool with citation-grounded results; persistent and retrievable across sessions |
 
 A document is promoted from one tier to the next, never the reverse:
@@ -43,17 +39,17 @@ readable before it is indexed or retrieved.
   membership — access is rechecked at query time, the same as every other typed tool in this
   codebase.
 - **Managed identity, never an admin key.** Search access uses the workload's managed identity
-  ([Identity and access](../capabilities/identity-access.md) /
-  [Infrastructure](../capabilities/infrastructure.md)), not an admin key or a connection string held
+  ([Identity and access](../architecture/capabilities/identity-and-access.md) /
+  [Infrastructure](../architecture/capabilities/infrastructure.md)), not an admin key or a connection string held
   in application configuration.
 - **Citation-grounded answers via typed tools only.** The model calls a typed search/answer tool and
   receives passages with source identifiers; it does not receive a raw index credential or an unscoped
-  query surface, and an answer without a returned citation is not presented as grounded fact.
+  query feature, and an answer without a returned citation is not presented as grounded fact.
 - **Fail loud, never fabricate.** If the corpus is unavailable, misconfigured, or returns nothing
   relevant, the tool result says so structurally; the model is not left to invent an answer to cover a
   missing result.
 
-## Typed tool shape
+## Typed tool structure
 
 ```json
 {
@@ -85,7 +81,7 @@ returns. That composition step follows the same discipline as every other skill 
 
 - The answer may draw only on passages the tool actually returned in this turn, never on the model's
   general knowledge of the topic or an earlier turn's passages that are no longer current.
-- Every factual claim in the answer traces to at least one returned `sourceId`; the answer surfaces
+- Every factual claim in the answer traces to at least one returned `sourceId`; the answer shows
   that source rather than a synthesized citation.
 - If the tool result has zero passages, the assistant says plainly that nothing in the corpus answered
   the question — it does not fill the gap with a plausible-sounding guess.
@@ -93,25 +89,24 @@ returns. That composition step follows the same discipline as every other skill 
   several artifacts before answering), but each call is independently scoped and authorized; no call
   inherits a broader scope from an earlier one in the same conversation.
 
-This mirrors the fail-loud, no-fabrication contract [document-ai.md](document-ai.md) applies to
+This mirrors the clear-failure, no-fabrication rules [document-ai.md](document-ai.md) applies to
 extraction and summarization, and the [CRUD](crud.md) rule that only a structured, tool-returned
 result — never assistant prose — is trusted as fact.
 
 ## Not the target: what the prior implementation got wrong
 
 An earlier iteration of this codebase (`session-container/library.py`, since removed — see
-[Documents and retrieval](../capabilities/documents-retrieval.md)) implemented a single, global search
+[Documents and retrieval](../architecture/capabilities/data.md)) implemented a single, global search
 index shared by every user, authenticated with an admin key rather than managed identity, and
-returning results with no per-actor or per-Engagement filter — any user's query could surface any
-other user's indexed content. That implementation was removed from this codebase for cause. This
+returning results with no per-actor or per-Engagement filter — any user's query could return another
+user's indexed content. That implementation was removed from this codebase for cause. This
 design is not a plan to restore it; every ground rule above exists specifically to close the gap that
 made the prior version unsafe: scope the corpus, check membership on every query, and use managed
 identity instead of a shared key.
 
-## Where the current MVP stands
+## Current implementation
 
 Nothing in this design exists in the current MVP. There is no indexed corpus of any kind, no search
 tool, and no promotion flow from a session file to a durable, retrievable record — Engagement
 artifacts today are a byte store with no reading, indexing, or retrieval capability at all. See
-[../capabilities/documents-retrieval.md](../capabilities/documents-retrieval.md) for the authoritative
-current-state contract and its evidence status.
+[current data architecture](../architecture/capabilities/data.md) for today's file behavior.

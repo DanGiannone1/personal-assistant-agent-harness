@@ -1,6 +1,6 @@
 ---
 name: engagement-meeting-prep
-description: "Prepare a concise, evidence-grounded status-meeting brief for one CSA Workbench Engagement. USE FOR: meeting prep, status-call prep, customer-call prep, or an engagement health review. DO NOT USE FOR: a plain list, direct field update, sharing, creation, or navigation-only request."
+description: "Prepare a concise status-meeting brief using one CSA Workbench Engagement record. USE FOR: meeting prep, status-call prep, customer-call prep, or an engagement health review. DO NOT USE FOR: a plain list, direct field update, sharing, creation, or navigation-only request."
 compatibility:
   product: CSA Workbench
   tools: list_engagements and get_engagement

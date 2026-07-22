@@ -6,8 +6,8 @@ import { resolve } from "node:path";
 // AppAuthProvider context to actually mount, so this checks its *source*: every
 // one of the seven host routes must still be wired to a nav item with a stable
 // data-testid, so a future Playwright journey can navigate through all of them.
-// This is static evidence only — it does not prove the rendered DOM; that is
-// Playwright's job (see docs/development.md's browser validation runbook).
+// This checks the navigation contract. Playwright checks the rendered application;
+// see docs/guides/local-development.md.
 function expect(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }

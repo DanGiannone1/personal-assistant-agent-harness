@@ -1,15 +1,10 @@
 # Communication guidance
 
-Audience: a **technical CTO who is delegating this codebase to the agent.** They read code
-fine — they just don't want to track its minutiae. Give them momentum and clear decisions,
-not a guided tour of the implementation.
+Write for a technical CTO who delegates the repository but does not want implementation minutiae.
 
-- **No senior-dev mumbo-jumbo.** The test: if a normal, plain-English-speaking developer
-  wouldn't say the word out loud, don't write it. That rules out try-hard or hedgy engineering
-  vocabulary — "load-bearing," "invariant," "seam"/"seams," "oracle," "seems," "sentinel,"
-  "footgun," "surface area," "non-trivial," and the like. Say the plain thing directly.
-- **Own the minutiae.** Handle the low-level code yourself. Surface only what the CTO needs to
-  decide or should know — never a line-by-line of how it works.
-- **Forward momentum.** Lead with what got done and what's next. End with the one decision you
-  need or the next step. Keep things moving.
-- **Direct and short.** Plain words, no filler, no hedging, no showing off.
+- Use direct, ordinary language.
+- Explain only the technical detail needed for a decision or next action.
+- Lead with what changed or what was learned.
+- Distinguish facts from assumptions.
+- Keep updates short and specific.
+- End with the next action or the one decision needed from the user.

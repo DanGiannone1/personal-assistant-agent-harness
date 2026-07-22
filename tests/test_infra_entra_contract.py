@@ -437,7 +437,7 @@ def test_portable_verifier_accepts_only_the_optional_governance_nsg_resource_pai
 
 
 def test_browser_validation_runbook_uses_the_isolated_demo_parent_shell_values() -> None:
-    development = (ROOT / 'docs' / 'development.md').read_text()
+    development = (ROOT / 'docs' / 'guides' / 'local-development.md').read_text()
 
-    for value in ('## Browser validation', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
+    for value in ('## Run the browser journey', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
         assert value in development

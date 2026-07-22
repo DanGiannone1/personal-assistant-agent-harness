@@ -1,42 +1,35 @@
 # Agentic Design
 
-> **HUMAN-OWNED GOVERNING SOURCE OF TRUTH**
+> **Human-owned document**
 >
-> Agents must not edit, replace, move, delete, or create a competing version of
-> this file unless the user explicitly authorizes changes to this named file in
-> the current conversation.
+> Agents must not edit, replace, move, delete, or create another file that competes with this one
+> unless the user explicitly approves changes to this named file in the current conversation.
 
-Agents are reasoning systems. Define durable authority, ownership, prohibited
-actions, escalation conditions, and safety limits without replacing judgment
-with brittle scripts or speculative controls.
+Agents make judgments. Give them clear responsibility, limits, prohibited actions, escalation
+conditions, and safety rules without replacing judgment with brittle scripts.
 
 ## Runtime independence
 
-Claude and Codex remain independently launchable and own their native profile,
-tools, permissions, models, skills, and orchestration mechanics. Shared doctrine
-lives only in `docs/governance/`; native files reference it without generating
-or synchronizing one runtime from the other.
+Claude and Codex remain independently launchable and own their native profiles, tools, permissions,
+models, skills, and delegation settings. Shared development rules live only in `docs/governance/`.
+Each runtime links to those rules without generating or synchronizing the other runtime's files.
 
 ## Handoffs and review
 
-Give each worker a bounded objective, ownership or responsibility, scope,
-exclusions, relevant sources, required evidence, and stop conditions. Workers
-provide evidence; the responsible lead or human makes product, architecture,
-risk, and acceptance decisions.
+Give each worker a bounded goal, file ownership or responsibility, scope, exclusions, relevant
+sources, required results, and stop conditions. Workers gather facts or implement assigned changes;
+the responsible lead or human makes product, architecture, risk, and final-approval decisions.
 
-Independent reviewers receive acceptance criteria and evidence, not an
-instruction to trust the author's conclusion. A worker that implements a change
-must not be its accepting reviewer.
+An independent reviewer receives the success criteria and completed results. A worker that writes a
+change cannot be the reviewer who gives final approval.
 
-## Capability boundaries
+## Tool and permission limits
 
-Prefer native permission and tool restrictions for hard safety boundaries, then
-reinforce them in instructions. Treat prompt-only prohibitions as behavioral
-constraints, not enforcement. Verify actual tool exposure and delegation depth
-when agent definitions change.
+Use native tool and permission restrictions for rules that must be enforced, then repeat the intent
+in instructions. A prompt restriction guides behavior but does not enforce a technical boundary.
+When agent definitions change, confirm the tools and delegation depth actually available at runtime.
 
 ## Design check
 
-Before changing agent guidance, confirm one canonical source owns each rule,
-runtime independence remains intact, duplicated doctrine is removed, and the
-change addresses a demonstrated need.
+Before changing agent guidance, confirm that each rule has one shared home, Claude and Codex remain
+independent, repeated instructions have been removed, and the change solves an observed problem.

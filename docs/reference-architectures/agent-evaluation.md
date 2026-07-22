@@ -1,18 +1,8 @@
-# Agent Evaluation Strategy
-
-> **Authority:** Forward-looking evaluation strategy subordinate to the [design](../design.md) and
-> the [Testing Charter](../governance/testing-charter.md). The current release evidence record is
-> owned by [Testing and evals](testing-evals.md); this document does not restate or replace it.
->
-> **Status:** Strategy, not an implemented evaluation program. Most of the method below predates and
-> is unaffected by the personal-workspace/reminder additions; where it references implementation
-> specifics, those have been updated to match the current MVP.
+# Agent evaluation reference architecture
 
 ## What we evaluate (target program)
 
-Everything in this section through the roadmap describes the **target** program; the
-"[Where we are today, honestly](#where-we-are-today-honestly)" section below is the only part that
-describes implemented behavior. Six things, continuously:
+The proposed program measures six things:
 
 1. **Capability** — can the assistant do the jobs users ask of it?
 2. **Trustworthiness** — does what it *says* match what actually *happened*? It must never claim an
@@ -60,7 +50,7 @@ show up.
 | Response | Was the reply accurate, useful, and safe to say? | AI judge |
 | Operational | How long, how many tokens, how many tool calls, what cost? | Measurement |
 
-Four rules keep the layers honest: grade what the assistant produced, not the exact path (the tool
+Four rules keep the layers separate: grade what the assistant produced, not the exact path (the tool
 sequence is recorded and reported but never pass/fail); the judge grades only language and can never
 overturn a code check; code checks never grade wording; and partial credit is kept (a task reports the
 fraction of checks passed, not just pass/fail) except safety tasks, which stay all-or-nothing.
@@ -71,7 +61,7 @@ A task file records a prompt, the required end state (`expectedState`), forbidde
 (`forbiddenActions`), tools a good solution is expected to use for reporting only
 (`referenceActions`), and judge questions. Authoring rules: apply the two-expert test (two people who
 know the product would independently reach the same verdict); give every task a reference solution
-that proves it's solvable; write prompts the way people actually talk, not the way tools are named;
+that shows it is solvable; write prompts the way people actually talk, not the way tools are named;
 test both directions (where a behavior should happen and where it shouldn't); accept legitimate
 alternatives explicitly and consistently across sibling tasks; and derive tasks from the job, not the
 tool list — a task that fails because a capability is missing is kept and reported as product signal.
@@ -87,9 +77,9 @@ tool list — a task that fails because a capability is missing is kept and repo
 
 In these terms, the nine atomic cases plus the three-turn workflow in
 [`tests/evals/`](../../tests/evals/) are a small regression+safety suite, covering both the
-Engagement and the personal-work surfaces. The separate Waza lane evaluates only the
+Engagement and the personal-work pages. The separate Waza check evaluates only the
 `engagement-meeting-prep` skill's routing and read-only tool constraints through Copilot in a
-hermetic laboratory environment — the `tasks`, `calendar`, and `weekly-review` skills have no Waza
+isolated test environment — the `tasks`, `calendar`, and `weekly-review` skills have no Waza
 coverage today. A gold capability suite derived from real CSA use cases does not exist yet.
 
 ## The judge, precisely
@@ -112,23 +102,23 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 | pass@k / pass^k | Chance at least one / all of k tries succeed | Reported |
 | Speed, effort, cost | Time, tool calls, tokens/dollars vs. the reference | Reported; trended |
 
-## Where we are today, honestly
+## Current implementation
 
 - The loopback-only Deep Agents runner has nine atomic cases (seven Engagement, two personal-work)
-  and one three-turn workflow, resets the fixture before each, and grades authoritative state,
+  and one three-turn workflow, resets the fixture before each, and grades saved application state,
   structured events, exact targets/arguments, forbidden tools, and complete model-visible
   product-tool outputs.
 - Four native product skills (`engagement-meeting-prep`, `tasks`, `calendar`, `weekly-review`) are
   versioned and available for progressive disclosure; only `engagement-meeting-prep` is exercised by
   the current versioned workflow.
-- Waza has a hermetic skill-routing lane against the `engagement-meeting-prep` skill only; its
-  pass/fail gate is separate Copilot/laboratory evidence, not Deep Agents product-runtime proof, and
+- Waza has an isolated skill-routing check for the `engagement-meeting-prep` skill only; its
+  pass/fail gate covers Copilot laboratory behavior rather than Deep Agents product behavior, and
   it does not cover the other three skills.
 - There is no durable scorecard history, gold capability task set derived from real use cases,
   repeated-trial orchestration, or calibrated automated judge yet. Judging today, when done, is
   manual review rather than an automated grader.
-- Product-runtime token and cost capture are not implemented; only Waza reports them for its own
-  lane.
+- Product-runtime token and cost capture are not implemented; only the Waza check reports those
+  values.
 
 ## Roadmap
 
@@ -141,10 +131,9 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 | 5. Consistency & comparison | Repeat trials, pass@k/pass^k, side-by-side harness runs | Phases 3–4 |
 | 6. Automated judge + Azure | Calibrated judge, Azure AI Foundry evaluators, Blob upload, Application Insights, a dev Azure eval copy | Phases 1–5 |
 
-## Related authority
+## Related documents
 
-- [Design](../design.md)
+- [Design](../product/overview.md)
 - [Testing Charter](../governance/testing-charter.md)
-- [Testing and evals](testing-evals.md)
-- [Evals MVP reference architecture](../evals-reference-architecture.md)
-- [Agent harness](agent-harness.md)
+- [Demo guide](../guides/demo.md)
+- [Current assistant architecture](../architecture/capabilities/assistant.md)
