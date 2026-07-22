@@ -365,16 +365,18 @@ def verify_group(groups, zone, records):
     if len(groups) != 1 or groups[0].get('name') != 'default' or groups[0].get('provisioningState') != 'Succeeded': raise SystemExit(f'private DNS zone group drifted: {zone}')
     configs = groups[0].get('privateDnsZoneConfigs', [])
     if len(configs) != 1 or configs[0].get('privateDnsZoneId', '').lower() != expected_zone_id or not isinstance(configs[0].get('recordSets'), list) or {record.get('recordSetName') for record in configs[0]['recordSets']} != records: raise SystemExit(f'private DNS zone group wiring drifted: {zone}')
-    return {record['recordSetName']: record.get('ipAddresses') for record in configs[0]['recordSets']}
+    result = {record['recordSetName']: record.get('ipAddresses') for record in configs[0]['recordSets']}
+    if any(not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str) or not values[0] for values in result.values()): raise SystemExit(f'private DNS zone group address drifted: {zone}')
+    return result
 def verify_records(records, expected, zone):
     result = {record.get('name'): record.get('aRecords') for record in records}
-    if set(result) != expected or any(not isinstance(values, list) or len(values) != 1 for values in result.values()): raise SystemExit(f'private DNS A-record inventory drifted: {zone}')
+    if set(result) != expected or any(not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict) or not isinstance(values[0].get('ipv4Address'), str) or not values[0]['ipv4Address'] for values in result.values()): raise SystemExit(f'private DNS A-record inventory drifted: {zone}')
     return {name: [entry.get('ipv4Address') for entry in values] for name, values in result.items()}
 verify_link(cosmos_links, os.environ['COSMOS_PRIVATE_DNS_ZONE']); verify_link(storage_links, os.environ['STORAGE_PRIVATE_DNS_ZONE'])
 cosmos_names = {os.environ['COSMOS_ACCOUNT_NAME'], f'{os.environ["COSMOS_ACCOUNT_NAME"]}-{os.environ["LOCATION"]}'}
 storage_names = {os.environ['STORAGE_ACCOUNT_NAME']}
 cosmos_group = verify_group(cosmos_groups, os.environ['COSMOS_PRIVATE_DNS_ZONE'], cosmos_names); storage_group = verify_group(storage_groups, os.environ['STORAGE_PRIVATE_DNS_ZONE'], storage_names)
-if {name: [entry.get('ipAddress') for entry in values] for name, values in cosmos_group.items()} != verify_records(cosmos_records, cosmos_names, os.environ['COSMOS_PRIVATE_DNS_ZONE']) or {name: [entry.get('ipAddress') for entry in values] for name, values in storage_group.items()} != verify_records(storage_records, storage_names, os.environ['STORAGE_PRIVATE_DNS_ZONE']): raise SystemExit('private DNS A-record wiring drifted')
+if cosmos_group != verify_records(cosmos_records, cosmos_names, os.environ['COSMOS_PRIVATE_DNS_ZONE']) or storage_group != verify_records(storage_records, storage_names, os.environ['STORAGE_PRIVATE_DNS_ZONE']): raise SystemExit('private DNS A-record wiring drifted')
 expected_resources = {
   ('microsoft.app/managedenvironments', os.environ['ENVIRONMENT_NAME'].lower()), ('microsoft.app/containerapps', os.environ['FRONTEND_APP_NAME'].lower()), ('microsoft.app/containerapps', os.environ['API_APP_NAME'].lower()), ('microsoft.app/containerapps', os.environ['RUNTIME_APP_NAME'].lower()),
   ('microsoft.managedidentity/userassignedidentities', os.environ['FRONTEND_IDENTITY_NAME'].lower()), ('microsoft.managedidentity/userassignedidentities', os.environ['API_IDENTITY_NAME'].lower()), ('microsoft.managedidentity/userassignedidentities', os.environ['RUNTIME_IDENTITY_NAME'].lower()),
