@@ -298,7 +298,30 @@ for app in apps:
     ingress = p.get('configuration', {}).get('ingress', {})
     expected_identity = {'csa-workbench-frontend': os.environ['FRONTEND_IDENTITY_NAME'], 'csa-workbench-api': os.environ['API_IDENTITY_NAME'], 'csa-workbench-runtime': os.environ['RUNTIME_IDENTITY_NAME']}[repository]
     expected_identity_id = next(identity.get('id') for identity in identities if identity.get('name') == expected_identity)
-    if p.get('provisioningState') != 'Succeeded' or p.get('workloadProfileName') != 'Consumption' or ingress.get('external') is not external or ingress.get('targetPort') != port or ingress.get('transport', '').lower() != 'auto' or template.get('scale') != {'minReplicas': 0, 'maxReplicas': 1} or len(containers) != 1 or containers[0].get('image', '').split('/')[-1] != f'{repository}:{os.environ["SHA"]}' or set(app.get('identity', {}).get('userAssignedIdentities', {})) != {expected_identity_id} or p.get('configuration', {}).get('registries') != [{'server': f'{os.environ["ACR_NAME"]}.azurecr.io', 'identity': expected_identity_id}]: raise SystemExit('Container App identity, registry, or profile drifted')
+    scale = template.get('scale', {})
+    scale_valid = (
+        isinstance(scale, dict)
+        and set(scale) <= {'minReplicas', 'maxReplicas', 'cooldownPeriod', 'pollingInterval', 'rules'}
+        and type(scale.get('minReplicas')) is int and scale.get('minReplicas') == 0
+        and type(scale.get('maxReplicas')) is int and scale.get('maxReplicas') == 1
+        and scale.get('cooldownPeriod') in (None, 300)
+        and scale.get('pollingInterval') in (None, 30)
+        and scale.get('rules') is None
+    )
+    registries = p.get('configuration', {}).get('registries')
+    registry_valid = isinstance(registries, list) and len(registries) == 1 and isinstance(registries[0], dict)
+    if registry_valid:
+        registry = registries[0]
+        registry_valid = (
+            set(registry) <= {'server', 'identity', 'username', 'passwordSecretRef'}
+            and registry.get('server') == f'{os.environ["ACR_NAME"]}.azurecr.io'
+            and registry.get('identity', '').lower() == expected_identity_id.lower()
+            and registry.get('username') in (None, '')
+            and registry.get('passwordSecretRef') in (None, '')
+        )
+    identity_assignments = app.get('identity', {}).get('userAssignedIdentities')
+    assigned_identities = {identity_id.lower() for identity_id in identity_assignments} if isinstance(identity_assignments, dict) and all(isinstance(identity_id, str) for identity_id in identity_assignments) else set()
+    if p.get('provisioningState') != 'Succeeded' or p.get('workloadProfileName') != 'Consumption' or ingress.get('external') is not external or ingress.get('targetPort') != port or ingress.get('transport', '').lower() != 'auto' or not scale_valid or len(containers) != 1 or containers[0].get('image', '').split('/')[-1] != f'{repository}:{os.environ["SHA"]}' or not isinstance(identity_assignments, dict) or assigned_identities != {expected_identity_id.lower()} or not registry_valid: raise SystemExit('Container App identity, registry, or profile drifted')
     if app['name'] == os.environ['RUNTIME_APP_NAME']:
         runtime_env = {item.get('name'): item.get('value') for item in containers[0].get('env', []) if isinstance(item, dict)}
         endpoint = aoai.get('properties', {}).get('endpoint')

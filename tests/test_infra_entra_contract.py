@@ -193,22 +193,26 @@ def test_plan_requires_explicit_inputs_and_never_mutates(tmp_path: Path) -> None
 
 
 def test_deployment_guidance_allows_an_explicitly_authorized_cli_agent_without_weakening_confirmation() -> None:
-    deployment = (ROOT / 'docs' / 'deployment.md').read_text()
-    agent_setup = (ROOT / 'docs' / 'coding-agent-setup.md').read_text()
+    deployment = (ROOT / 'docs' / 'guides' / 'deployment.md').read_text()
+    agent_setup = (ROOT / 'docs' / 'guides' / 'coding-agents.md').read_text()
+    deployment_text = ' '.join(deployment.split())
+    agent_setup_text = ' '.join(agent_setup.split())
 
-    assert 'the agent may run the exact `apply --confirm ...` command emitted by that plan' in deployment
-    assert 'a plan-only request never authorizes apply' in deployment
-    assert 'stale\nconfirmation or changed target/input fails closed' in deployment
-    assert 'requires a current issue containing the objective, target, owner, risk, acceptance criteria' in deployment
-    assert 'recovery deletions, changes the requested target or identity/model profile' in deployment
-    assert 'using these exact model inputs:' in deployment
-    assert 'MVP_ALLOW_REMOTE=1' in deployment and 'evidence/mvp/azure-demo/' in deployment
+    assert 'Run apply only when the user requested deployment and the current plan matches that request' in deployment_text
+    assert 'A plan-only request never permits deployment' in agent_setup_text
+    assert 'Apply recomputes and checks the plan before changing Azure' in deployment_text
+    assert 'Confirm the approved work record required by the' in deployment_text
+    assert 'new deletion, target, security choice, or cost choice' in deployment_text
+    assert "export MODEL_DEPLOYMENT_NAME='your-model-deployment-name'" in deployment
+    assert "export IDENTITY_MODE='entra'" in deployment
+    assert 'Demo mode also requires `DEMO_PASSWORD`' in deployment_text
+    assert 'MVP_ALLOW_REMOTE=1' in deployment
     assert 'az account get-access-token --scope "api://${API_CLIENT_ID}/access_as_user"' in deployment
     assert '"https://${API_FQDN}/auth/me"' in deployment
     assert 'value.get("identity") == "entra"' in deployment
-    assert 'Any other unexpected resource fails the\ninventory check' in deployment
+    assert 'An unexpected application-owned resource causes the deployment check to fail' in deployment_text
     assert 'Defender-for-Storage Event Grid topic' not in deployment
-    assert 'the agent may run `apply` with the exact target-bound' in agent_setup
+    assert 'agent may use the exact confirmation printed by that plan' in agent_setup_text
     assert 'The agent must then stop' not in agent_setup
     assert 'an agent must never run apply' not in agent_setup
 
@@ -494,6 +498,30 @@ def test_portable_verifier_accepts_complete_fixture_and_rejects_wiring_roles_and
         changed={**env,key:mutate(env[key])}; assert subprocess.run([sys.executable,'-c',code],env=changed,text=True,capture_output=True).returncode != 0
 
 
+def test_portable_verifier_normalizes_only_known_azure_container_app_defaults() -> None:
+    code, env = _verifier_fixture()
+    apps = json.loads(env['APPS'])
+    for app in apps:
+        app['properties']['template']['scale'].update({'cooldownPeriod': 300, 'pollingInterval': 30, 'rules': None})
+        registry = app['properties']['configuration']['registries'][0]
+        registry.update({'username': '', 'passwordSecretRef': ''})
+        registry['identity'] = registry['identity'].replace('/resourceGroups/', '/resourcegroups/')
+        assigned = app['identity']['userAssignedIdentities']
+        app['identity']['userAssignedIdentities'] = {key.replace('/resourceGroups/', '/resourcegroups/'): value for key, value in assigned.items()}
+    enriched = {**env, 'APPS': json.dumps(apps)}
+
+    assert subprocess.run([sys.executable, '-c', code], env=enriched, text=True, capture_output=True).returncode == 0
+    for mutate in (
+        lambda values: values[0]['properties']['template']['scale'].__setitem__('cooldownPeriod', 301),
+        lambda values: values[0]['properties']['configuration']['registries'][0].__setitem__('username', 'local-user'),
+        lambda values: values[0]['properties']['template']['scale'].__setitem__('unexpected', False),
+        lambda values: values[0]['properties']['template']['scale'].__setitem__('minReplicas', False),
+        lambda values: values[0]['identity'].__setitem__('userAssignedIdentities', list(values[0]['identity']['userAssignedIdentities'])),
+    ):
+        changed = json.loads(json.dumps(apps)); mutate(changed)
+        assert subprocess.run([sys.executable, '-c', code], env={**env, 'APPS': json.dumps(changed)}, text=True, capture_output=True).returncode != 0
+
+
 def test_portable_verifier_accepts_only_the_optional_governance_nsg_resource_pair() -> None:
     code, env = _verifier_fixture()
     vnet = 'csa-wb-mvp1-vnet'
@@ -518,9 +546,9 @@ def test_portable_verifier_accepts_only_the_optional_governance_nsg_resource_pai
 
 
 def test_browser_validation_runbook_uses_the_isolated_demo_parent_shell_values() -> None:
-    development = (ROOT / 'docs' / 'development.md').read_text()
+    development = (ROOT / 'docs' / 'guides' / 'local-development.md').read_text()
 
-    for value in ('## Browser validation', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
+    for value in ('## Run the browser journey', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
         assert value in development
 
 
