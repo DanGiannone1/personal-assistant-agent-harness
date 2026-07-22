@@ -1,41 +1,38 @@
 # Engineering Operating Standards
 
-> **HUMAN-OWNED GOVERNING SOURCE OF TRUTH**
+> **Human-owned document**
 >
-> Agents must not edit, replace, move, delete, or create a competing version of
-> this file unless the user explicitly authorizes changes to this named file in
-> the current conversation.
+> Agents must not edit, replace, move, delete, or create another file that competes with this one
+> unless the user explicitly approves changes to this named file in the current conversation.
 
-The Master SDLC controls lifecycle and approval. Runtime instructions control
-native tools and permissions. These standards govern hands-on work inside those
-bounds.
+The Master SDLC controls approval and review. Runtime instructions control tools and permissions.
+These standards guide work inside those limits.
 
-## Work from evidence
+## Understand before changing
 
-Verify scope, applicable instructions, affected code and documentation,
-existing work, interfaces, and expected behavior before acting. Support factual
-claims with direct evidence and mark unsupported claims `UNVERIFIED`. When an
-approach repeatedly fails, stop and reconsider it.
+Confirm the requested scope, repository instructions, affected source and documentation, existing
+worktree changes, interfaces, and expected behavior. Support factual statements with direct source
+references. Say clearly when something has not been checked.
 
-## Keep changes safe and small
+If the same approach repeatedly fails, stop and reconsider it.
 
-Follow local architecture and nearby patterns. Prefer the smallest complete
-change. Do not add speculative layers, silent fallbacks, compatibility shims,
-or unrelated cleanup. Preserve concurrent and pre-existing work.
+## Keep changes safe and focused
 
-## Respect authority and stop conditions
+Follow the current architecture and nearby code patterns. Prefer the smallest complete change. Do
+not add speculative abstractions, silent fallbacks, compatibility code without a current need, or
+unrelated cleanup. Preserve existing and concurrent work.
 
-Act only inside approved scope and assigned permissions. Stop when intent is
-ambiguous, risk acceptance or a product decision is required, an architectural
-boundary changes, or the work affects data, security, permissions, public
-contracts, delivery, or external systems beyond approval.
+## Respect decisions and limits
 
-Do not perform unauthorized repository, Git-hosting, release, data, or external
-mutations. Read-only Git inspection is permitted when it is relevant evidence.
+Work only within the approved scope and available permissions. Stop when the requested outcome is
+ambiguous, a product or architecture decision is missing, or the work would change data, security,
+permissions, public contracts, delivery, or external systems beyond the approval already given.
 
-## Verify and report
+Do not make unapproved repository, Git-hosting, release, data, or external-system changes. Read-only
+Git inspection is allowed when it helps answer the current question.
 
-Match verification to changed behavior and risk. Inspect the final change
-against acceptance criteria and report files changed, evidence gathered, checks
-performed, failures, remaining risk, and unverified items. Confidence or
-completion language is not proof.
+## Check and report
+
+Choose checks that match the changed behavior and the cost of an error. Review the final change
+against every success criterion. Report files changed, checks run, failures, remaining risks, and
+anything that still needs confirmation.

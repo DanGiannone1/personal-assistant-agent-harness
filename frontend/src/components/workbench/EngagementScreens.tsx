@@ -298,7 +298,7 @@ export function EngagementsList({
   );
 }
 
-function EngagementPortfolioRow({
+export function EngagementPortfolioRow({
   engagement,
   userId,
   onNavigate,

@@ -43,6 +43,7 @@ interface State {
   files: AppFile[];
   appState: AppState | null;
   viewRoute: string;
+  viewRouteRevision: number;
   lastBundle: ContextBundle | null; // what personalized the most recent turn (inspector)
   sessionError: string | null;
   workspaceStale: string | null;
@@ -101,7 +102,7 @@ function reducer(state: State, action: Action): State {
     case "RESET_FOR_NEW_CHAT":
       return {
         ...state, messages: [], isStreaming: false, sessionId: null, currentRunId: null,
-        files: [], appState: null, viewRoute: "/engagements", sessionError: null, workspaceStale: null,
+        files: [], appState: null, viewRoute: "/home", sessionError: null, workspaceStale: null,
       };
     case "USER_SEND":
       return {
@@ -238,7 +239,7 @@ function reducer(state: State, action: Action): State {
       return { ...state, files: [...stillPending, ...action.files] };
     }
     case "APP_STATE_LOADED": {
-      const serverRoute = normalizeHostRoute(action.appState.currentRoute || "/engagements");
+      const serverRoute = normalizeHostRoute(action.appState.currentRoute || "/home");
       return {
         ...state,
         appState: action.appState,
@@ -247,7 +248,11 @@ function reducer(state: State, action: Action): State {
         viewRoute: action.follow ? serverRoute : normalizeHostRoute(state.viewRoute),
       };
     }
-    case "SET_VIEW_ROUTE": return { ...state, viewRoute: action.route };
+    case "SET_VIEW_ROUTE": return {
+      ...state,
+      viewRoute: action.route,
+      viewRouteRevision: state.viewRouteRevision + 1,
+    };
     case "BUNDLE_USED": return { ...state, lastBundle: action.bundle };
     default: return state;
   }
@@ -255,7 +260,7 @@ function reducer(state: State, action: Action): State {
 
 const initialState: State = {
   messages: [], isStreaming: false, sessionId: null, isInitializing: true,
-  currentRunId: null, files: [], appState: null, viewRoute: "/engagements",
+  currentRunId: null, files: [], appState: null, viewRoute: "/home", viewRouteRevision: 0,
   lastBundle: null, sessionError: null, workspaceStale: null,
 };
 
@@ -290,7 +295,7 @@ export function useAgentSession() {
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const streamingRef = useRef(false);
-  const viewRouteRef = useRef<string>("/engagements");
+  const viewRouteRef = useRef<string>("/home");
   const appStateRef = useRef<AppState | null>(null);
   const runStartRef = useRef<number>(0);
   const stepCountRef = useRef<number>(0);

@@ -1,9 +1,5 @@
 # CRUD (target design)
 
-> **Authority:** Target design. Not a description of current behavior — [../design.md](../design.md)
-> owns the current boundary. See "Where the current MVP stands" below for the honest gap to what is
-> implemented today.
-
 ## The simple version
 
 The user should be able to create, update, or delete something without first finding the right
@@ -96,7 +92,7 @@ explicit scope or stable ID in the turn
   > personal/default scope
 ```
 
-These are resolution hints, not authority. The service first generates candidates from resources the
+These are selection hints, not permission grants. The service first generates candidates from resources the
 authenticated actor may access, then uses context to rank that permitted set.
 
 Rules by operation:
@@ -258,7 +254,7 @@ The backend, not the model, decides whether a mutation may commit.
 - Confirmation re-runs authorization, policy, and version checks before commit.
 - Every policy decision and committed action writes an audit entry.
 
-A boolean such as `confirmed=true` supplied by an agent is not proof of user approval.
+A Boolean such as `confirmed=true` supplied by an agent is not user approval.
 
 ## Navigate after completion
 
@@ -267,7 +263,7 @@ The order is deliberate:
 1. Commit the record and audit.
 2. Return `status=committed` with a grounded canonical destination.
 3. Emit the structured tool result through AG-UI.
-4. Invalidate and refetch authoritative app state.
+4. Invalidate and reload saved application data.
 5. Apply the returned route effect through the client router.
 6. Record the resulting navigation event for future context.
 
@@ -289,19 +285,19 @@ The LangGraph Deep Agents harness should consume typed tools backed by the appli
   the current route.
 - Forward structured outcomes and route effects as AG-UI events.
 - Keep the LangGraph checkpointer for conversation continuity, not durable application state or
-  approval evidence.
+  approval results.
 
 Copilot and future harnesses use the same shared service through their own tool adapters. Harness
 parity becomes a property of shared execution rather than duplicated code.
 
-## Where the current MVP stands
+## Current implementation
 
 The current MVP already implements meaningful pieces of this design for Engagement and
 personal-workspace operations:
 
 - One shared application service per domain (`workbench_core.EngagementService`,
-  `workbench_core.PersonalWorkspaceService`) backs both REST and both agent harnesses — this design's
-  core rule, already true for the operations both surfaces expose.
+  `workbench_core.PersonalWorkspaceService`) backs REST and both agent harnesses — this design's core
+  rule, already true wherever those callers expose the same operation.
 - ETag-safe, retrying, read-modify-write mutation backs every Engagement and personal-workspace write,
   and role/ownership authorization is rechecked on every retry.
 - Outcomes are structured (`succeeded`/`resolved`, `committed`, `noop`, `invalid`, `not_found`,
@@ -318,10 +314,9 @@ What this design adds beyond today:
 - Canonical post-commit navigation destinations on CRUD results — today only the `navigate` tool
   itself carries a validated destination; Engagement and personal-workspace commit outcomes do not.
 - Assistant coverage of Engagement tasks, conventions, artifacts, and member removal — these remain
-  manual-only; see [Agent harness](../capabilities/agent-harness.md#model-visible-tools).
+  manual-only; see [current assistant architecture](../architecture/capabilities/assistant.md).
 
-See [../capabilities/crud.md](../capabilities/crud.md) for the authoritative current-state contract
-for Engagement records.
+See [current data architecture](../architecture/capabilities/data.md) for Engagement records.
 
 ## Architecture checklist
 
@@ -331,11 +326,11 @@ for Engagement records.
 - [ ] Creates report their chosen scope; updates/deletes require a unique target.
 - [ ] REST and the assistant tool layer delegate to one application service with one validation
       policy.
-- [ ] Every mutation is idempotent, ETag-safe, retry-safe, and fail-loud.
+- [ ] Every mutation is idempotent, ETag-safe, safe to retry, and returns a clear conflict or failure.
 - [ ] Authorization and approval are rechecked inside retries.
 - [ ] Destructive operations require a backend-verifiable policy or confirmation token.
-- [ ] Outcomes are structured and transport-independent.
+- [ ] Outcomes keep the same meaning in HTTP responses and assistant events.
 - [ ] Only `committed` carries a destination and triggers navigation.
-- [ ] The UI re-reads authoritative state and never renders from model claims.
+- [ ] The UI reloads saved data and never treats model claims as saved results.
 - [ ] Deep Agents and Copilot call the same shared application service through their own tool
       adapters.

@@ -1,74 +1,64 @@
 # Master SDLC
 
-> **HUMAN-OWNED GOVERNING SOURCE OF TRUTH**
+> **Human-owned document**
 >
-> Agents must not edit, replace, move, delete, or create a competing version of
-> this file unless the user explicitly authorizes changes to this named file in
-> the current conversation.
+> Agents must not edit, replace, move, delete, or create another file that competes with this one
+> unless the user explicitly approves changes to this named file in the current conversation.
 
-This lifecycle governs tracked repository work. When an issue exists, it is the
-source of truth for scope, approval, evidence, and current state.
+This process applies to tracked repository work. When an issue exists, it records the agreed scope,
+approval, progress, and completion state.
 
-## 1. Intake
+## 1. Define the work
 
-Create or identify an issue before implementing product behavior, defects, data
-changes, delivery work, external-system changes, or material operational or
-security changes. Record the objective, acceptance criteria, scope, owner,
-risk, and known constraints.
+Create or identify an issue before changing product behavior, stored data, deployment, security,
+permissions, or external systems. Record the goal, success criteria, scope, owner, risks, and known
+constraints.
 
-Read-only intake and triage may improve proposed work without approving or
-starting implementation.
+Read-only investigation may improve the proposed work without starting implementation.
 
-Internal agent configuration, prompts, skills, and process documentation may be
-issue-free only when the user explicitly approves that named scope in the
-current conversation. This exception never covers application behavior, data,
-delivery, external systems, or security changes.
+Internal agent settings, prompts, skills, and process documents may proceed without an issue only
+when the user explicitly approves that named scope in the current conversation.
 
-## 2. Investigation and approval
+This exception does not cover product behavior, stored data, deployment, external systems, security,
+or permission changes.
 
-Investigate read-only first. Record the proposed approach, affected areas,
-risks, verification plan, and unresolved decisions. Implementation begins only
-after the repository's responsible human approves that record. For tracked
-work, preserve the approval in the issue; for the narrow internal-governance
-exception, the current conversation is the record.
+## 2. Investigate and obtain approval
 
-Return for fresh approval if evidence materially changes scope, behavior,
-architecture, or risk.
+Inspect the repository before editing. Record the proposed approach, affected areas, risks, planned
+checks, and unresolved decisions. Implementation starts only after the responsible human approves
+that record.
 
-## 3. Isolated implementation
+Ask for fresh approval if investigation materially changes the agreed behavior, architecture, risk,
+or scope.
 
-Keep mutating work serial in the primary worktree. Parallel workers may be
-read-only. When parallel mutation is necessary, use separate worktrees with
-non-overlapping ownership and an explicit integration plan. Never absorb,
-overwrite, or discard unrelated worktree changes.
+## 3. Implement safely
 
-The author performs static self-review but does not accept their own work.
+Keep file-changing work serial in the primary worktree. Read-only workers may work in parallel. If
+parallel edits are necessary, use separate worktrees with non-overlapping file ownership and a clear
+integration plan.
 
-## 4. Independent review and verification
+Preserve unrelated work. The author reviews their own changes but does not give final approval.
 
-An independent reviewer evaluates every acceptance criterion against the final
-change and identifies what the evidence could still miss. Review depth and
-verification strength scale with risk, but independent review is not optional.
-Dynamic verification proves behavior when an executable surface exists; static
-inspection alone does not prove runtime behavior.
+## 4. Independent review and checks
 
-Record criterion-level evidence, failures, and unresolved gaps before
-integration.
+A reviewer who did not write the change evaluates every success criterion against the final files.
+The reviewer also identifies what the completed checks might have missed. Run the application when
+the changed behavior can be exercised; reading source alone is not enough for runtime behavior.
 
-## 5. Integration, release, and closure
+Record results, failures, and unresolved gaps before integration.
 
-An authorized integrator combines accepted work under the repository's branch
-policy, verifies the integrated result, and uses the approved pull-request and
-release paths. Do not switch the primary branch, rewrite protected history,
-force an update, or mutate Git hosting without explicit authority.
+## 5. Integrate and close
 
-Close tracked work only after its acceptance criteria, required evidence, and
-delivery state are complete.
+An authorized integrator combines accepted work under the repository's branch rules, checks the
+combined result, and follows the approved pull-request and release process. Do not switch the primary
+branch, rewrite protected history, force an update, or change Git hosting without explicit approval.
+
+Close the work only after the success criteria, required checks, and delivery state are complete.
 
 ## Minimum work record
 
-- objective, acceptance criteria, scope, and owner;
-- approach, affected areas, risks, and verification plan;
-- explicit implementation approval;
-- implementation and independent-review evidence; and
-- integration or release state, next action, and blockers.
+- goal, success criteria, scope, and owner;
+- approach, affected areas, risks, and planned checks;
+- implementation approval;
+- implementation and independent-review results; and
+- integration state, next action, and blockers.

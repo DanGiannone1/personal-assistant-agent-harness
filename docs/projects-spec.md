@@ -2,4 +2,5 @@
 
 > **Authority:** Compatibility pointer only; it defines no product or architecture rule.
 
-The current shared entity is an Engagement. Use [design.md](design.md) and [requirements.md](requirements.md).
+The shared entity is now an Engagement. Use the [product overview](product/overview.md) and
+[architecture overview](architecture/README.md).

@@ -1,8 +1,8 @@
 # Context (target design)
 
-> **Authority:** Target design. Not a description of current behavior — [../design.md](../design.md)
-> owns the current boundary. See "Where the current MVP stands" below for the honest gap to what is
-> implemented today.
+> **Authority:** Target design. Not a description of current behavior —
+> [../product/overview.md](../product/overview.md) owns the current boundary. See "Where the current
+> MVP stands" below for the honest gap to what is implemented today.
 
 ## The simple version
 
@@ -17,11 +17,86 @@ It includes simple things such as:
 - Rules that apply to the current Engagement
 - Fresh facts such as due dates, blocked work, and permissions
 
-At the start of each request, the app gathers the relevant pieces. It uses them to personalize quick
-links, understand requests such as "update this task," choose sensible defaults, and shape the
-assistant's response. The user can open **What I used** to see exactly which pieces mattered.
+When a session starts, the app composes the relevant pieces into one small bundle and hands it to the
+assistant. It uses them to personalize quick links, understand requests such as "update this task,"
+choose sensible defaults, and shape the assistant's response. The user can open **What I used** to see
+exactly which pieces mattered.
 
 Context should reduce repetition without becoming hidden or surprising.
+
+## Platform-level context: the opening bundle
+
+The failure this design targets is friction, not wrong answers. When an assistant makes a person pick
+several menus before it can do or find anything, nobody uses it. Handing the app context it already
+has is its own kind of failure, on par with an error — and in a large, mature product it is the more
+common one.
+
+Platform-level context is the fix: one small bundle the app composes **once, when a session starts**
+(login or first message), so a person lands in their work instead of navigating to it. It answers
+three questions before the user types anything:
+
+- **Who are you** — role, tone, output preferences.
+- **What matters now** — the small set of things that deserve attention today.
+- **Where were you** — the Engagement and place you were last working.
+
+The bundle is deliberately cheap and small: summaries and pointers, never record dumps. It never
+decides access — every action still re-reads live state and re-checks permission when it runs.
+
+### Two ways context reaches the assistant
+
+Everything in the opening bundle arrives one of two ways:
+
+- **Injected** — stored, owned, legible values written into the assistant's system context at session
+  start: persona and saved workspace memory.
+- **Live-queried** — small facts computed from current records at session start: the "what matters
+  now" summaries (due, overdue, blocked, most-active Engagement) and the last place you were.
+
+Deep sources — full documents, enterprise search, reference-knowledge retrieval — are **not** in the
+bundle. They are fetched on demand by permissioned tools during a conversation, only when the
+assistant actually needs them, and they are out of MVP scope regardless (retrieval is a non-goal; see
+[../product/overview.md](../product/overview.md)). Keeping them out of the opening is what keeps login
+fast and keeps us from rebuilding the bloated surface this design replaces.
+
+### The context classes
+
+The same discipline applies to every class: name where it is stored or grounded, how it reaches the
+assistant, and who owns it. Six classes describe the whole platform; three are in MVP scope and three
+are named but deferred.
+
+| Class | What it holds | Delivery | Stored vs live | MVP |
+|---|---|---|---|---|
+| Persona | Role, tone, output preferences, language | Injected | Stored, user-editable | In scope |
+| Workspace memory | Confirmed preferences and decisions; Engagement conventions | Injected | Stored, explicit confirm | Partial — conventions yes, free memory no |
+| Live grounding / "what matters now" | Due, overdue, blocked, most-active Engagement, where you were | Live-queried | Live, never stored | To build |
+| Documents | Files attached to an Engagement | Tool fetch on demand | Content live; pointers only | Deferred |
+| Connected signals | Mail/calendar-style signals from a connected account | Tool fetch on demand | Live, consent-gated | Deferred |
+| Reference knowledge | Shared, governed knowledge base | Tool fetch on demand | Retrieval index | Deferred |
+
+The first three are the opening bundle. The last three sit behind tools and outside MVP scope; they
+are listed so the shape is complete, not because the product builds them now. A finer-grained
+storage-and-delivery breakdown of these classes is in the class table further below.
+
+## What matters now (to be defined)
+
+The hardest and most valuable part of the bundle is the "what matters now" list, and its ranking
+model is **not yet decided** — that is the next piece of work, deliberately left open here. What is
+already settled are the guardrails any answer must honor:
+
+- **Rank by recency first, then urgency, then pins.** Start simple — most-recent and most-active work
+  — and grow toward priority signals (due soon, overdue, blocked). The first version can be
+  last-visited only.
+- **Relevant items over volume.** Never surface raw change counts. A big number tracks how much access
+  someone has, not what they should do.
+- **Never invent an item.** If nothing is pressing, the list is short or empty. Missing stays missing;
+  the app does not manufacture urgency.
+- **Small.** A handful of items, each a short summary plus a pointer, not a record dump.
+- **Carry "where you were" across login.** A returning user lands back in the Engagement and place
+  they left, with a way to switch — not on a generic home screen.
+- **Explainable.** Every item that appears is in `CONTEXT_APPLIED`, so "What I used" can show why it
+  was chosen.
+
+Deciding the ranking itself — the exact signals, their weights, and how far to lean on the model — is
+the open question this section holds a place for.
 
 ## Why context matters
 
@@ -37,12 +112,12 @@ Context should reduce repetition without becoming hidden or surprising.
 
 1. The backend confirms the signed-in actor and current screen.
 2. It gathers relevant saved preferences, working history, Engagement conventions, and fresh app data.
-3. It creates one context snapshot for the request.
+3. It creates one context snapshot when the session starts.
 4. The UI, assistant, and backend tools each receive only the part they need.
 5. Tools still check current data and permissions before they act.
 6. The app records a safe explanation for **What I used**.
 
-The technical name for that per-request snapshot is `TurnContext`. Different consumers receive
+The technical name for that snapshot is `SessionContext`. Different consumers receive
 different views of it so private backend information is never placed in the model prompt.
 
 ## Rules that keep context trustworthy
@@ -57,14 +132,14 @@ different views of it so private backend information is never placed in the mode
    conventions, pins, working context, and standing approvals.
 5. **No silent memory.** An agent may propose durable memory, but only explicit confirmation stores
    it.
-6. **One turn, one explainable snapshot.** Every applied item records source, scope, reason,
-   freshness, and precedence. The inspector renders that actual snapshot.
+6. **One snapshot, fully explainable.** Every applied item records source, scope, reason, freshness,
+   and precedence. The inspector renders that actual snapshot.
 7. **Minimal by default.** Inject small summaries and pointers. Fetch records and document content
    lazily through permissioned tools.
 8. **Conversation is not durable context.** A LangGraph checkpointer preserves thread continuity; it
    is not the source of persona, workspace memory, permissions, or live application facts.
 
-## The canonical `TurnContext`
+## The canonical `SessionContext`
 
 The logical schema is:
 
@@ -213,32 +288,37 @@ explicit stable scope or resource in the turn
 Scope resolution narrows interpretation but does not grant membership. CRUD still fails on an
 ambiguous update/delete target; navigation may decisively pick from viable permitted destinations.
 
-## Per-turn composition
+## Composition at session start
 
-The context composer runs at the authenticated session boundary, not in the browser and not inside
-the model prompt:
+The context composer runs once, when the session opens, at the authenticated session boundary — not
+in the browser and not inside the model prompt:
 
 1. **Authenticate.** Bind the actor and verify session ownership.
-2. **Validate UI context.** Resolve the client-provided destination ID or route against the actor's
-   live authorized destination catalog.
+2. **Validate UI context.** Resolve the actor's landing route (or last place) against their live
+   authorized destination catalog.
 3. **Read durable context.** Load persona, confirmed memories, pins, working context, and standing
    approval metadata.
 4. **Read applicable scope.** Load Engagement membership and conventions for candidate scopes.
-5. **Compute live grounding.** Query current versions and derive small salience summaries such as
-   overdue or blocked counts.
+5. **Compute live grounding.** Query current versions and derive the small "what matters now"
+   summaries such as overdue or blocked counts.
 6. **Select relevant context.** Apply scope, precedence, freshness, and token/field budgets.
 7. **Build projections.** Produce prompt, tool, UI, and inspector views from the same immutable
    snapshot.
-8. **Emit trace.** After `RUN_STARTED`, emit `CONTEXT_APPLIED` before the first model or tool event.
+8. **Emit trace.** After `RUN_STARTED` for the session's first turn, emit `CONTEXT_APPLIED` before
+   the first model or tool event.
 9. **Execute.** The harness and tools reference `contextId`; tools reauthorize and read live state at
    call time.
 
-A context bundle is immutable for explainability. Long turns may encounter changed state, so tool
-results are authoritative and can report that the snapshot became stale. The next turn recomposes.
+The bundle is composed once and reused for the life of the session. It is immutable for
+explainability. Because every tool re-reads live state, an action never relies on a stale bundle; a
+new session — or an explicit refresh — recomposes. A small per-turn UI hint (the current view) may
+still ride along with a message so navigation and CRUD can resolve scope, without recomposing the
+whole bundle.
 
 ## `CONTEXT_APPLIED` event
 
-The event makes the inspector evidentiary rather than decorative:
+The event is emitted once, when the opening bundle is composed at session start. It makes the
+inspector evidentiary rather than decorative:
 
 ```json
 {
@@ -257,7 +337,7 @@ The event makes the inspector evidentiary rather than decorative:
 ```
 
 The trace event contains the inspector projection, not private tool context. Store the event or its
-content hash with the turn trace so later audits can prove what was supplied.
+content hash with the session trace so later audits can prove what was supplied.
 
 ## How navigation uses context
 
@@ -313,43 +393,59 @@ Frequency signals are bounded and old visits decay.
 Approvals are durable policy, not model context. The prompt may receive a safe summary, while the full
 grant and any confirmation tokens remain in trusted tool context and are revalidated at use.
 
-## Deep Agents integration
+## Deep Agents implementation
 
-The current harness creates a long-lived `AgentSession`, a static system prompt, native LangChain
-product tools, and an `InMemorySaver` checkpointer (see
-[Agent harness](../capabilities/agent-harness.md)). The target keeps that seam and changes where
-context enters.
+The harness already does a miniature version of this. Deep Agents builds a long-lived `AgentSession`
+whose system prompt is set once, at session creation, by `create_deep_agent(system_prompt=SYSTEM_PROMPT
++ _user_prompt_line(user_id), ...)`, with an `InMemorySaver` checkpointer and the native LangChain
+product tools (see [Assistant](../architecture/capabilities/assistant.md)). `_user_prompt_line`
+already injects a two-fact grounding line — the actor's display name and today's date — at
+`__aenter__`. Platform-level context is that line grown up.
 
-### Target turn flow
+### Where the bundle enters
 
-```text
-session server
-  -> authenticate actor and validate uiContext
-  -> contextsvc.compose(...)
-  -> RUN_STARTED
-  -> CONTEXT_APPLIED
-  -> Deep Agents middleware adds prompt projection for this turn
-  -> model calls a shared typed tool
-  -> the tool adapter binds trusted tool context outside model arguments
-  -> tool reauthorizes and reads live state
-  -> structured TOOL_CALL_RESULT
-  -> RUN_FINISHED
-```
+Compose the opening bundle at session creation and write its **injected** projection into the same
+`system_prompt` string, next to the grounding line:
 
-Implementation rules:
+- The session server already holds the authenticated actor when it creates the session — it forwards
+  the actor outside the request body and checks the write-once session-to-actor binding. Before or
+  during `AgentSession.__aenter__`, it asks the context service to compose the bundle for that actor.
+- The injected projection (persona, workspace memory, and the "what matters now" and "where you were"
+  summaries) is concatenated into `system_prompt` at creation — never into a user message. The browser
+  stops assembling a bracketed preamble into the user's text.
+- Because the session is long-lived and the system prompt is set once, this composes **once per
+  session**, which is exactly the session-start decision. No per-turn recomposition is required.
 
-- Keep the static system prompt small, policy-oriented, and cacheable.
-- Add the prompt projection dynamically for the current turn; do not concatenate bracketed context
-  into browser-authored user text.
-- Do not checkpoint injected context as if the actor said it. Recompose it every turn.
-- Keep `InMemorySaver` for conversation continuity only.
-- Bind actor, session, workspace, retrieval scopes, and `contextId` in the runtime/tool transport,
-  outside tool schemas visible to the model.
-- Use the same context middleware and tool contract for Copilot — the retained local
-  portability/evaluation lane — or a future harness; the resulting AG-UI stream stays
-  harness-independent.
-- Skills remain reusable procedural instructions. They may explain how to use context, but they are
-  not a context store.
+### What does not change
+
+- Tools stay closed over the bound actor and re-read live state and permission on every call. The
+  bundle is a hint for the opening, never a cached grant.
+- `InMemorySaver` keeps conversation continuity only. The bundle lives in the system prompt, set once;
+  it is never written into the message history as if the actor said it.
+- The twenty typed product tools and their `ProductToolResult` contract are untouched. Deep sources
+  (documents, reference knowledge) would arrive as their own tools if and when they are in scope —
+  never in the bundle.
+- `CONTEXT_APPLIED` is emitted once, when the bundle is composed, and the inspector renders exactly
+  that.
+
+### Freshness and a light per-turn hint
+
+Composing once means the opening summaries reflect the moment of login. That is correct for an opening
+brief, and actions stay safe because every tool re-reads live state. Two follow-ons stay open: a
+long-lived session may want an explicit refresh that recomposes, and a small per-turn UI hint (the
+current view) may accompany a message so navigation and CRUD resolve scope without recomposing the
+whole bundle. Neither is required for the first version.
+
+### Harness note
+
+`create_deep_agent` today exposes a static `system_prompt` and tool-exclusion middleware only; there
+is no per-turn prompt callable wired in. Setting the bundle once at creation fits that shape without
+new middleware. Per-turn dynamic context, if a later version wants it, is a harness change — a prompt
+callable or middleware — and belongs in its own decision, not here.
+
+The same context service and tool contract apply to the Copilot portability lane, so the AG-UI stream
+stays harness-independent. Skills stay reusable procedural instructions; they may explain how to use
+context but are not a context store.
 
 ## Security, privacy, and consistency
 
@@ -368,23 +464,25 @@ Implementation rules:
 
 | Target element | Current MVP status |
 |---|---|
-| Composed `TurnContext` snapshot with a `contextId` | Not implemented. `GET /context-bundle` computes actor persona and, for an Engagement-scoped route, that Engagement's name/conventions — no persisted snapshot or ID. |
+| Opening bundle composed at session start and injected into the system prompt | Not implemented. Today the system prompt gets only a two-fact grounding line (display name + date) at session creation; the browser assembles persona and conventions into the user's message text instead. |
+| Composed `SessionContext` snapshot with a `contextId` | Not implemented. `GET /context-bundle` computes actor persona and, for an Engagement-scoped route, that Engagement's name/conventions — no persisted snapshot or ID. |
+| "What matters now" list | Not implemented, and its ranking model is not yet decided. |
 | `CONTEXT_APPLIED` trace event | Not implemented. No event records what context a turn received. |
 | Four projections (prompt, trusted tool, UI ranking, inspector) | Only a prompt-style projection exists. The browser concatenates date, view label, persona, and conventions into the user's message text; there is no UI ranking or inspector projection. |
 | Durable memory and standing approvals | Not implemented. |
-| Working context (active Engagement, recent destinations, pins) | Not implemented. The context-bundle response has a `working: {}` placeholder with no reader or writer. |
+| Working context (active Engagement, recent destinations, pins) | Not implemented. The context-bundle response has a `workingContext: {}` placeholder with no reader or writer. |
 | Behavioral ranking and personalized quick links | Not implemented. |
 | Typed precedence by conflict kind (authorization / facts / instructions / scope) | Partially. A flat precedence list is sent as prompt text (`turn instruction > engagement convention > user persona > app default`); it is a response-style convention, not a structural enforcement. The real authorization ceiling remains each tool's live re-read, matching this design's authorization rule. |
 | Identity bound outside the model; actor/session write-once binding | Implemented today. |
 | Tools re-authorize and re-read live state on every call | Implemented today. |
 | Shared JSON-schema tool catalog across both harnesses | Implemented today — closer to this design's shared tool-layer goal than the rest of the context contract. |
 
-See [../capabilities/context.md](../capabilities/context.md) for the authoritative current-state
+See [Assistant](../architecture/capabilities/assistant.md) for the authoritative current-state
 contract, including the exact turn path and evidence status.
 
 ## Architecture checklist
 
-- [ ] One authenticated composer creates one immutable context snapshot per turn.
+- [ ] One authenticated composer creates one immutable context snapshot at session start.
 - [ ] Prompt, tool, UI, and inspector projections derive from that same snapshot.
 - [ ] Identity and permissions never come from model-visible arguments.
 - [ ] Context ranks/defaults but never grants access or replaces live reads.
@@ -396,6 +494,6 @@ contract, including the exact turn path and evidence status.
 - [ ] The inspector renders the event, not a later reconstruction.
 - [ ] Tools reauthorize and read current state at execution time.
 - [ ] Quick links, semantic navigation, CRUD, and retrieval consume the same context contract.
-- [ ] Deep Agents receives dynamic context and a shared typed-tool layer without checkpointing
-      context as actor speech.
+- [ ] Deep Agents receives the opening bundle in its system prompt at session creation, never
+      checkpointed as actor speech.
 - [ ] Indexed-corpus retrieval is actor- and Engagement-filtered (see [rag-qa.md](rag-qa.md)).

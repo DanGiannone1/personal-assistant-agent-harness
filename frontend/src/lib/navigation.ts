@@ -11,6 +11,10 @@ export function normalizeHostRoute(route: string): string {
   return parseEngagementRoute(route) ? route : "/engagements";
 }
 
+export function isHostRoute(route: string): boolean {
+  return normalizeHostRoute(route) === route;
+}
+
 export function isCatalogDestination(destination: Destination): boolean {
   const scoped = new Set(["engagement_overview", "engagement_tasks", "engagement_artifacts"]);
   if (destination.id === "engagements") return destination.path === "/engagements" && !destination.engagementId;

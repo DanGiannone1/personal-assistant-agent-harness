@@ -1,13 +1,25 @@
 # Contributing to CSA Workbench
 
-CSA Workbench is an internal MVP POC. Before meaningful work, read [AGENTS.md](AGENTS.md), the [documentation index](docs/README.md), and [governance](docs/governance/README.md). Those sources define the lifecycle, engineering standard, and testing standard.
+Start with [AGENTS.md](AGENTS.md) when using Codex or [CLAUDE.md](CLAUDE.md) when using Claude. Then
+read the [documentation guide](docs/README.md) and the [governance guide](docs/governance/README.md).
 
-Work from the current checkout, preserve unrelated changes, and keep changes scoped. Inspect source before repeating a documentation or behavior claim. Use an isolated local run when running the stack, and run the nonsecret deterministic verification appropriate to the change; the repository-wide command is:
+Before making a change:
+
+1. Confirm the requested outcome and the parts of the repository it affects.
+2. Inspect the current source and preserve unrelated worktree changes.
+3. Follow the approval and review process in the [Master SDLC](docs/governance/master-sdlc.md).
+4. Use an isolated local instance when running the application.
+5. Run the checks appropriate to the change and report what happened.
+
+The main repository check is:
 
 ```bash
 npm run verify
 ```
 
-Do not treat a source check as proof of browser, Entra, Azure, or model behavior. Live evals and Azure apply require deliberate user authorization; an authorized CLI coding agent may execute the target-bound plan/apply procedure. See [coding-agent setup](docs/coding-agent-setup.md) and the [deployment runbook](docs/deployment.md).
+Some browser, model, and Azure commands call external services or change stored data. Run them only
+when the user has approved that exact work. See the [local development guide](docs/guides/local-development.md),
+[deployment guide](docs/guides/deployment.md), and [coding-agent guide](docs/guides/coding-agents.md).
 
-Do not add an external-sharing, license, security-contact, or release policy without a human decision.
+Do not create an external-sharing, license, security-contact, or release policy without a human
+decision.

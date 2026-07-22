@@ -1,19 +1,35 @@
-# Documentation index
+# Documentation guide
 
-> **Authority:** Routing only. Repository governance in [governance](governance/README.md) remains the governing lifecycle authority.
+Use this page to find the shortest path to what you need.
 
-Start at the [root README](../README.md), the sole colleague-facing front door.
+## Understand the product
 
-| Document | Authority and purpose |
-|---|---|
-| [design.md](design.md) | High-level MVP product and system design |
-| [requirements.md](requirements.md) | Release and acceptance intent |
-| [capabilities/](capabilities/) | Focused current-boundary notes; subordinate to design and requirements |
-| [reference-architectures/](reference-architectures/) | Target capability designs; subordinate to design.md for current scope |
-| [development.md](development.md) | Local run and deterministic verification runbook |
-| [deployment.md](deployment.md) | User-authorized CLI-agent Azure plan/apply runbook |
-| [evals-reference-architecture.md](evals-reference-architecture.md) | Canonical customer-demo and evidence architecture |
-| [coding-agent-setup.md](coding-agent-setup.md) | CLI coding-agent collaboration guardrails |
-| [governance/](governance/) | Governing SDLC, engineering, testing, and agent-design rules |
+- [Product overview](product/overview.md) explains the people, problems, main workflows, and limits.
+- [Requirements](product/requirements.md) defines what the MVP must do.
 
-`architecture.md`, `spec.md`, `use-cases.md`, `projects-spec.md`, `mvp-requirements.md`, and `navigation-reference-architecture.md` are compatibility pointers only. `agent-evals-reference.md` is non-authoritative educational background.
+## Understand how it works
+
+- [Architecture overview](architecture/README.md) explains the complete application.
+- [Experience](architecture/capabilities/experience.md) covers pages, navigation, and responsive behavior.
+- [Data](architecture/capabilities/data.md) covers Engagements, personal work, files, and sessions.
+- [Assistant](architecture/capabilities/assistant.md) covers tools, skills, context, and streaming.
+- [Identity and access](architecture/capabilities/identity-and-access.md) covers sign-in and permissions.
+- [Infrastructure](architecture/capabilities/infrastructure.md) covers local and Azure components.
+
+## Run, demonstrate, or deploy it
+
+- [Local development](guides/local-development.md)
+- [Demo guide](guides/demo.md)
+- [Azure deployment](guides/deployment.md)
+- [Working with coding agents](guides/coding-agents.md)
+
+## Explore proposed designs
+
+The [reference architectures](reference-architectures/README.md) describe possible extensions to the
+current product. They are design references, not commitments or schedules.
+
+## Work on the repository
+
+The [governance guide](governance/README.md) links the required development, testing, and agent rules.
+The root [CONTRIBUTING.md](../CONTRIBUTING.md), [AGENTS.md](../AGENTS.md), and
+[CLAUDE.md](../CLAUDE.md) provide contributor and runtime entry points.

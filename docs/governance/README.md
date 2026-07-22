@@ -1,31 +1,23 @@
-# Developer Governance Index
+# Development governance
 
-> **HUMAN-OWNED GOVERNING SOURCE OF TRUTH**
+> **Human-owned document**
 >
-> Agents must not edit, replace, move, delete, or create a competing version of
-> this file unless the user explicitly authorizes changes to this named file in
-> the current conversation.
+> Agents must not edit, replace, move, delete, or create another file that competes with this one
+> unless the user explicitly approves changes to this named file in the current conversation.
 
-This directory is the canonical, runtime-neutral governance home for this
-repository. Native Claude and Codex files load these documents and keep only
-runtime mechanics in their own definitions.
+These documents define how repository work is approved, carried out, checked, and reviewed. Claude
+and Codex keep their runtime settings in their own directories and use these shared rules.
 
-| Concern | Canonical source |
+| Question | Document |
 |---|---|
-| Work lifecycle, approval, isolation, review, and integration | [master-sdlc.md](master-sdlc.md) |
-| Behavioral proof and testing | [testing-charter.md](testing-charter.md) |
-| Safe hands-on engineering execution | [engineering-operating-standards.md](engineering-operating-standards.md) |
-| Agent, skill, and handoff design | [agentic-design.md](agentic-design.md) |
-| Product and architecture documentation map | [../README.md](../README.md) |
-| Product intent and behavior | [../spec.md](../spec.md) and [../use-cases.md](../use-cases.md) |
-| Current architecture | [../architecture.md](../architecture.md) and the reference architectures linked from [../README.md](../README.md) |
-| Local development and verification | [../development.md](../development.md) |
-| Deployment and operational constraints | [../deployment.md](../deployment.md) |
+| How does work move from request to completion? | [Master SDLC](master-sdlc.md) |
+| How should repository work be carried out safely? | [Engineering Operating Standards](engineering-operating-standards.md) |
+| How should behavior be checked? | [Testing Charter](testing-charter.md) |
+| How should agents, skills, and handoffs be designed? | [Agentic Design](agentic-design.md) |
+| What is the product expected to do? | [Product requirements](../product/requirements.md) |
+| How does the application work today? | [Architecture overview](../architecture/README.md) |
+| How is it run locally? | [Local development](../guides/local-development.md) |
+| How is it deployed? | [Azure deployment](../guides/deployment.md) |
 
-Each rule has one canonical home. Runtime prompts, skills, templates, issues,
-and pull requests may point to a rule but must not restate it as a competing
-authority. When sources conflict, stop and obtain a human decision rather than
-blending them.
-
-Living guidance keeps a stable path and is updated in place. Records of past
-decisions or evidence are not current guidance without re-verification.
+Each rule has one home. Runtime prompts and contributor guides should link here instead of copying
+the same rule. If two required documents disagree, stop and ask the user which direction to follow.

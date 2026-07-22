@@ -335,7 +335,7 @@ def _new_personal_workspace(user_id: str, *, demo: bool) -> dict:
     doc = {
         "id": _personal_workspace_id(uid),
         "sessionId": _personal_workspace_id(uid),
-        "currentRoute": "/engagements",
+        "currentRoute": "/home",
         "personalTasks": [],
         "calendarEvents": [],
         "reminders": [],
@@ -374,7 +374,7 @@ def _ensure_personal_workspace_seeded(user_id: str, *, demo: bool) -> None:
 def _personal_state(doc: dict) -> dict:
     """Return only the public personal-state fields, with null-safe collections."""
     state = {key: doc.get(key) for key in _PERSONAL_STATE_KEYS}
-    state["currentRoute"] = state["currentRoute"] or "/engagements"
+    state["currentRoute"] = state["currentRoute"] or "/home"
     for key in ("personalTasks", "calendarEvents", "reminders"):
         if state[key] is None:
             state[key] = []

@@ -1,19 +1,16 @@
-# Repository Agent Entrypoint
+# Repository agent entry point
 
-Before meaningful repository work, read [docs/README.md](docs/README.md) and
-[docs/governance/README.md](docs/governance/README.md). Follow the canonical
-documents named there:
+Before working in this repository, read [docs/README.md](docs/README.md) and
+[docs/governance/README.md](docs/governance/README.md). Follow the documents named there:
 
-- read the Master SDLC and Engineering Operating Standards before changing the
+- read the Master SDLC and Engineering Operating Standards before investigating or changing the
   repository;
-- read the Testing Charter before designing, changing, or running tests; and
+- read the Testing Charter before designing, changing, or running checks; and
 - read Agentic Design before changing agents, skills, prompts, or handoffs.
 
-Use the product, architecture, development, and deployment sources linked from
-the documentation index for affected behavior. If required guidance is missing
-or conflicts, stop and report the conflict instead of inventing a rule.
+Read the product, architecture, development, and deployment documents related to the requested
+change. Stop and ask the user when required guidance is missing or contradictory.
 
-Codex-specific workflows live in `.codex/skills/`. The optional local PPEL
-profile is selected with `codex --profile PPEL`; it does not replace these
-repository instructions. Preserve existing worktree changes and do not switch
-the primary branch unless the user explicitly asks.
+Codex workflows live in `.codex/skills/`. The optional local PPEL profile is selected with
+`codex --profile PPEL`; it does not replace repository guidance. Preserve existing worktree changes
+and do not switch the primary branch unless the user explicitly asks.

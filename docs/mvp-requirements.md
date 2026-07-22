@@ -2,4 +2,4 @@
 
 > **Authority:** Compatibility pointer only; it defines no release requirement.
 
-The canonical MVP release and acceptance intent is [requirements.md](requirements.md).
+Use the canonical [MVP requirements](product/requirements.md).

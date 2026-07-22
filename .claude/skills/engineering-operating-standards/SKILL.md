@@ -1,10 +1,9 @@
 ---
 name: engineering-operating-standards
-description: Apply the repository's safe engineering execution standard. Use for repository investigation, implementation, review, verification, or integration.
+description: Apply the repository's standard for safe investigation, implementation, review, checking, and integration.
 ---
 
 # Engineering Operating Standards
 
-Read `docs/governance/engineering-operating-standards.md` in full before
-repository work. Treat it as canonical. If it is missing, unreadable, or
-conflicts with active instructions, stop and report the problem.
+Read `docs/governance/engineering-operating-standards.md` in full before repository work. Treat it as
+the shared rule. If it is missing, unreadable, or contradictory, stop and ask the user.
