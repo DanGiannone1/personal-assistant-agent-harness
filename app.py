@@ -11,7 +11,7 @@ import re
 import secrets
 import sys
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 # Reuse the session-container's Cosmos adapter.
@@ -19,8 +19,13 @@ _SC = Path(__file__).resolve().parent / "session-container"
 if str(_SC) not in sys.path:
     sys.path.insert(0, str(_SC))
 import appdb  # noqa: E402
-from workbench_core import EngagementService, Outcome  # noqa: E402
+from workbench_core import (  # noqa: E402
+    EngagementService, Outcome, PersonalNotFound, PersonalWorkspaceError,
+    PersonalWorkspaceService,
+)
 from workbench_core.appdb_repository import AppdbEngagementRepository  # noqa: E402
+from workbench_core.personal_repository import AppdbPersonalWorkspaceRepository  # noqa: E402
+from workbench_core import reminder_dispatch  # noqa: E402
 from workbench_core.request_limits import (  # noqa: E402
     MAX_EDIT_CONTENT_BYTES,
     MAX_EDIT_FILENAME_CHARS,
@@ -35,7 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import auth_users
 from api_auth import APIAuthenticator, AuthConfig
@@ -47,6 +52,7 @@ from workbench_core.trace_logging import setup_trace_logging, trace_event
 logger = logging.getLogger(__name__)
 
 _engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
+_personal_workspace_service = PersonalWorkspaceService(AppdbPersonalWorkspaceRepository(appdb))
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +61,7 @@ _engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.
 session_manager: SessionManager | None = None
 api_authenticator: APIAuthenticator | None = None
 identity_config: IdentityConfig | None = None
+_reminder_dispatch_task: asyncio.Task | None = None
 
 
 def _trace_dir() -> str | None:
@@ -201,10 +208,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Could not seed engagement artifacts", exc_info=True)
 
+    # Reminder email dispatch: on iff ACS is configured (or forced via
+    # REMINDER_DISPATCH). Mode resolution fails loud on misconfiguration.
+    global _reminder_dispatch_task
+    if reminder_dispatch.dispatch_mode() == "loop":
+        dispatcher = reminder_dispatch.ReminderDispatcher(appdb)
+        _reminder_dispatch_task = asyncio.create_task(
+            dispatcher.loop(reminder_dispatch.tick_seconds()))
+        logger.info("Reminder email dispatch loop started")
+    else:
+        logger.info("Reminder email dispatch off (ACS not configured); reminders remain in-app only")
+
     logger.info("Application started")
 
     yield
 
+    if _reminder_dispatch_task is not None:
+        _reminder_dispatch_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _reminder_dispatch_task
     await session_manager.stop()
     logger.info("Application shut down")
 
@@ -484,6 +506,175 @@ class TaskUpdate(BaseModel):
 class SaveContentRequest(BaseModel):
     filename: str = Field(..., max_length=MAX_EDIT_FILENAME_CHARS)
     content: str = Field(..., max_length=MAX_EDIT_CONTENT_BYTES)
+
+
+# ── Personal workspace — durable private data, session paths kept for compatibility ──
+class _StrictPersonalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PersonalTaskCreate(_StrictPersonalRequest):
+    title: str
+    status: str = "To do"
+    priority: str = "Medium"
+    group: str = "General"
+    dueDate: str = ""
+    notes: str = ""
+
+
+class PersonalTaskUpdate(_StrictPersonalRequest):
+    title: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    group: str | None = None
+    dueDate: str | None = None
+    notes: str | None = None
+
+
+class PersonalEventCreate(_StrictPersonalRequest):
+    title: str
+    date: str
+    start: str = ""
+    end: str = ""
+    type: str = "Meeting"
+    notes: str = ""
+
+
+class PersonalEventUpdate(_StrictPersonalRequest):
+    title: str | None = None
+    date: str | None = None
+    start: str | None = None
+    end: str | None = None
+    type: str | None = None
+    notes: str | None = None
+
+
+class ReminderCreate(_StrictPersonalRequest):
+    title: str
+    message: str = ""
+    frequency: str
+    dueDate: str
+    time: str
+    timezone: str = "UTC"
+    daysOfWeek: list[object] = Field(default_factory=list)
+
+
+class ReminderUpdate(_StrictPersonalRequest):
+    title: str | None = None
+    message: str | None = None
+    frequency: str | None = None
+    dueDate: str | None = None
+    time: str | None = None
+    timezone: str | None = None
+    daysOfWeek: list[object] | None = None
+    enabled: bool | None = None
+
+
+async def _personal_operation(operation, *args) -> dict:
+    try:
+        outcome = await asyncio.to_thread(operation, *args)
+    except PersonalWorkspaceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except PersonalNotFound:
+        raise HTTPException(status_code=404, detail="Not found")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Not found")
+    return outcome.record if outcome is not None else {}
+
+
+@app.post("/sessions/{session_id}/tasks", status_code=201)
+async def create_personal_task(session_id: str, req: PersonalTaskCreate,
+                               uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(_personal_workspace_service.create_task, uid, req.model_dump())
+
+
+@app.patch("/sessions/{session_id}/tasks/{task_id}")
+async def update_personal_task(session_id: str, task_id: str, req: PersonalTaskUpdate,
+                               uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(
+        _personal_workspace_service.update_task, uid, task_id, req.model_dump(exclude_none=True))
+
+
+@app.delete("/sessions/{session_id}/tasks/{task_id}", status_code=204)
+async def delete_personal_task(session_id: str, task_id: str, uid: str = Depends(current_user)):
+    await _require_owned_session(session_id, uid)
+    await _personal_operation(_personal_workspace_service.delete_task, uid, task_id)
+    return Response(status_code=204)
+
+
+class SubtaskCreate(_StrictPersonalRequest):
+    text: str
+
+
+class SubtaskToggle(_StrictPersonalRequest):
+    done: bool
+
+
+@app.post("/sessions/{session_id}/tasks/{task_id}/subtasks", status_code=201)
+async def add_subtask(session_id: str, task_id: str, req: SubtaskCreate,
+                      uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(_personal_workspace_service.add_subtask, uid, task_id, req.text)
+
+
+@app.patch("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}")
+async def toggle_subtask(session_id: str, task_id: str, index: int, req: SubtaskToggle,
+                         uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(_personal_workspace_service.set_subtask, uid, task_id, index, req.done)
+
+
+@app.delete("/sessions/{session_id}/tasks/{task_id}/subtasks/{index}", status_code=204)
+async def delete_subtask(session_id: str, task_id: str, index: int, uid: str = Depends(current_user)):
+    await _require_owned_session(session_id, uid)
+    await _personal_operation(_personal_workspace_service.delete_subtask, uid, task_id, index)
+    return Response(status_code=204)
+
+
+@app.post("/sessions/{session_id}/events", status_code=201)
+async def create_personal_event(session_id: str, req: PersonalEventCreate,
+                                uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(_personal_workspace_service.create_event, uid, req.model_dump())
+
+
+@app.patch("/sessions/{session_id}/events/{event_id}")
+async def update_personal_event(session_id: str, event_id: str, req: PersonalEventUpdate,
+                                uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(
+        _personal_workspace_service.update_event, uid, event_id, req.model_dump(exclude_none=True))
+
+
+@app.delete("/sessions/{session_id}/events/{event_id}", status_code=204)
+async def delete_personal_event(session_id: str, event_id: str, uid: str = Depends(current_user)):
+    await _require_owned_session(session_id, uid)
+    await _personal_operation(_personal_workspace_service.delete_event, uid, event_id)
+    return Response(status_code=204)
+
+
+@app.post("/sessions/{session_id}/schedules", status_code=201)
+async def create_reminder(session_id: str, req: ReminderCreate,
+                          uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(_personal_workspace_service.create_schedule, uid, req.model_dump())
+
+
+@app.patch("/sessions/{session_id}/schedules/{schedule_id}")
+async def update_reminder(session_id: str, schedule_id: str, req: ReminderUpdate,
+                          uid: str = Depends(current_user)) -> dict:
+    await _require_owned_session(session_id, uid)
+    return await _personal_operation(
+        _personal_workspace_service.update_schedule, uid, schedule_id, req.model_dump(exclude_none=True))
+
+
+@app.delete("/sessions/{session_id}/schedules/{schedule_id}", status_code=204)
+async def delete_reminder(session_id: str, schedule_id: str, uid: str = Depends(current_user)):
+    await _require_owned_session(session_id, uid)
+    await _personal_operation(_personal_workspace_service.delete_schedule, uid, schedule_id)
+    return Response(status_code=204)
 
 
 @app.put("/sessions/{session_id}/files/content")

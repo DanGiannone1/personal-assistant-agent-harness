@@ -2,6 +2,22 @@
 
 > **Purpose:** Run the current checkout locally. This runbook is not evidence of a live Azure, Entra, browser, or model result.
 
+## Local shape
+
+The launcher preserves the three application process boundaries but not Azure network parity:
+
+```text
+browser -> frontend :3000 -> API :8000 -> session runtime :8080 -> Azure OpenAI
+                              |               |
+                              +--- Cosmos (actors, Engagements, personal aggregates)
+                              +--- durable Engagement artifact bytes (local dir / Blob)
+```
+
+A separately supplied Cosmos emulator is required; this repository does not start or configure one.
+Local development uses deterministic `demo` identity and does not emulate Entra workload identity,
+private endpoints, private DNS, or Container Apps scaling — see [deployment](deployment.md) and
+[Infrastructure](capabilities/infrastructure.md) for the deployed shape.
+
 ## Prerequisites and setup
 
 Install Python 3.12+, `uv`, Node.js/npm, Azure CLI with Bicep support, an Azure OpenAI endpoint/deployment reachable by the developer, and a user-provided Cosmos emulator. The repository does not start or configure the external Cosmos emulator. Sign in with `az login` if the configured local model path relies on Azure CLI credentials.
@@ -14,6 +30,8 @@ uv sync
 ```
 
 Configure local demo identity, the Azure OpenAI endpoint/deployment, and Cosmos emulator values in `.env`. Never commit a real secret. Read the current `.env.example` and source for the exact variables.
+
+Reminder email delivery is optional and off by default. To exercise it locally, set `ACS_EMAIL_ENDPOINT` and `ACS_SENDER_ADDRESS` for a real Azure Communication Services resource reachable with your signed-in `DefaultAzureCredential`; `REMINDER_DISPATCH=auto` (the default) then ticks an in-process dispatch loop, with `REMINDER_TICK_SECONDS` controlling cadence (default 60). Demo-identity actors only ever receive reminder email at the operator-set `REMINDER_DEMO_EMAIL` test address; Entra actors receive it at their own validated sign-in address. Leaving ACS unconfigured is expected for most local work — reminders still create, edit, and display in-app.
 
 ## Isolated local run
 
@@ -42,7 +60,17 @@ The launcher passes child environment variables only to its three child processe
 npm run verify
 ```
 
-`npm run verify` performs repository-local locks, focused tests, deterministic MVP evidence checks, Waza readiness validation, frontend contract/lint/build checks, shell syntax, Bicep compilation, and whitespace checking. It does not run an Azure deployment, a browser journey, or a model gate.
+`npm run verify` (`scripts/verify.sh`) performs repository-local locks, focused tests, deterministic MVP evidence checks, Waza readiness validation, frontend contract/lint/build checks, shell syntax, Bicep compilation, and whitespace checking. It does not run an Azure deployment, a browser journey, or a model gate. `npm run verify:ci` runs the same script with Bicep compilation skipped, matching the checked-in GitHub Actions workflow.
+
+The focused pytest suite it runs today is exactly:
+
+```bash
+PYTHONPATH=$PWD:$PWD/session-container uv run --project session-container --with pytest \
+  pytest -q tests/test_dev_launcher.py tests/test_reset_demo_state.py tests/test_local_quality.py \
+  tests/test_identity_modes.py tests/test_engagement_core.py tests/test_structured_control.py \
+  tests/test_infra_entra_contract.py tests/test_release_boundaries.py tests/test_skill_runtime.py \
+  tests/test_personal_workspace.py tests/test_reminder_dispatch.py
+```
 
 `npm run test:mvp-evidence` is a deterministic source/oracle check. `npm run eval:waza:check` downloads or verifies a checksum-pinned Waza binary under ignored local evidence output, then validates the one product skill and evaluation schema; it is a readiness check, not product behavior proof.
 

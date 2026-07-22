@@ -8,6 +8,7 @@ dependencies = [
     # aiohttp is not imported directly: it is the transport azure-core loads at
     # runtime for the azure.identity.aio / azure.storage aio clients used here.
     "aiohttp>=3.11.0",
+    "azure-communication-email>=1.0.0",
     "azure-cosmos>=4.16.1",
     "azure-identity>=1.25.2",
     "azure-storage-blob>=12.28.0",

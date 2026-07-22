@@ -4,9 +4,9 @@ Provides a streaming async generator interface for running agent turns against
 Azure OpenAI. Translates SDK session events into AG-UI protocol events.
 
 Local portability check for the primary Deep Agents adapter: it exposes the
-same seven model-visible product tools over the shared workbench_core
-Engagement service (durable state lives in Cosmos via appdb.py) and the same
-`AgentSession` seam that server.py depends on.
+same model-visible product tools over the shared workbench_core Engagement and
+PersonalWorkspace services (durable state lives in Cosmos via appdb.py) and the
+same `AgentSession` seam that server.py depends on.
 """
 
 import asyncio
@@ -57,12 +57,19 @@ from copilot.session_events import (
 
 import appdb
 import navsvc
-from workbench_core import EngagementService, ProductToolResult, engagement_product_result
+from workbench_core import (
+    EngagementService, PersonalNotFound, PersonalWorkspaceError, PersonalWorkspaceService,
+    ProductToolResult, engagement_product_result,
+)
 from workbench_core.appdb_repository import AppdbEngagementRepository
+from workbench_core.personal_repository import AppdbPersonalWorkspaceRepository
 from workbench_core.trace_logging import trace_event
 from mvp_tool_schemas import (
-    CreateEngagementCommand, GetEngagementCommand, ListEngagementsCommand, NavigateCommand,
-    SetEngagementStatusCommand, ShareEngagementCommand, UpdateEngagementCommand,
+    AddSubtaskCommand, CreateEngagementCommand, CreateEventCommand, CreateReminderCommand,
+    CreateTaskCommand, DeleteEventCommand, DeleteReminderCommand, DeleteTaskCommand,
+    GetEngagementCommand, ListEngagementsCommand, ListEventsCommand, ListRemindersCommand,
+    ListTasksCommand, NavigateCommand, SetEngagementStatusCommand, ShareEngagementCommand,
+    UpdateEngagementCommand, UpdateEventCommand, UpdateReminderCommand, UpdateTaskCommand,
 )
 
 load_dotenv()
@@ -81,13 +88,18 @@ def _trace(event: str, **data) -> None:
 
 
 SYSTEM_PROMPT = """\
-You are the CSA Workbench assistant for shared Engagements. Use only these tools:
-`navigate`, `list_engagements`, `create_engagement`, `get_engagement`,
-`update_engagement`, `set_engagement_status`, and `share_engagement`.
+You are the CSA Workbench assistant. It covers two kinds of work: shared Engagements (customer
+delivery workspaces with other members) and the user's own private Tasks, Calendar, and
+Reminders (visible only to them, never scoped to an Engagement). Use only these tools:
+`navigate`, `list_engagements`, `create_engagement`, `get_engagement`, `update_engagement`,
+`set_engagement_status`, `share_engagement`, `list_tasks`, `create_task`, `update_task`,
+`delete_task`, `add_subtask`, `list_events`, `create_event`, `update_event`, `delete_event`,
+`list_reminders`, `create_reminder`, `update_reminder`, and `delete_reminder`.
 
 Navigation accepts only these destination IDs: `engagements`, `engagement_overview`,
-`engagement_tasks`, and `engagement_artifacts`. For an Engagement destination,
-first obtain its stable ID with `list_engagements`; never pass user wording as a destination.
+`engagement_tasks`, `engagement_artifacts`, `home`, `tasks`, `calendar`, and `reminders`. For an
+Engagement destination, first obtain its stable ID with `list_engagements`; never pass user
+wording as a destination. `home`, `tasks`, `calendar`, and `reminders` never take an Engagement ID.
 
 Engagement membership and roles are enforced by tools. Use stable Engagement IDs for get,
 update, status, and share. Yellow and red status require a reason. State a change or navigation
@@ -99,18 +111,35 @@ full record with `get_engagement` before answering; the `list_engagements` summa
 and does not contain tasks, actions, milestones, or their due dates. When asked to read or show
 something, present what you found — not a confirmation that you found it. Navigate at most once
 per turn, and only when the user asked to go somewhere.
+
+Task, event, and reminder tools take the resource's exact ID (`t-…`, `e-…`, `s-…`), never a
+title. Resolve a name the user gave in words by calling the matching `list_*` tool first and
+matching it to exactly one record; never invent an ID. Task statuses are exactly "To do",
+"In progress", "Blocked", "Done"; priorities are exactly "Low", "Medium", "High"; event types are
+exactly "Meeting", "Focus", "Personal"; reminder frequencies are exactly "once", "daily",
+"weekly", with `days_of_week` (0=Monday..6=Sunday) required for "weekly" and empty otherwise.
+Dates are YYYY-MM-DD and times are 24-hour HH:MM; resolve relative words ("today", "tomorrow",
+"Friday") against the current date rather than guessing it. A reminder is a record the user
+reviews, not an email you send — it carries no recipient and is delivered by a separate server
+process.
 """
 
 
 def _user_prompt_line(user_id: str) -> str:
-    """One grounding line so the assistant knows WHO it is operating for. Fail-soft to
-    the bare id: a Cosmos hiccup here must not block session start."""
+    """One grounding line so the assistant knows WHO it is operating for, and WHEN, so it can
+    resolve relative dates without guessing. Fail-soft to the bare id: a Cosmos hiccup here must
+    not block session start."""
     try:
         user = appdb.get_user(user_id)
     except Exception:
         user = None
     name = (user or {}).get("displayName") or user_id
-    return f"\n\nYou are assisting {name} (user id: {user_id}). All state you read and mutate is theirs."
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
+    return (
+        f"\n\nYou are assisting {name} (user id: {user_id}). All state you read and mutate is theirs."
+        f" Today's date is {today} (UTC)."
+    )
 
 
 def _sse_event(event: BaseEvent) -> str:
@@ -182,13 +211,15 @@ def _safe_error_message(error: object) -> str:
 
 
 def _build_flow_tools(working_dir: str, user_id: str) -> list:
-    """Build the seven model-visible product tools as native Copilot tools.
+    """Build the model-visible product tools as native Copilot tools: shared-Engagement
+    tools plus the actor's own private Tasks/Calendar/Reminders tools.
 
     Same names, schemas, authorization, and typed-result envelopes as the Deep
     Agents adapter (proven by tests/test_structured_control.py). Closures bind
     the actor and session; the model can never pass either as an argument.
     """
     engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
+    personal_service = PersonalWorkspaceService(AppdbPersonalWorkspaceRepository(appdb))
 
     def _engagements() -> list[dict]:
         return engagement_service.list(user_id).record["engagements"]
@@ -284,10 +315,186 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
         result = engagement_product_result(outcome)
         return _tool_result(result, "Engagement sharing processed." if outcome.status == "committed" else result.message)
 
+    # ── Personal workspace: the actor's own private Tasks, Calendar, and Reminders ──
+
+    _DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+    def _today_iso() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).date().isoformat()
+
+    def _personal_mutation(operation: str, kind: str, fn) -> tuple[dict | None, ProductToolResult]:
+        """Run one personal-workspace write; map exceptions to a typed, client-safe result.
+
+        PersonalWorkspaceError is schema-approved-but-invalid input (never mutates state).
+        PersonalNotFound means no such resource exists for this actor -- lookups never cross
+        actors, so this can never confirm or deny that an ID belongs to someone else."""
+        try:
+            outcome = fn()
+        except PersonalWorkspaceError as exc:
+            return None, ProductToolResult("invalid", f"{kind}.invalid", operation, str(exc))
+        except PersonalNotFound:
+            return None, ProductToolResult("not_found", f"{kind}.not_found", operation, f"No {kind} found for that ID.")
+        return outcome.record, ProductToolResult(
+            "committed", f"{kind}.committed", operation, resource={"kind": kind, "id": outcome.record["id"]})
+
+    def _personal_delete(operation: str, kind: str, fn) -> ProductToolResult:
+        try:
+            fn()
+        except PersonalWorkspaceError as exc:
+            return ProductToolResult("invalid", f"{kind}.invalid", operation, str(exc))
+        except PersonalNotFound:
+            return ProductToolResult("not_found", f"{kind}.not_found", operation, f"No {kind} found for that ID.")
+        return ProductToolResult("committed", f"{kind}.committed", operation)
+
+    @define_tool(name="list_tasks", description="List the user's own private tasks, with a server-computed overdue flag and subtask progress.")
+    def list_tasks(params: ListTasksCommand) -> ToolResult:
+        try:
+            state = personal_service.state(user_id)
+        except PersonalNotFound:
+            return _tool_result(ProductToolResult("succeeded", "task.listed", "list_tasks"), "No tasks yet.")
+        tasks = state.get("personalTasks") or []
+        if not tasks:
+            return _tool_result(ProductToolResult("succeeded", "task.listed", "list_tasks"), "No tasks yet.")
+        today = _today_iso()
+        lines = [f"{len(tasks)} task(s):"]
+        for t in tasks:
+            due = t.get("dueDate") or ""
+            overdue = bool(due) and due < today and t.get("status") != "Done"
+            subtasks = t.get("subtasks") or []
+            done = sum(1 for s in subtasks if s.get("done"))
+            lines.append(
+                f"- [{t['id']}] {t.get('title', '')} | status={t.get('status')} | priority={t.get('priority')} | "
+                f"group={t.get('group') or 'General'} | due={due or 'none'} | overdue={'yes' if overdue else 'no'} | "
+                f"subtasks={done}/{len(subtasks)}"
+            )
+        return _tool_result(ProductToolResult("succeeded", "task.listed", "list_tasks"), "\n".join(lines))
+
+    @define_tool(name="create_task", description="Create a private task for the user.")
+    def create_task(params: CreateTaskCommand) -> ToolResult:
+        values = {"title": params.title, "status": params.status, "priority": params.priority,
+                  "group": params.group, "dueDate": params.due_date, "notes": params.notes}
+        record, result = _personal_mutation("create_task", "task", lambda: personal_service.create_task(user_id, values))
+        return _tool_result(result, f"Task [{record['id']}] created." if record else result.message)
+
+    @define_tool(name="update_task", description="Update a private task by its exact ID. Omit fields to leave them unchanged.")
+    def update_task(params: UpdateTaskCommand) -> ToolResult:
+        values = {key: value for key, value in (
+            ("title", params.title), ("status", params.status), ("priority", params.priority),
+            ("group", params.group), ("dueDate", params.due_date), ("notes", params.notes),
+        ) if value is not None}
+        record, result = _personal_mutation(
+            "update_task", "task", lambda: personal_service.update_task(user_id, params.task_id, values))
+        return _tool_result(result, "Task updated." if record else result.message)
+
+    @define_tool(name="delete_task", description="Delete a private task by its exact ID.")
+    def delete_task(params: DeleteTaskCommand) -> ToolResult:
+        result = _personal_delete("delete_task", "task", lambda: personal_service.delete_task(user_id, params.task_id))
+        return _tool_result(result, "Task deleted." if result.status == "committed" else result.message)
+
+    @define_tool(name="add_subtask", description="Add a subtask to a private task by its exact ID.")
+    def add_subtask(params: AddSubtaskCommand) -> ToolResult:
+        record, result = _personal_mutation(
+            "add_subtask", "task", lambda: personal_service.add_subtask(user_id, params.task_id, params.text))
+        return _tool_result(result, "Subtask added." if record else result.message)
+
+    @define_tool(name="list_events", description="List the user's own private calendar events.")
+    def list_events(params: ListEventsCommand) -> ToolResult:
+        try:
+            state = personal_service.state(user_id)
+        except PersonalNotFound:
+            return _tool_result(ProductToolResult("succeeded", "event.listed", "list_events"), "No events yet.")
+        events = sorted(state.get("calendarEvents") or [], key=lambda e: (e.get("date") or "", e.get("start") or ""))
+        if not events:
+            return _tool_result(ProductToolResult("succeeded", "event.listed", "list_events"), "No events yet.")
+        lines = [f"{len(events)} event(s):"]
+        for e in events:
+            when = e.get("date", "")
+            if e.get("start"):
+                when += f" {e['start']}" + (f"-{e['end']}" if e.get("end") else "")
+            lines.append(f"- [{e['id']}] {e.get('title', '')} | {when} | type={e.get('type')}")
+        return _tool_result(ProductToolResult("succeeded", "event.listed", "list_events"), "\n".join(lines))
+
+    @define_tool(name="create_event", description="Create a private calendar event for the user.")
+    def create_event(params: CreateEventCommand) -> ToolResult:
+        values = {"title": params.title, "date": params.date, "start": params.start, "end": params.end,
+                  "type": params.type, "notes": params.notes}
+        record, result = _personal_mutation("create_event", "event", lambda: personal_service.create_event(user_id, values))
+        return _tool_result(result, f"Event [{record['id']}] created." if record else result.message)
+
+    @define_tool(name="update_event", description="Update a private calendar event by its exact ID. Omit fields to leave them unchanged.")
+    def update_event(params: UpdateEventCommand) -> ToolResult:
+        values = {key: value for key, value in (
+            ("title", params.title), ("date", params.date), ("start", params.start),
+            ("end", params.end), ("type", params.type), ("notes", params.notes),
+        ) if value is not None}
+        record, result = _personal_mutation(
+            "update_event", "event", lambda: personal_service.update_event(user_id, params.event_id, values))
+        return _tool_result(result, "Event updated." if record else result.message)
+
+    @define_tool(name="delete_event", description="Delete a private calendar event by its exact ID.")
+    def delete_event(params: DeleteEventCommand) -> ToolResult:
+        result = _personal_delete("delete_event", "event", lambda: personal_service.delete_event(user_id, params.event_id))
+        return _tool_result(result, "Event deleted." if result.status == "committed" else result.message)
+
+    @define_tool(name="list_reminders", description="List the user's own private reminders.")
+    def list_reminders(params: ListRemindersCommand) -> ToolResult:
+        try:
+            state = personal_service.state(user_id)
+        except PersonalNotFound:
+            return _tool_result(ProductToolResult("succeeded", "reminder.listed", "list_reminders"), "No reminders yet.")
+        reminders = state.get("reminders") or []
+        if not reminders:
+            return _tool_result(ProductToolResult("succeeded", "reminder.listed", "list_reminders"), "No reminders yet.")
+        lines = [f"{len(reminders)} reminder(s):"]
+        for r in reminders:
+            schedule = r.get("frequency")
+            if schedule == "weekly":
+                days = ", ".join(_DAY_NAMES[d] for d in sorted(r.get("daysOfWeek") or []))
+                schedule = f"weekly on {days}" if days else "weekly"
+            elif schedule == "once":
+                schedule = f"once on {r.get('dueDate')}"
+            lines.append(
+                f"- [{r['id']}] {r.get('title', '')} | {schedule} at {r.get('time')} {r.get('timezone')} | "
+                f"enabled={'yes' if r.get('enabled') else 'no'} | next={r.get('nextDueAt') or 'none'}"
+            )
+        return _tool_result(ProductToolResult("succeeded", "reminder.listed", "list_reminders"), "\n".join(lines))
+
+    @define_tool(name="create_reminder", description="Create a private reminder record for the user. This only creates the record; delivery happens separately.")
+    def create_reminder(params: CreateReminderCommand) -> ToolResult:
+        values = {
+            "title": params.title, "message": params.message, "frequency": params.frequency,
+            "dueDate": params.due_date, "time": params.time, "timezone": params.timezone,
+            "daysOfWeek": params.days_of_week,
+        }
+        record, result = _personal_mutation(
+            "create_reminder", "reminder", lambda: personal_service.create_schedule(user_id, values))
+        return _tool_result(result, f"Reminder [{record['id']}] created." if record else result.message)
+
+    @define_tool(name="update_reminder", description="Update a private reminder by its exact ID. Omit fields to leave them unchanged.")
+    def update_reminder(params: UpdateReminderCommand) -> ToolResult:
+        values = {key: value for key, value in (
+            ("title", params.title), ("message", params.message), ("frequency", params.frequency),
+            ("dueDate", params.due_date), ("time", params.time), ("timezone", params.timezone),
+            ("daysOfWeek", params.days_of_week), ("enabled", params.enabled),
+        ) if value is not None}
+        record, result = _personal_mutation(
+            "update_reminder", "reminder", lambda: personal_service.update_schedule(user_id, params.reminder_id, values))
+        return _tool_result(result, "Reminder updated." if record else result.message)
+
+    @define_tool(name="delete_reminder", description="Delete a private reminder by its exact ID.")
+    def delete_reminder(params: DeleteReminderCommand) -> ToolResult:
+        result = _personal_delete(
+            "delete_reminder", "reminder", lambda: personal_service.delete_schedule(user_id, params.reminder_id))
+        return _tool_result(result, "Reminder deleted." if result.status == "committed" else result.message)
+
     return [
         navigate,
         list_engagements, create_engagement, get_engagement, update_engagement, set_engagement_status,
         share_engagement,
+        list_tasks, create_task, update_task, delete_task, add_subtask,
+        list_events, create_event, update_event, delete_event,
+        list_reminders, create_reminder, update_reminder, delete_reminder,
     ]
 
 

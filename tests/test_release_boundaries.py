@@ -247,9 +247,12 @@ def test_active_sources_omit_dynamic_sessions_and_legacy_trace_tools() -> None:
         assert banned_label not in source, path
 
     trace = (ROOT / "frontend" / "src" / "components" / "ToolTrace.tsx").read_text()
+    # Tasks/Calendar tool names were restored as the T3 tranche of the issue #18
+    # recovery record (typed personal-workspace tools calling PersonalWorkspaceService);
+    # they are legitimately present in ToolTrace.tsx now. propose_memory, save_memory,
+    # delete_schedule (the public reminder tool is delete_reminder, not delete_schedule),
+    # and write_file remain genuinely dead and stay banned.
     for legacy_tool in (
-        "create_task", "update_task", "delete_task", "add_subtask", "list_tasks",
-        "create_event", "update_event", "delete_event", "list_events",
         "propose_memory", "save_memory", "delete_schedule", "write_file",
     ):
         assert legacy_tool not in trace
@@ -280,18 +283,18 @@ def test_local_cors_accepts_only_the_documented_loopback_aliases() -> None:
     assert orchestrator._cors_origins("https://demo.example.test") == ["https://demo.example.test"]
 
 
-def test_legacy_personal_scheduler_and_library_surfaces_are_absent() -> None:
+def test_manual_personal_routes_exist_without_scheduler_or_library_surfaces() -> None:
     routes = {route.path for route in orchestrator.app.routes}
-    assert not any(route.startswith("/sessions/{session_id}/tasks") for route in routes)
-    assert not any(route.startswith("/sessions/{session_id}/events") for route in routes)
-    assert not any(route.startswith("/sessions/{session_id}/schedules") for route in routes)
+    assert "/sessions/{session_id}/tasks" in routes
+    assert "/sessions/{session_id}/events" in routes
+    assert "/sessions/{session_id}/schedules" in routes
     assert not any(route.startswith("/sessions/{session_id}/library") for route in routes)
     assert not (ROOT / "scheduler.py").exists()
     assert not (ROOT / "email_acs.py").exists()
     assert not (ROOT / "session-container" / "library.py").exists()
 
 
-def test_supported_app_state_and_context_bundle_are_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supported_app_state_includes_private_and_engagement_records(monkeypatch: pytest.MonkeyPatch) -> None:
     import appdb
 
     user = {
@@ -301,11 +304,19 @@ def test_supported_app_state_and_context_bundle_are_minimal(monkeypatch: pytest.
         "persona": {"role": "Product lead", "tone": "concise", "outputPrefs": "", "language": "English"},
     }
     engagements = [{"id": "eng-product-launch", "name": "Product Launch"}]
+    personal = {
+        "currentRoute": "/home", "personalTasks": [{"id": "t-1"}],
+        "calendarEvents": [{"id": "e-1"}], "reminders": [{"id": "s-1"}],
+    }
     monkeypatch.setattr(appdb, "get_user", lambda uid: user if uid == "dan" else None)
+    monkeypatch.setattr(appdb, "load_personal_workspace", lambda uid: personal if uid == "dan" else None)
     monkeypatch.setattr(appdb, "list_engagements_for", lambda uid: engagements if uid == "dan" else [])
     state = appdb.supported_app_state_for("dan")
-    assert set(state) == {"currentRoute", "engagements", "user"}
-    assert state["currentRoute"] == "/engagements"
+    assert set(state) == {"currentRoute", "personalTasks", "calendarEvents", "reminders", "engagements", "user"}
+    assert state["currentRoute"] == "/home"
+    assert state["personalTasks"] == personal["personalTasks"]
+    assert state["calendarEvents"] == personal["calendarEvents"]
+    assert state["reminders"] == personal["reminders"]
     assert state["engagements"] == engagements
     assert state["user"] == {
         "id": "dan", "username": "dan", "displayName": "Dan", "persona": user["persona"],
@@ -488,6 +499,35 @@ def test_artifact_frontend_uses_download_anchor_without_blob_navigation() -> Non
     assert "artifact-download-" in source
     assert "downloadEngagementArtifact" in api_source
     assert "openEngagementArtifact" not in api_source
+
+
+def test_json_body_limit_preserves_sse_streaming_responses() -> None:
+    """Regression: the bounded receive answered post-body polls with a synthetic
+    http.disconnect, which made Starlette cancel every StreamingResponse (all
+    live agent chat) behind this middleware. The buffered request must hand
+    subsequent receive() calls to the real channel."""
+    from fastapi import FastAPI
+    from fastapi.responses import StreamingResponse
+    from fastapi.testclient import TestClient
+
+    sse_app = FastAPI()
+    sse_app.add_middleware(JsonRequestBodyLimitMiddleware)
+
+    @sse_app.middleware("http")
+    async def outer(request, call_next):  # mirror the real apps: BaseHTTPMiddleware above the limiter
+        return await call_next(request)
+
+    @sse_app.post("/stream")
+    async def stream(body: dict) -> StreamingResponse:
+        async def events():
+            for index in range(3):
+                yield f"data: chunk-{index}\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    with TestClient(sse_app) as client:
+        response = client.post("/stream", json={"prompt": "hello"})
+    assert response.status_code == 200
+    assert response.text.count("data: chunk-") == 3
 
 
 def test_json_body_limit_rejects_declared_chunked_and_untyped_edit_bodies_before_app_execution() -> None:
@@ -696,9 +736,13 @@ def test_library_search_is_not_started_or_routed() -> None:
     assert "import library" not in source
     assert "ensure_seeded_indexed" not in source
     assert '"/sessions/{session_id}/library' not in source
+    # The legacy unattended scheduler stays out: no legacy module/env names and no
+    # global recipient address. Reminder email ships via workbench_core.reminder_dispatch
+    # (identity-derived recipients, claim-before-send) per the issue #18 recovery record.
     assert "scheduler_loop" not in source
     assert "SCHEDULER_ENABLED" not in source
-    assert "azure-communication-email" not in (ROOT / "pyproject.toml").read_text()
+    assert "import email_acs" not in source
+    assert "REMINDER_EMAIL" not in source
     assert "library.py" not in (ROOT / "Dockerfile").read_text()
     assert "library.py" not in (ROOT / "session-container" / "Dockerfile").read_text()
 

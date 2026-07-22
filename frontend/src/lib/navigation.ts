@@ -1,9 +1,13 @@
 import type { AppState, Destination } from "./types";
 import { parseEngagementRoute } from "./engagementRoute";
 const ENGAGEMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const RECORD_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const PERSONAL_ROUTES = new Set(["/home", "/todo", "/calendar", "/reminders"]);
 
 export function normalizeHostRoute(route: string): string {
-  if (route === "/engagements" || route === "/settings") return route;
+  if (route === "/engagements" || route === "/settings" || PERSONAL_ROUTES.has(route)) return route;
+  const taskDetail = /^\/todo\/([^/]+)$/.exec(route);
+  if (taskDetail && RECORD_ID.test(taskDetail[1])) return route;
   return parseEngagementRoute(route) ? route : "/engagements";
 }
 

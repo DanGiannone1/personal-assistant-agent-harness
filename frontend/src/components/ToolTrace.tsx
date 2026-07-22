@@ -13,6 +13,19 @@ function runningLabel(name: string): string {
     update_engagement: "Updating engagement",
     set_engagement_status: "Updating status",
     share_engagement: "Sharing engagement",
+    list_tasks: "Reviewing tasks",
+    create_task: "Creating task",
+    update_task: "Updating task",
+    delete_task: "Deleting task",
+    add_subtask: "Adding subtask",
+    list_events: "Reviewing calendar",
+    create_event: "Creating event",
+    update_event: "Updating event",
+    delete_event: "Deleting event",
+    list_reminders: "Reviewing reminders",
+    create_reminder: "Creating reminder",
+    update_reminder: "Updating reminder",
+    delete_reminder: "Deleting reminder",
     skill: "Loading skill",
   };
   return labels[name] || "Working";
@@ -24,7 +37,15 @@ function doneLabel(name: string, result: ProductToolResult | undefined): string 
   if (!result) return "Outcome unavailable";
   if (["failed", "invalid", "not_found", "forbidden", "conflict"].includes(result.status)) return "Couldn't complete";
   if (["noop", "needs_confirmation", "ambiguous"].includes(result.status)) return "No change";
-  if (["committed", "resolved", "succeeded"].includes(result.status)) return ({ navigate: "Navigated", create_engagement: "Engagement created", get_engagement: "Engagement reviewed", update_engagement: "Engagement updated", set_engagement_status: "Status updated", share_engagement: "Engagement shared", list_engagements: "Engagements reviewed" } as Record<string, string>)[name] || "Completed";
+  if (["committed", "resolved", "succeeded"].includes(result.status)) return ({
+    navigate: "Navigated", create_engagement: "Engagement created", get_engagement: "Engagement reviewed",
+    update_engagement: "Engagement updated", set_engagement_status: "Status updated", share_engagement: "Engagement shared",
+    list_engagements: "Engagements reviewed", list_tasks: "Tasks reviewed", create_task: "Task created",
+    update_task: "Task updated", delete_task: "Task deleted", add_subtask: "Subtask added",
+    list_events: "Calendar reviewed", create_event: "Event created", update_event: "Event updated",
+    delete_event: "Event deleted", list_reminders: "Reminders reviewed", create_reminder: "Reminder created",
+    update_reminder: "Reminder updated", delete_reminder: "Reminder deleted",
+  } as Record<string, string>)[name] || "Completed";
   return "Outcome unavailable";
 }
 
@@ -37,6 +58,10 @@ function toolContext(name: string, args: string | undefined): string | null {
       case "create_engagement": return p.name || null;
       case "get_engagement": case "update_engagement": case "set_engagement_status": return p.engagement_id || null;
       case "share_engagement": return p.user || null;
+      case "create_task": case "create_event": case "create_reminder": return p.title || null;
+      case "update_task": case "delete_task": case "add_subtask": return p.task_id || null;
+      case "update_event": case "delete_event": return p.event_id || null;
+      case "update_reminder": case "delete_reminder": return p.reminder_id || null;
       case "skill": return p.name || null;
       default: return null;
     }

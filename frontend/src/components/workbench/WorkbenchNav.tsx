@@ -8,6 +8,10 @@ import {
   Settings,
   Menu,
   X,
+  Home,
+  CheckSquare,
+  Calendar,
+  Bell,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "@/lib/types";
@@ -94,7 +98,7 @@ export default function WorkbenchNav({
     return () => query.removeEventListener("change", onChange);
   }, [drawerOpen, setDrawer]);
 
-  const navItem = (route: string, label: string, Icon: typeof FolderKanban) => {
+  const navItem = (route: string, label: string, Icon: typeof Home) => {
     const active =
       !assistantActive &&
       (viewRoute === route ||
@@ -136,6 +140,15 @@ export default function WorkbenchNav({
         </button>
       </div>
       {navItem("/engagements", "Engagements", FolderKanban)}
+      <div data-testid="personal-space">
+        <div className="tw-nav-section" data-testid="personal-nav-section">
+          My work
+        </div>
+        {navItem("/home", "Home", Home)}
+        {navItem("/todo", "Tasks", CheckSquare)}
+        {navItem("/calendar", "Calendar", Calendar)}
+        {navItem("/reminders", "Reminders", Bell)}
+      </div>
       <div className="tw-nav-section">Assistant</div>
       <button
         type="button"

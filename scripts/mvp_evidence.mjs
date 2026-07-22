@@ -312,6 +312,26 @@ export function onlyExpectedEngagementUpdate(before, after, { id, actor, detail 
   return JSON.stringify(beforeTarget) === JSON.stringify(afterTarget);
 }
 
+// Personal Tasks, Calendar events, and Reminders are actor-scoped aggregates (never shared,
+// never Engagement-scoped): app/state already returns only the calling actor's own records,
+// so "only this aggregate may change" means every other top-level key is untouched and the
+// named aggregate gained exactly the one new record, with all prior records retained as-is.
+export function onlyPersonalAggregateMayChange(before, after, aggregateKey) {
+  const normalizedBefore = normalizedState(before);
+  const normalizedAfter = normalizedState(after);
+  const { [aggregateKey]: beforeItems = [], ...beforeElse } = normalizedBefore;
+  const { [aggregateKey]: afterItems = [], ...afterElse } = normalizedAfter;
+  if (JSON.stringify(beforeElse) !== JSON.stringify(afterElse)) return false;
+  if (!Array.isArray(beforeItems) || !Array.isArray(afterItems) || afterItems.length !== beforeItems.length + 1) return false;
+  const remaining = [...afterItems];
+  for (const entry of beforeItems) {
+    const index = remaining.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(entry));
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+  }
+  return remaining.length === 1;
+}
+
 function validEventSequence(events) {
   if (!Array.isArray(events) || events.length < 2 || events[0]?.type !== "RUN_STARTED") return false;
   const terminals = terminalEvents(events);
@@ -329,6 +349,9 @@ function validEventSequence(events) {
     set_engagement_status: "update",
     share_engagement: "share",
     navigate: "navigate",
+    // Personal-workspace tools report their own literal tool name as the result operation
+    // (see _personal_mutation), unlike the canonical Engagement verbs above.
+    create_task: "create_task",
   };
   const knownTypes = new Set([
     "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
@@ -463,6 +486,9 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
     engagementAfter: targetAfter,
     onlyNamedEngagementMayChange: !expectation.onlyEngagementMayChange || onlyNamedEngagementMayChange(before, after, expectation.onlyEngagementMayChange),
     onlyExpectedEngagementUpdate: !expectation.exactEngagementUpdate || onlyExpectedEngagementUpdate(before, after, expectation.exactEngagementUpdate),
+    onlyPersonalAggregateMayChange: !expectation.onlyPersonalAggregateMayChange
+      || onlyPersonalAggregateMayChange(before, after, expectation.onlyPersonalAggregateMayChange),
+    resourceKindMatchesTarget: !expectation.resourceKind || matchedResult?.resource?.kind === expectation.resourceKind,
     resourceMatchesTarget: !expectation.resourceId || (matchedResult?.resource?.kind === "engagement" && matchedResult.resource.id === expectation.resourceId),
     noUnexpectedResourceTargets: !expectation.resourceId || results.every((result) =>
       result?.resource?.kind !== "engagement" || result.resource.id === expectation.resourceId),

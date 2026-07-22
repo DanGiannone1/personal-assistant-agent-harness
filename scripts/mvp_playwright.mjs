@@ -372,6 +372,109 @@ try {
   );
   await capture(narrow.page, `${out}/narrow-assistant-workspace.png`);
 
+  // ── Personal work: Home/Tasks/Calendar/Reminders are the actor's private, owner-only
+  // surfaces recovered under issue #18. Cover every route through the real nav, then
+  // exercise create flows against authoritative state rather than a rendered label alone.
+  const personalRoutes = [
+    { nav: "nav--home", screen: "home-screen", shot: "wide-dan-home.png" },
+    { nav: "nav--todo", screen: "todo-screen", shot: "wide-dan-todo.png" },
+    { nav: "nav--calendar", screen: "calendar-screen", shot: "wide-dan-calendar.png" },
+    { nav: "nav--reminders", screen: "reminders-screen", shot: "wide-dan-reminders.png" },
+    { nav: "nav--engagements", screen: "engagements-screen", shot: null },
+    { nav: "nav--settings", screen: "settings-screen", shot: null },
+  ];
+  let pageInventoryPass = true;
+  for (const route of personalRoutes) {
+    await dan.page.getByTestId(route.nav).click();
+    const rendered = await eventually(() => dan.page.getByTestId(route.screen).count().then((count) => count === 1));
+    pageInventoryPass = pageInventoryPass && !!rendered;
+    if (route.shot) await capture(dan.page, `${out}/${route.shot}`);
+  }
+  await dan.page.getByTestId("nav-assistant").click();
+  const assistantInventoryRendered = await eventually(() => dan.page.getByTestId("assistant-workspace").count().then((count) => count === 1));
+  pageInventoryPass = pageInventoryPass && assistantInventoryRendered;
+  check("MVP-P40-page-inventory", pageInventoryPass);
+
+  // The Assistant workspace's shared nav rail only returns to the host shell for
+  // Engagements/Settings destinations, not the personal-work routes exercised below, so
+  // return to the host through a route that does before continuing (see AssistantWorkspace's
+  // hostContext check — a known gap reported separately, not a defect in this journey).
+  await dan.page.getByTestId("nav--engagements").click();
+  await dan.page.getByTestId("engagements-screen").waitFor({ state: "visible" });
+
+  // Tasks: create, then add a subtask on the detail view. The seeded demo fixture already
+  // gives every actor one task, so assertions check containment, not exact counts.
+  await dan.page.getByTestId("nav--todo").click();
+  await dan.page.getByTestId("todo-screen").waitFor({ state: "visible" });
+  const taskTitle = "MVP Browser Personal Task";
+  await dan.page.getByTestId("add-task-btn").click();
+  await dan.page.getByTestId("task-title-input").fill(taskTitle);
+  await dan.page.getByTestId("task-save-btn").click();
+  const createdTask = await eventually(async () => (await state(dan.page)).personalTasks.find((task) => task.title === taskTitle));
+  const taskRenderedAfterCreate = await eventually(() => dan.page.getByTestId(`task-row-${createdTask.id}`).count().then((count) => count === 1));
+  await dan.page.getByTestId(`task-row-${createdTask.id}`).click();
+  await dan.page.getByTestId("task-detail").waitFor({ state: "visible" });
+  const subtaskText = "MVP Browser Subtask";
+  await dan.page.getByTestId("subtask-input").fill(subtaskText);
+  await dan.page.getByTestId("subtask-add-btn").click();
+  const taskWithSubtask = await eventually(async () => (await state(dan.page)).personalTasks
+    .find((task) => task.id === createdTask.id && (task.subtasks ?? []).some((subtask) => subtask.text === subtaskText)));
+  const subtaskRendered = await eventually(() => dan.page.getByTestId("task-subtasks").getByText(subtaskText).count().then((count) => count === 1));
+  check(
+    "MVP-P41-task-crud",
+    !!createdTask && taskRenderedAfterCreate && !!taskWithSubtask && subtaskRendered,
+    JSON.stringify({ taskId: createdTask?.id }),
+  );
+
+  // Calendar: create an event.
+  await dan.page.getByTestId("nav--calendar").click();
+  await dan.page.getByTestId("calendar-screen").waitFor({ state: "visible" });
+  const eventTitle = "MVP Browser Personal Event";
+  await dan.page.getByTestId("add-event-btn").click();
+  await dan.page.getByTestId("event-title-input").fill(eventTitle);
+  await dan.page.getByTestId("event-date-input").fill("2030-03-02");
+  await dan.page.getByTestId("event-save-btn").click();
+  const createdEvent = await eventually(async () => (await state(dan.page)).calendarEvents.find((event) => event.title === eventTitle));
+  const eventRendered = await eventually(() => dan.page.getByTestId(`agenda-event-${createdEvent.id}`).count().then((count) => count === 1));
+  check("MVP-P42-calendar-crud", !!createdEvent && eventRendered, JSON.stringify({ eventId: createdEvent?.id }));
+
+  // Reminders: create a weekly reminder (daysOfWeek 0=Mon..6=Sun), then pause it.
+  await dan.page.getByTestId("nav--reminders").click();
+  await dan.page.getByTestId("reminders-screen").waitFor({ state: "visible" });
+  const reminderTitle = "MVP Browser Personal Reminder";
+  await dan.page.getByTestId("add-reminder-btn").click();
+  await dan.page.getByTestId("reminder-title-input").fill(reminderTitle);
+  await dan.page.getByTestId("reminder-frequency-select").selectOption("weekly");
+  await dan.page.getByTestId("reminder-date-input").fill("2030-03-04");
+  await dan.page.getByTestId("reminder-time-input").fill("09:00");
+  await dan.page.getByTestId("reminder-days").getByRole("button", { name: "Mon", exact: true }).click();
+  await dan.page.getByTestId("reminder-save-btn").click();
+  const createdReminder = await eventually(async () => (await state(dan.page)).reminders.find((reminder) => reminder.title === reminderTitle));
+  const reminderCreateValid = !!createdReminder && createdReminder.enabled === true && createdReminder.nextDueAt !== null;
+  const reminderNextCellText = await dan.page.getByTestId(`reminder-row-${createdReminder.id}`).locator("td").nth(2).innerText();
+  await dan.page.getByTestId(`reminder-toggle-${createdReminder.id}`).click();
+  const pausedReminder = await eventually(async () => {
+    const reminder = (await state(dan.page)).reminders.find((entry) => entry.id === createdReminder.id);
+    return reminder && reminder.enabled === false && reminder.nextDueAt === null ? reminder : null;
+  });
+  const reminderPausedRendered = await eventually(() => dan.page.getByTestId(`reminder-toggle-${createdReminder.id}`).innerText().then((text) => text.trim() === "Resume"));
+  check(
+    "MVP-P43-reminder-lifecycle",
+    reminderCreateValid && reminderNextCellText !== "—" && !!pausedReminder && reminderPausedRendered,
+    JSON.stringify({ created: createdReminder, nextCellText: reminderNextCellText, paused: pausedReminder }),
+  );
+
+  // Isolation: Ava's own personal aggregates must never contain Dan's records.
+  const avaPersonalState = await state(ava.page);
+  const avaTaskIds = (avaPersonalState.personalTasks ?? []).map((task) => task.id);
+  const avaEventIds = (avaPersonalState.calendarEvents ?? []).map((event) => event.id);
+  const avaReminderIds = (avaPersonalState.reminders ?? []).map((reminder) => reminder.id);
+  check(
+    "MVP-P44-personal-isolation",
+    !avaTaskIds.includes(createdTask.id) && !avaEventIds.includes(createdEvent.id) && !avaReminderIds.includes(createdReminder.id),
+    JSON.stringify({ avaTaskIds, avaEventIds, avaReminderIds, danTaskId: createdTask.id, danEventId: createdEvent.id, danReminderId: createdReminder.id }),
+  );
+
   report.pageErrors = { dan: dan.errors, ava: ava.errors, sam: sam.errors, narrow: narrow.errors };
   check("MVP-P26-no-page-errors", Object.values(report.pageErrors).every((errors) => errors.length === 0), JSON.stringify(report.pageErrors));
   await Promise.all([dan.context.close(), ava.context.close(), sam.context.close(), narrow.context.close()]);

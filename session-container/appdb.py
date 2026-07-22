@@ -3,6 +3,8 @@
 App state lives in **Azure Cosmos DB** as a set of documents in one container:
 
 - ``users``            — the account registry: seeded users with password hashes + persona.
+- ``personal-{uid}``   — one private aggregate per authenticated actor for Tasks,
+  Calendar events, and in-app Reminders.
 - ``eng-*``           — shared **engagement** documents (M2+): records + members + conventions.
 
 Every mutation goes through the optimistic-ETag ``_update_doc`` path, one document at a
@@ -34,6 +36,8 @@ _LOCK = threading.Lock()
 
 _USERS_DOC_ID = "users"
 _container_singleton = None
+
+_PERSONAL_STATE_KEYS = ("currentRoute", "personalTasks", "calendarEvents", "reminders")
 
 
 def _container():
@@ -176,6 +180,8 @@ def ensure_seeded(demo_password: str) -> None:
             _container().replace_item(item=_USERS_DOC_ID, body=users_doc)
         except cosmos_exceptions.CosmosResourceNotFoundError:
             _container().create_item(users_doc)
+    for user in users_doc["users"]:
+        _ensure_personal_workspace_seeded(user["id"], demo=True)
     _seed_engagements()
 
 
@@ -260,6 +266,7 @@ def ensure_entra_user(tid: str, oid: str, username: str, display_name: str) -> d
 
     _ensure_user_registry()
     _update_raw(_USERS_DOC_ID, _mut)
+    _ensure_personal_workspace_seeded(uid, demo=False)
     return get_user(uid)
 
 
@@ -313,6 +320,100 @@ def _update_raw(doc_id: str, mutator):
     raise RuntimeError(
         f"doc {doc_id!r} update failed after {_MAX_UPDATE_RETRIES} retries (write contention)"
     ) from last_exc
+
+
+# ── Personal workspaces ──────────────────────────────────────────────────────
+# Private data is deliberately a separate document from shared Engagements.
+# Its ID and partition key are deterministically derived only from the authenticated
+# actor ID supplied by the app tier; records themselves carry no caller-controlled owner.
+def _personal_workspace_id(user_id: str) -> str:
+    return f"personal-{_valid_user(user_id)}"
+
+
+def _new_personal_workspace(user_id: str, *, demo: bool) -> dict:
+    uid = _valid_user(user_id)
+    doc = {
+        "id": _personal_workspace_id(uid),
+        "sessionId": _personal_workspace_id(uid),
+        "currentRoute": "/engagements",
+        "personalTasks": [],
+        "calendarEvents": [],
+        "reminders": [],
+    }
+    if demo:
+        # Deterministic, harmless fixtures make each demo account's private
+        # workspace demonstrable without implying any external delivery.
+        doc["personalTasks"] = [{
+            "id": "t-1", "title": "Review personal workspace", "status": "To do",
+            "priority": "Medium", "group": "Personal", "dueDate": "2030-01-15",
+            "notes": "Seeded private demo task.", "subtasks": [],
+            "createdAt": "2030-01-01T00:00:00+00:00",
+        }]
+        doc["calendarEvents"] = [{
+            "id": "e-1", "title": "Personal planning", "date": "2030-01-15",
+            "start": "09:00", "end": "09:30", "type": "Focus",
+            "notes": "Seeded private demo event.",
+        }]
+        doc["reminders"] = [{
+            "id": "s-1", "title": "Weekly planning reminder", "message": "Plan the week.",
+            "frequency": "weekly", "dueDate": "2030-01-07", "time": "09:00",
+            "timezone": "UTC", "daysOfWeek": [0], "enabled": True,
+            "nextDueAt": "2030-01-07T09:00:00+00:00", "createdAt": "2030-01-01T00:00:00+00:00",
+        }]
+    return doc
+
+
+def _ensure_personal_workspace_seeded(user_id: str, *, demo: bool) -> None:
+    doc = _new_personal_workspace(user_id, demo=demo)
+    try:
+        _container().create_item(doc)
+    except cosmos_exceptions.CosmosResourceExistsError:
+        pass
+
+
+def _personal_state(doc: dict) -> dict:
+    """Return only the public personal-state fields, with null-safe collections."""
+    state = {key: doc.get(key) for key in _PERSONAL_STATE_KEYS}
+    state["currentRoute"] = state["currentRoute"] or "/engagements"
+    for key in ("personalTasks", "calendarEvents", "reminders"):
+        if state[key] is None:
+            state[key] = []
+    return state
+
+
+def load_personal_workspace(user_id: str) -> dict | None:
+    uid = _valid_user(user_id)
+    if get_user(uid) is None:
+        return None
+    doc_id = _personal_workspace_id(uid)
+    try:
+        doc = _container().read_item(item=doc_id, partition_key=doc_id)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        # An existing actor from before this aggregate was introduced gets an
+        # empty private workspace; demo fixture seeding remains startup-only.
+        _ensure_personal_workspace_seeded(uid, demo=False)
+        try:
+            doc = _container().read_item(item=doc_id, partition_key=doc_id)
+        except cosmos_exceptions.CosmosResourceNotFoundError:
+            return None
+    return _personal_state({key: value for key, value in doc.items() if not key.startswith("_")})
+
+
+def update_personal_workspace(user_id: str, mutator):
+    """ETag-safe update of exactly one authenticated actor's private aggregate."""
+    uid = _valid_user(user_id)
+    if get_user(uid) is None:
+        raise LookupError("unknown user")
+    doc_id = _personal_workspace_id(uid)
+    _ensure_personal_workspace_seeded(uid, demo=False)
+
+    def _mut(doc):
+        state = _personal_state(doc)
+        result = mutator(state)
+        doc.update(state)
+        return result
+
+    return _update_raw(doc_id, _mut)
 
 
 # ── Engagements ─────────────────────────────────────────────────────────────────
@@ -454,13 +555,19 @@ def list_engagements_for(user_id: str) -> list[dict]:
 
 
 def supported_app_state_for(user_id: str) -> dict:
-    """Return the only durable product state exposed to a signed-in user."""
+    """Return the signed-in user's private data and visible shared Engagements."""
     uid = _valid_user(user_id)
     user = get_user(uid)
     if user is None:
         raise LookupError("unknown user")
+    personal = load_personal_workspace(uid)
+    if personal is None:
+        raise LookupError("personal workspace missing")
     return {
-        "currentRoute": "/engagements",
+        "currentRoute": personal["currentRoute"],
+        "personalTasks": personal["personalTasks"],
+        "calendarEvents": personal["calendarEvents"],
+        "reminders": personal["reminders"],
         "engagements": list_engagements_for(uid),
         "user": {
             "id": user["id"],

@@ -1,4 +1,4 @@
-import type { AppState, ContextBundle, Engagement, FileInfo } from "./types";
+import type { AppState, CalendarEvent, ContextBundle, Engagement, FileInfo, Reminder, Task } from "./types";
 
 type ObjectValue = Record<string, unknown>;
 
@@ -102,6 +102,70 @@ export function decodeContextBundle(value: unknown): ContextBundle {
   };
 }
 
+// Shared by Engagement tasks and the private personal-workspace Tasks list — both
+// collections carry the same Task shape.
+export function decodeTask(value: unknown): Task {
+  const task = object(value, "task");
+  const statusValue = string(task.status, "task.status");
+  const priority = string(task.priority, "task.priority");
+  if (!["To do", "In progress", "Blocked", "Done"].includes(statusValue) || !["Low", "Medium", "High"].includes(priority)) throw new Error("Malformed task payload");
+  const subtasks = task.subtasks === undefined ? undefined : array(task.subtasks, "task.subtasks").map((item) => {
+    const subtask = object(item, "subtask");
+    if (typeof subtask.done !== "boolean") throw new Error("Malformed subtask payload");
+    return { text: text(subtask.text, "subtask.text"), done: subtask.done };
+  });
+  return {
+    id: string(task.id, "task.id"), title: text(task.title, "task.title"), status: statusValue as Task["status"], priority: priority as Task["priority"],
+    group: text(task.group, "task.group"),
+    ...(task.dueDate === undefined ? {} : { dueDate: text(task.dueDate, "task.dueDate") }),
+    ...(subtasks ? { subtasks } : {}),
+    ...(task.notes === undefined ? {} : { notes: text(task.notes, "task.notes") }),
+    ...(task.createdAt === undefined ? {} : { createdAt: text(task.createdAt, "task.createdAt") }),
+  };
+}
+
+export function decodeCalendarEvent(value: unknown): CalendarEvent {
+  const event = object(value, "event");
+  const type = string(event.type, "event.type");
+  if (!["Meeting", "Focus", "Personal"].includes(type)) throw new Error("Malformed event payload");
+  return {
+    id: string(event.id, "event.id"),
+    title: text(event.title, "event.title"),
+    date: text(event.date, "event.date"),
+    start: text(event.start, "event.start"),
+    end: text(event.end, "event.end"),
+    type: type as CalendarEvent["type"],
+    notes: text(event.notes, "event.notes"),
+  };
+}
+
+export function decodeReminder(value: unknown): Reminder {
+  const reminder = object(value, "reminder");
+  const frequency = string(reminder.frequency, "reminder.frequency");
+  if (!["once", "daily", "weekly"].includes(frequency)) throw new Error("Malformed reminder payload");
+  if (typeof reminder.enabled !== "boolean") throw new Error("Malformed reminder payload");
+  const daysOfWeek = array(reminder.daysOfWeek, "reminder.daysOfWeek").map((entry) => {
+    if (typeof entry !== "number" || !Number.isInteger(entry) || entry < 0 || entry > 6) throw new Error("Malformed reminder payload");
+    return entry;
+  });
+  const nextDueAt = reminder.nextDueAt === null || reminder.nextDueAt === undefined ? null : string(reminder.nextDueAt, "reminder.nextDueAt");
+  return {
+    id: string(reminder.id, "reminder.id"),
+    title: text(reminder.title, "reminder.title"),
+    message: text(reminder.message, "reminder.message"),
+    frequency: frequency as Reminder["frequency"],
+    dueDate: text(reminder.dueDate, "reminder.dueDate"),
+    time: text(reminder.time, "reminder.time"),
+    timezone: string(reminder.timezone, "reminder.timezone"),
+    daysOfWeek,
+    enabled: reminder.enabled,
+    nextDueAt,
+    createdAt: string(reminder.createdAt, "reminder.createdAt"),
+    ...(reminder.lastSentAt === undefined ? {} : { lastSentAt: string(reminder.lastSentAt, "reminder.lastSentAt") }),
+    ...(reminder.lastStatus === undefined ? {} : { lastStatus: string(reminder.lastStatus, "reminder.lastStatus") }),
+  };
+}
+
 function decodeEngagement(value: unknown): Engagement {
   const engagement = object(value, "engagement");
   const status = string(engagement.status, "engagement.status");
@@ -116,18 +180,7 @@ function decodeEngagement(value: unknown): Engagement {
     const convention = object(entry, "engagement.convention");
     return { id: string(convention.id, "engagement.convention.id"), text: text(convention.text, "engagement.convention.text"), createdBy: string(convention.createdBy, "engagement.convention.createdBy"), createdAt: string(convention.createdAt, "engagement.convention.createdAt") };
   });
-  const tasks = array(engagement.tasks, "engagement.tasks").map((entry) => {
-    const task = object(entry, "engagement.task");
-    const statusValue = string(task.status, "engagement.task.status");
-    const priority = string(task.priority, "engagement.task.priority");
-    if (!["To do", "In progress", "Blocked", "Done"].includes(statusValue) || !["Low", "Medium", "High"].includes(priority)) throw new Error("Malformed engagement task payload");
-    const subtasks = task.subtasks === undefined ? undefined : array(task.subtasks, "engagement.task.subtasks").map((item) => {
-      const subtask = object(item, "engagement.subtask");
-      if (typeof subtask.done !== "boolean") throw new Error("Malformed engagement subtask payload");
-      return { text: text(subtask.text, "engagement.subtask.text"), done: subtask.done };
-    });
-    return { id: string(task.id, "engagement.task.id"), title: text(task.title, "engagement.task.title"), status: statusValue, priority, group: text(task.group, "engagement.task.group"), ...(task.dueDate === undefined ? {} : { dueDate: text(task.dueDate, "engagement.task.dueDate") }), ...(subtasks ? { subtasks } : {}), ...(task.notes === undefined ? {} : { notes: text(task.notes, "engagement.task.notes") }), ...(task.createdAt === undefined ? {} : { createdAt: text(task.createdAt, "engagement.task.createdAt") }) };
-  });
+  const tasks = array(engagement.tasks, "engagement.tasks").map(decodeTask);
   const library = array(engagement.library, "engagement.library").map((entry) => {
     const artifact = object(entry, "engagement.artifact");
     if (typeof artifact.size !== "number" || !Number.isFinite(artifact.size) || artifact.size < 0) throw new Error("Malformed engagement artifact payload");
@@ -151,10 +204,16 @@ export function decodeEngagementList(value: unknown): Engagement[] { return arra
 export function decodeAppState(value: unknown): AppState {
   const state = object(value, "application state");
   const engagements = decodeEngagementList(state.engagements);
+  const personalTasks = array(state.personalTasks, "personalTasks").map(decodeTask);
+  const calendarEvents = array(state.calendarEvents, "calendarEvents").map(decodeCalendarEvent);
+  const reminders = array(state.reminders, "reminders").map(decodeReminder);
   const user = object(state.user, "application user");
   const persona = user.persona === undefined ? undefined : object(user.persona, "user.persona");
   return {
     currentRoute: string(state.currentRoute, "currentRoute"),
+    personalTasks,
+    calendarEvents,
+    reminders,
     engagements,
     user: {
       id: string(user.id, "user.id"), username: string(user.username, "user.username"), displayName: string(user.displayName, "user.displayName"),

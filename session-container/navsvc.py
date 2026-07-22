@@ -13,6 +13,10 @@ from workbench_core import ProductToolResult
 
 _STATIC = {
     "engagements": ("/engagements", "Engagements"),
+    "home": ("/home", "Home"),
+    "tasks": ("/todo", "Tasks"),
+    "calendar": ("/calendar", "Calendar"),
+    "reminders": ("/reminders", "Reminders"),
 }
 _SCOPED_SUFFIX = {
     "engagement_overview": ("", "Overview"),
