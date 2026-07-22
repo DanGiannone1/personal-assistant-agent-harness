@@ -494,3 +494,18 @@ def test_browser_validation_runbook_uses_the_isolated_demo_parent_shell_values()
 
     for value in ('## Browser validation', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
         assert value in development
+
+
+def test_acr_build_context_rules_exclude_local_and_generated_content() -> None:
+    root_rules = {
+        line for line in (ROOT / '.dockerignore').read_text().splitlines()
+        if line and not line.startswith('#')
+    }
+    frontend_rules = {
+        line for line in (ROOT / 'frontend' / '.dockerignore').read_text().splitlines()
+        if line and not line.startswith('#')
+    }
+
+    assert {'frontend', 'evidence', '.local-runs', '.mvp-artifacts', 'incoming', '.claude', '.venv', 'node_modules'} <= root_rules
+    assert {'.next*', 'node_modules', '.env*'} <= frontend_rules
+    assert not any(rule.endswith('/') for rule in root_rules | frontend_rules)
