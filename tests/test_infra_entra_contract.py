@@ -278,15 +278,15 @@ def test_entra_shape_redirect_and_runtime_assignment_contracts_are_idempotent_an
         entra.ensure_entra(graph, 'mvp1', 'tenant', 'https://new.example', 'api-principal')
 
 
-def test_runtime_audience_contract_uses_the_runtime_identifier_uri_for_request_and_verification() -> None:
+def test_runtime_audience_contract_requests_the_identifier_uri_and_verifies_the_v2_client_id() -> None:
     apps = (ROOT / 'infra' / 'apps.bicep').read_text()
     entra_source = (ROOT / 'infra' / 'entra.py').read_text()
     workload_auth = (ROOT / 'session-container' / 'workload_auth.py').read_text()
     session_manager = (ROOT / 'session_manager.py').read_text()
 
-    expected = "api://${runtimeClientId}"
-    assert f"{{ name: 'POOL_AUTH_AUDIENCE', value: '{expected}' }}" in apps
-    assert f"{{ name: 'WORKLOAD_ENTRA_AUDIENCE', value: '{expected}' }}" in apps
+    requested_resource = "api://${runtimeClientId}"
+    assert f"{{ name: 'POOL_AUTH_AUDIENCE', value: '{requested_resource}' }}" in apps
+    assert "{ name: 'WORKLOAD_ENTRA_AUDIENCE', value: runtimeClientId }" in apps
     assert 'expected = [f"api://{application[\'appId\']}"]' in entra_source
     assert 'audience=self.config.audience' in workload_auth
     assert 'os.getenv("POOL_AUTH_AUDIENCE", "").strip().rstrip("/")' in session_manager

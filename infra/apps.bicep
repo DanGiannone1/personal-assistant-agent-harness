@@ -119,7 +119,7 @@ resource runtime 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'AZURE_CLIENT_ID', value: reference(runtimeIdentityId, '2023-01-31').clientId }
           { name: 'WORKLOAD_AUTH_MODE', value: 'entra' }
           { name: 'WORKLOAD_ENTRA_TENANT_ID', value: tenantId }
-          { name: 'WORKLOAD_ENTRA_AUDIENCE', value: 'api://${runtimeClientId}' }
+          { name: 'WORKLOAD_ENTRA_AUDIENCE', value: runtimeClientId }
           { name: 'WORKLOAD_ENTRA_CALLER_OBJECT_ID', value: reference(apiIdentityId, '2023-01-31').principalId }
           { name: 'WORKLOAD_ENTRA_REQUIRED_ROLE', value: 'invoke' }
           { name: 'AZURE_ENDPOINT', value: azureOpenAiEndpoint }
