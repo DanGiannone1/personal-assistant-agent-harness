@@ -18,8 +18,10 @@ CSA Workbench includes:
 - **Assistant** as another way to read and change supported records; and
 - **Settings** for personal preferences used by the assistant.
 
-Engagements are the default landing page. Each Engagement has Overview, Tasks, Artifacts, and
-Team & conventions sections. A user can create an Engagement and becomes its first owner.
+Home is the default landing page. It leads with the user's Engagement portfolio and then shows the
+private agenda, tasks, calendar events, and Reminders that need attention. Each Engagement has
+Overview, Tasks, Artifacts, and Team & conventions sections. A user can create an Engagement and
+becomes its first owner.
 
 ## How the assistant fits
 

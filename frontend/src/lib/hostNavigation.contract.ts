@@ -16,6 +16,10 @@ const navSource = readFileSync(
   resolve(__dirname, "..", "src", "components", "workbench", "WorkbenchNav.tsx"),
   "utf8",
 );
+const assistantSource = readFileSync(
+  resolve(__dirname, "..", "src", "components", "AssistantWorkspace.tsx"),
+  "utf8",
+);
 
 const HOST_ROUTES = ["/engagements", "/home", "/todo", "/calendar", "/reminders", "/settings"];
 for (const route of HOST_ROUTES) {
@@ -32,6 +36,29 @@ expect(
 
 expect(
   navSource.includes('data-testid="personal-nav-section"') &&
-    navSource.indexOf('data-testid="personal-nav-section"') > navSource.indexOf('navItem("/engagements"'),
-  "the four personal-work routes must be grouped under a My work heading, after Engagements",
+    navSource.indexOf('navItem("/home"') < navSource.indexOf('navItem("/engagements"') &&
+    navSource.indexOf('data-testid="personal-nav-section"') > navSource.indexOf('navItem("/engagements"') &&
+    navSource.indexOf('navItem("/todo"') > navSource.indexOf('data-testid="personal-nav-section"') &&
+    navSource.indexOf('navItem("/calendar"') > navSource.indexOf('data-testid="personal-nav-section"') &&
+    navSource.indexOf('navItem("/reminders"') > navSource.indexOf('data-testid="personal-nav-section"'),
+  "Home must lead the nav, Engagements must follow, and private-work routes must remain under My work",
+);
+
+expect(
+  assistantSource.includes("state.viewRouteRevision === handledViewRouteRevision.current") &&
+    assistantSource.includes("isHostRoute(state.viewRoute)") &&
+    assistantSource.includes('router.push("/")'),
+  "AI Mode must return every accepted structured host-route request to the host application, including a repeated route",
+);
+
+expect(
+  assistantSource.includes("const navigateHostView") &&
+    assistantSource.includes("onNavigate={navigateHostView}"),
+  "AI Mode manual navigation must leave the workspace even when the host route is unchanged",
+);
+
+expect(
+  assistantSource.includes("artifactPreference?.sessionId === state.sessionId") &&
+    assistantSource.includes("sessionId: state.sessionId"),
+  "AI Mode artifact visibility preferences must be scoped to the current session",
 );

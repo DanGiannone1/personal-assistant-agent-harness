@@ -19,6 +19,9 @@ behavior or architecture, expand scope, accept risk, communicate with the user, 
 change Git hosting, or change an external system. Read-only Git inspection is allowed when it helps
 the assignment.
 
+When stopped, report the blocker to the PPEL rather than asking the user; only the PPEL communicates
+with the user.
+
 For implementation, return changed files, checks, failures, and remaining risks. For independent
 review, do not edit; evaluate every assigned success criterion and report pass or fail with source
 references and remaining gaps.

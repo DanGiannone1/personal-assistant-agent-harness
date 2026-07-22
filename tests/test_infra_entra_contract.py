@@ -120,7 +120,7 @@ def test_governance_nsg_is_instance_and_location_parameterized() -> None:
         helper.select_governance_nsgs(inventory, "sub", "csa-wb-other-rg", "westus3", "other")
 
 
-def _write_command_stubs(tmp_path: Path, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected') -> tuple[Path, Path]:
+def _write_command_stubs(tmp_path: Path, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', recovery_profile: str = 'incompatible') -> tuple[Path, Path]:
     bin_dir, log = tmp_path / "bin", tmp_path / "az.log"
     bin_dir.mkdir(parents=True)
     (bin_dir / "git").write_text("""#!/usr/bin/env bash
@@ -132,7 +132,14 @@ case "$1" in rev-parse) echo 0123456789abcdef0123456789abcdef01234567 ;; status)
         'reordered': '[{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}}]',
         'missing': '[]',
         'extra': '[{"name":"csa-wb-mvp1-frontend","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-api","properties":{"managedEnvironmentId":"env-id"}},{"name":"csa-wb-mvp1-runtime","properties":{"managedEnvironmentId":"env-id"}},{"name":"unrelated","properties":{"managedEnvironmentId":"env-id"}}]',
-    }['missing' if bad_recovery else recovery_apps_order]
+    }[recovery_apps_order]
+    if bad_recovery:
+        recovery_apps = '[{"name":42}]'
+    environment_properties = {
+        'incompatible': '"provisioningState":"Failed","staticIp":null,"vnetConfiguration":{},"workloadProfiles":[]',
+        'azure-enriched': '"provisioningState":"Succeeded","staticIp":"20.42.33.145","vnetConfiguration":{"infrastructureSubnetId":"/subscriptions/subscription/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Network/virtualNetworks/csa-wb-mvp1-vnet/subnets/aca-infrastructure"},"workloadProfiles":[{"enableFips":false,"name":"Consumption","workloadProfileType":"Consumption"}]',
+        'azure-shell': '"provisioningState":"Succeeded","staticIp":null,"vnetConfiguration":{"infrastructureSubnetId":"/subscriptions/subscription/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Network/virtualNetworks/csa-wb-mvp1-vnet/subnets/aca-infrastructure"},"workloadProfiles":[{"enableFips":false,"name":"Consumption","workloadProfileType":"Consumption"}]',
+    }[recovery_profile]
     (bin_dir / "az").write_text(f"""#!/usr/bin/env bash
 set -eu
 echo "$*" >> "$AZ_LOG"
@@ -144,7 +151,7 @@ case "$*" in
   "group exists -n csa-wb-mvp1-rg -o tsv") echo {'true' if recovery else 'false'} ;;
   "network nsg list "*) echo '[]' ;;
   "containerapp env list "*) {'echo \'[{"name":"csa-wb-mvp1-env","id":"env-id"}]\'' if recovery else "echo '[]'"} ;;
-  "containerapp env show "*) echo '{{"name":"csa-wb-mvp1-env","properties":{{"vnetConfiguration":{{}},"workloadProfiles":[]}}}}' ;;
+  "containerapp env show "*) echo '{{"name":"csa-wb-mvp1-env","properties":{{{environment_properties}}}}}' ;;
   "containerapp list "*) echo '{recovery_apps}' ;;
   "deployment sub create "*) exit 9 ;;
   *) exit 0 ;;
@@ -155,8 +162,8 @@ esac
     return bin_dir, log
 
 
-def _run_deploy(tmp_path: Path, *args: str, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', overrides: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
-    bin_dir, log = _write_command_stubs(tmp_path, recovery, bad_recovery, recovery_apps_order)
+def _run_deploy(tmp_path: Path, *args: str, recovery: bool = False, bad_recovery: bool = False, recovery_apps_order: str = 'expected', recovery_profile: str = 'incompatible', overrides: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
+    bin_dir, log = _write_command_stubs(tmp_path, recovery, bad_recovery, recovery_apps_order, recovery_profile)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}", "AZ_LOG": str(log), "INSTANCE_SLUG": "mvp1",
@@ -185,6 +192,31 @@ def test_plan_requires_explicit_inputs_and_never_mutates(tmp_path: Path) -> None
     assert whitespace_log == ''
 
 
+def test_deployment_guidance_allows_an_explicitly_authorized_cli_agent_without_weakening_confirmation() -> None:
+    deployment = (ROOT / 'docs' / 'guides' / 'deployment.md').read_text()
+    agent_setup = (ROOT / 'docs' / 'guides' / 'coding-agents.md').read_text()
+    deployment_text = ' '.join(deployment.split())
+    agent_setup_text = ' '.join(agent_setup.split())
+
+    assert 'Run apply only when the user requested deployment and the current plan matches that request' in deployment_text
+    assert 'A plan-only request never permits deployment' in agent_setup_text
+    assert 'Apply recomputes and checks the plan before changing Azure' in deployment_text
+    assert 'Confirm the approved work record required by the' in deployment_text
+    assert 'new deletion, target, security choice, or cost choice' in deployment_text
+    assert "export MODEL_DEPLOYMENT_NAME='your-model-deployment-name'" in deployment
+    assert "export IDENTITY_MODE='entra'" in deployment
+    assert 'Demo mode also requires `DEMO_PASSWORD`' in deployment_text
+    assert 'MVP_ALLOW_REMOTE=1' in deployment
+    assert 'az account get-access-token --scope "api://${API_CLIENT_ID}/access_as_user"' in deployment
+    assert '"https://${API_FQDN}/auth/me"' in deployment
+    assert 'value.get("identity") == "entra"' in deployment
+    assert 'An unexpected application-owned resource causes the deployment check to fail' in deployment_text
+    assert 'Defender-for-Storage Event Grid topic' not in deployment
+    assert 'agent may use the exact confirmation printed by that plan' in agent_setup_text
+    assert 'The agent must then stop' not in agent_setup
+    assert 'an agent must never run apply' not in agent_setup
+
+
 def test_malformed_or_stale_confirmation_cannot_mutate(tmp_path: Path) -> None:
     plan, _ = _run_deploy(tmp_path / "plan")
     plan_id = next(line.split("=", 1)[1] for line in plan.stdout.splitlines() if line.startswith("PLAN_ID="))
@@ -195,6 +227,20 @@ def test_malformed_or_stale_confirmation_cannot_mutate(tmp_path: Path) -> None:
     assert stale.returncode != 0
     assert 'create' not in stale_log and 'delete' not in stale_log
     assert len(plan_id) == 64
+
+
+def test_confirmed_fresh_apply_skips_recovery_deletion_and_reaches_foundation_create(tmp_path: Path) -> None:
+    plan, _ = _run_deploy(tmp_path / "plan")
+    plan_id = next(line.split("=", 1)[1] for line in plan.stdout.splitlines() if line.startswith("PLAN_ID="))
+
+    apply, log = _run_deploy(
+        tmp_path / "apply", "apply", "--confirm", f"apply:{plan_id}:csa-wb-mvp1-rg",
+    )
+
+    assert apply.returncode != 0  # the stub stops at the first real foundation create
+    assert "containerapp delete" not in log and "containerapp env delete" not in log
+    assert "deployment sub what-if" in log
+    assert "deployment sub create" in log
 
 
 @pytest.mark.parametrize('overrides', [
@@ -232,15 +278,15 @@ def test_entra_shape_redirect_and_runtime_assignment_contracts_are_idempotent_an
         entra.ensure_entra(graph, 'mvp1', 'tenant', 'https://new.example', 'api-principal')
 
 
-def test_runtime_audience_contract_uses_the_runtime_identifier_uri_for_request_and_verification() -> None:
+def test_runtime_audience_contract_requests_the_identifier_uri_and_verifies_the_v2_client_id() -> None:
     apps = (ROOT / 'infra' / 'apps.bicep').read_text()
     entra_source = (ROOT / 'infra' / 'entra.py').read_text()
     workload_auth = (ROOT / 'session-container' / 'workload_auth.py').read_text()
     session_manager = (ROOT / 'session_manager.py').read_text()
 
-    expected = "api://${runtimeClientId}"
-    assert f"{{ name: 'POOL_AUTH_AUDIENCE', value: '{expected}' }}" in apps
-    assert f"{{ name: 'WORKLOAD_ENTRA_AUDIENCE', value: '{expected}' }}" in apps
+    requested_resource = "api://${runtimeClientId}"
+    assert f"{{ name: 'POOL_AUTH_AUDIENCE', value: '{requested_resource}' }}" in apps
+    assert "{ name: 'WORKLOAD_ENTRA_AUDIENCE', value: runtimeClientId }" in apps
     assert 'expected = [f"api://{application[\'appId\']}"]' in entra_source
     assert 'audience=self.config.audience' in workload_auth
     assert 'os.getenv("POOL_AUTH_AUDIENCE", "").strip().rstrip("/")' in session_manager
@@ -325,9 +371,48 @@ def test_recovery_accepts_expected_apps_in_any_azure_list_order(tmp_path: Path) 
     assert 'deployment sub what-if' not in log
 
 
-@pytest.mark.parametrize('recovery_apps_order', ['missing', 'extra'])
-def test_recovery_rejects_missing_or_extra_attached_apps_before_mutation(tmp_path: Path, recovery_apps_order: str) -> None:
-    result, log = _run_deploy(tmp_path, recovery=True, recovery_apps_order=recovery_apps_order)
+def test_recovery_accepts_azure_enriched_compatible_consumption_profile(tmp_path: Path) -> None:
+    result, log = _run_deploy(
+        tmp_path,
+        recovery=True,
+        recovery_apps_order='missing',
+        recovery_profile='azure-enriched',
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert '"recovery_state":"compatible"' in result.stdout
+    assert 'containerapp delete' not in log and 'containerapp env delete' not in log
+    assert 'deployment sub what-if' in log
+
+
+def test_recovery_recreates_azure_shell_without_static_ingress_ip(tmp_path: Path) -> None:
+    result, log = _run_deploy(tmp_path, recovery=True, recovery_profile='azure-shell')
+
+    assert result.returncode == 0, result.stderr
+    assert '"recovery_state":"incompatible"' in result.stdout
+    assert '"recovery_deletion_targets":["containerapp/csa-wb-mvp1-frontend","containerapp/csa-wb-mvp1-api","containerapp/csa-wb-mvp1-runtime","managedEnvironment/csa-wb-mvp1-env"]' in result.stdout
+    assert 'containerapp delete' not in log and 'containerapp env delete' not in log
+    assert 'deployment sub what-if' not in log
+
+
+def test_recovery_of_unattached_failed_environment_deletes_only_environment(tmp_path: Path) -> None:
+    plan, _ = _run_deploy(tmp_path / 'plan', recovery=True, recovery_apps_order='missing')
+    plan_id = next(line.split('=', 1)[1] for line in plan.stdout.splitlines() if line.startswith('PLAN_ID='))
+    apply, log = _run_deploy(
+        tmp_path / 'apply',
+        'apply', '--confirm', f'apply:{plan_id}:csa-wb-mvp1-rg',
+        recovery=True,
+        recovery_apps_order='missing',
+    )
+
+    assert apply.returncode != 0  # the stub stops at the first foundation create
+    assert 'containerapp delete' not in log
+    assert 'containerapp env delete -g csa-wb-mvp1-rg -n csa-wb-mvp1-env --yes --only-show-errors' in log
+    assert 'deployment sub what-if' in log and 'deployment sub create' in log
+
+
+def test_recovery_rejects_extra_attached_apps_before_mutation(tmp_path: Path) -> None:
+    result, log = _run_deploy(tmp_path, recovery=True, recovery_apps_order='extra')
 
     assert result.returncode != 0
     assert 'containerapp delete' not in log and 'containerapp env delete' not in log and 'deployment sub what-if' not in log
@@ -392,7 +477,7 @@ def _verifier_fixture() -> tuple[str, dict[str, str]]:
     for name, target, group, nic in [(f'{base}-cosmos-pe',f'{root}/Microsoft.DocumentDB/databaseAccounts/{cosmos}','Sql','nic1'),(f'{base}-storage-pe',f'{root}/Microsoft.Storage/storageAccounts/{storage}','blob','nic2')]:
         endpoints.append({'name':name,'provisioningState':'Succeeded','subnet':{'id':f'{root}/Microsoft.Network/virtualNetworks/{vnet}/subnets/private-endpoints'},'networkInterfaces':[{'id':f'{root}/Microsoft.Network/networkInterfaces/{nic}'}],'privateLinkServiceConnections':[{'privateLinkServiceId':target,'groupIds':[group],'privateLinkServiceConnectionState':{'status':'Approved'}}]})
     def links(zone: str): return [{'name':f'{base}-vnet-link','provisioningState':'Succeeded','virtualNetworkLinkState':'Completed','registrationEnabled':False,'virtualNetwork':{'id':f'{root}/Microsoft.Network/virtualNetworks/{vnet}'}}]
-    def groups(zone: str, names: list[str]): return [{'name':'default','provisioningState':'Succeeded','privateDnsZoneConfigs':[{'privateDnsZoneId':f'{root}/Microsoft.Network/privateDnsZones/{zone}','recordSets':[{'recordSetName':n,'ipAddresses':[{'ipAddress':f'10.42.0.{40+i}'}]} for i,n in enumerate(names)]}]}]
+    def groups(zone: str, names: list[str]): return [{'name':'default','provisioningState':'Succeeded','privateDnsZoneConfigs':[{'privateDnsZoneId':f'{root}/Microsoft.Network/privateDnsZones/{zone}','recordSets':[{'recordSetName':n,'ipAddresses':[f'10.42.0.{40+i}']} for i,n in enumerate(names)]}]}]
     cosmos_names=[cosmos,f'{cosmos}-eastus2']; storage_names=[storage]
     def records(names: list[str]): return [{'name':n,'aRecords':[{'ipv4Address':f'10.42.0.{40+i}'}]} for i,n in enumerate(names)]
     direct = [('microsoft.app/managedenvironments',f'{base}-env'),* [('microsoft.app/containerapps',f'{base}-{x}') for x in ('frontend','api','runtime')],* [('microsoft.managedidentity/userassignedidentities',f'{base}-{x}-identity') for x in ('frontend','api','runtime')],('microsoft.containerregistry/registries',acr),('microsoft.cognitiveservices/accounts',ai),('microsoft.documentdb/databaseaccounts',cosmos),('microsoft.storage/storageaccounts',storage),('microsoft.network/virtualnetworks',vnet),('microsoft.network/privateendpoints',f'{base}-cosmos-pe'),('microsoft.network/privateendpoints',f'{base}-storage-pe'),* [('microsoft.network/privatednszones',z) for z in zones],('microsoft.network/networkinterfaces','nic1'),('microsoft.network/networkinterfaces','nic2')]
@@ -408,9 +493,33 @@ def _verifier_fixture() -> tuple[str, dict[str, str]]:
 def test_portable_verifier_accepts_complete_fixture_and_rejects_wiring_roles_and_inventory() -> None:
     code, env = _verifier_fixture()
     assert subprocess.run([sys.executable,'-c',code],env=env,text=True,capture_output=True).returncode == 0
-    cases = [('APPS', lambda value: value.replace('acr.azurecr.io/csa-workbench-frontend:', 'wrong/')), ('COSMOS_DNS_RECORDS', lambda value: value.replace('10.42.0.40','10.42.0.99')), ('RESOURCES', lambda value: value[:-1]+',{"type":"Microsoft.Search/searchServices","name":"extra"}]'), ('ASSIGNMENTS', lambda value: value[:-2]+',{"scope":"/subscriptions/sub/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Storage/storageAccounts/storage","roleDefinitionName":"Reader","principalId":"api"}]]'), ('COSMOS_SQL_ASSIGNMENTS', lambda value: value[:-1]+',{"roleDefinitionId":"x","scope":"x","principalId":"api"}]')]
+    cases = [('APPS', lambda value: value.replace('acr.azurecr.io/csa-workbench-frontend:', 'wrong/')), ('COSMOS_DNS_RECORDS', lambda value: value.replace('10.42.0.40','10.42.0.99')), ('COSMOS_DNS_GROUPS', lambda value: value.replace('["10.42.0.40"]', '[{"ipAddress":"10.42.0.40"}]')), ('RESOURCES', lambda value: value[:-1]+',{"type":"Microsoft.Search/searchServices","name":"extra"}]'), ('ASSIGNMENTS', lambda value: value[:-2]+',{"scope":"/subscriptions/sub/resourceGroups/csa-wb-mvp1-rg/providers/Microsoft.Storage/storageAccounts/storage","roleDefinitionName":"Reader","principalId":"api"}]]'), ('COSMOS_SQL_ASSIGNMENTS', lambda value: value[:-1]+',{"roleDefinitionId":"x","scope":"x","principalId":"api"}]')]
     for key, mutate in cases:
         changed={**env,key:mutate(env[key])}; assert subprocess.run([sys.executable,'-c',code],env=changed,text=True,capture_output=True).returncode != 0
+
+
+def test_portable_verifier_normalizes_only_known_azure_container_app_defaults() -> None:
+    code, env = _verifier_fixture()
+    apps = json.loads(env['APPS'])
+    for app in apps:
+        app['properties']['template']['scale'].update({'cooldownPeriod': 300, 'pollingInterval': 30, 'rules': None})
+        registry = app['properties']['configuration']['registries'][0]
+        registry.update({'username': '', 'passwordSecretRef': ''})
+        registry['identity'] = registry['identity'].replace('/resourceGroups/', '/resourcegroups/')
+        assigned = app['identity']['userAssignedIdentities']
+        app['identity']['userAssignedIdentities'] = {key.replace('/resourceGroups/', '/resourcegroups/'): value for key, value in assigned.items()}
+    enriched = {**env, 'APPS': json.dumps(apps)}
+
+    assert subprocess.run([sys.executable, '-c', code], env=enriched, text=True, capture_output=True).returncode == 0
+    for mutate in (
+        lambda values: values[0]['properties']['template']['scale'].__setitem__('cooldownPeriod', 301),
+        lambda values: values[0]['properties']['configuration']['registries'][0].__setitem__('username', 'local-user'),
+        lambda values: values[0]['properties']['template']['scale'].__setitem__('unexpected', False),
+        lambda values: values[0]['properties']['template']['scale'].__setitem__('minReplicas', False),
+        lambda values: values[0]['identity'].__setitem__('userAssignedIdentities', list(values[0]['identity']['userAssignedIdentities'])),
+    ):
+        changed = json.loads(json.dumps(apps)); mutate(changed)
+        assert subprocess.run([sys.executable, '-c', code], env={**env, 'APPS': json.dumps(changed)}, text=True, capture_output=True).returncode != 0
 
 
 def test_portable_verifier_accepts_only_the_optional_governance_nsg_resource_pair() -> None:
@@ -441,3 +550,18 @@ def test_browser_validation_runbook_uses_the_isolated_demo_parent_shell_values()
 
     for value in ('## Run the browser journey', 'CSA_LOCAL_RUN_ID=demo1', 'WORKSPACE=.local-runs/demo1/workspace', 'ARTIFACTS_DIR=.mvp-artifacts/demo1', "MVP_APP_URL='http://localhost:13000'", "MVP_API_URL='http://localhost:18000'", "MVP_RAW_TRACE_ROOT='.local-runs/demo1/logs/sdk-events'", 'MVP_RESET_BEFORE_RUN=1', 'npm run playwright:mvp'):
         assert value in development
+
+
+def test_acr_build_context_rules_exclude_local_and_generated_content() -> None:
+    root_rules = {
+        line for line in (ROOT / '.dockerignore').read_text().splitlines()
+        if line and not line.startswith('#')
+    }
+    frontend_rules = {
+        line for line in (ROOT / 'frontend' / '.dockerignore').read_text().splitlines()
+        if line and not line.startswith('#')
+    }
+
+    assert {'frontend', 'evidence', '.local-runs', '.mvp-artifacts', 'incoming', '.claude', '.venv', 'node_modules'} <= root_rules
+    assert {'.next*', 'node_modules', '.env*'} <= frontend_rules
+    assert not any(rule.endswith('/') for rule in root_rules | frontend_rules)

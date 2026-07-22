@@ -1,4 +1,4 @@
-import { normalizeHostRoute, shouldApplyAgentNavigation, shouldQueueAgentNavigation } from "./navigation";
+import { isHostRoute, normalizeHostRoute, shouldApplyAgentNavigation, shouldQueueAgentNavigation } from "./navigation";
 import { createStreamState, validateEvent } from "./sse";
 import { decodeAppState, decodeCalendarEvent, decodeContextBundle, decodeEngagement, decodeFilesPayload, decodeFileWrite, decodeReminder, decodeSessionMetadata, decodeSessionUpload, decodeTask } from "./payload";
 import type { AppState, Destination } from "./types";
@@ -23,6 +23,11 @@ expect(normalizeHostRoute("/todo/") === "/engagements", "trailing-slash task rou
 expect(normalizeHostRoute("/todo/t 1") === "/engagements", "task detail route rejects an unsafe record id");
 expect(normalizeHostRoute("/calendar") === "/calendar", "calendar route must persist");
 expect(normalizeHostRoute("/reminders") === "/reminders", "reminders route must persist");
+for (const route of ["/home", "/engagements", "/engagements/eng-1", "/todo", "/todo/t-1", "/calendar", "/reminders", "/settings"]) {
+  expect(isHostRoute(route), `${route} must be recognized as a host route`);
+}
+expect(!isHostRoute("/assistant"), "AI Mode must not be recognized as a host route");
+expect(!isHostRoute("/todo/unsafe id"), "unsafe paths must not be recognized as host routes");
 
 expect(shouldApplyAgentNavigation({ activeRunId: "run-1", navigationVersion: 4, cancelled: false, appState, event: { runId: "run-1", requestedAtNavigationVersion: 4, destination: valid } }), "valid structured event must navigate");
 expect(!shouldApplyAgentNavigation({ activeRunId: "run-1", navigationVersion: 4, cancelled: false, appState, event: { runId: "other", requestedAtNavigationVersion: 4, destination: valid } }), "run mismatch must not navigate");

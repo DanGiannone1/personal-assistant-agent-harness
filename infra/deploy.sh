@@ -141,11 +141,26 @@ if len(attached) != len(set(attached)):
 properties = environment.get('properties', {})
 profiles = properties.get('workloadProfiles') if isinstance(properties, dict) else None
 subnet = properties.get('vnetConfiguration', {}).get('infrastructureSubnetId') if isinstance(properties.get('vnetConfiguration', {}), dict) else None
-compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profiles == [{'name': 'Consumption', 'workloadProfileType': 'Consumption'}])
-if compatible:
+profile_compatible = (
+    isinstance(profiles, list) and len(profiles) == 1 and isinstance(profiles[0], dict)
+    and profiles[0].get('name') == 'Consumption'
+    and profiles[0].get('workloadProfileType') == 'Consumption'
+    and set(profiles[0]) <= {'name', 'workloadProfileType', 'enableFips'}
+    and (profiles[0].get('enableFips') is None or profiles[0].get('enableFips') is False)
+)
+spec_compatible = (isinstance(subnet, str) and subnet.lower() == os.environ['EXPECTED_SUBNET_ID'].lower() and profile_compatible)
+healthy = (
+    spec_compatible
+    and properties.get('provisioningState') == 'Succeeded'
+    and isinstance(properties.get('staticIp'), str)
+    and bool(properties['staticIp'].strip())
+)
+if healthy:
     print('compatible|[]')
-elif set(attached) == set(expected):
-    print('incompatible|' + json.dumps(['containerapp/' + name for name in expected] + ['managedEnvironment/' + os.environ['ENVIRONMENT_NAME']], separators=(',', ':')))
+elif not attached or set(attached) == set(expected):
+    targets = ['containerapp/' + name for name in expected if name in attached]
+    targets.append('managedEnvironment/' + os.environ['ENVIRONMENT_NAME'])
+    print('incompatible|' + json.dumps(targets, separators=(',', ':')))
 else:
     raise SystemExit('incompatible environment app inventory is unsafe')
 PY
@@ -202,11 +217,35 @@ deployment_what_if() {
 }
 
 delete_approved_recovery_targets() {
-  [[ "$RECOVERY_STATE" == 'incompatible' ]] || return
-  for app_name in "$FRONTEND_APP_NAME" "$API_APP_NAME" "$RUNTIME_APP_NAME"; do
-    az containerapp delete -g "$RESOURCE_GROUP" -n "$app_name" --yes --only-show-errors
+  local target_lines target
+  local -a targets
+  [[ "$RECOVERY_STATE" == 'incompatible' ]] || return 0
+  target_lines="$(RECOVERY_DELETION_TARGETS="$RECOVERY_DELETION_TARGETS" FRONTEND_APP_NAME="$FRONTEND_APP_NAME" API_APP_NAME="$API_APP_NAME" RUNTIME_APP_NAME="$RUNTIME_APP_NAME" ENVIRONMENT_NAME="$ENVIRONMENT_NAME" python3 - <<'PY'
+import json, os
+targets = json.loads(os.environ['RECOVERY_DELETION_TARGETS'])
+allowed = [
+    'containerapp/' + os.environ['FRONTEND_APP_NAME'],
+    'containerapp/' + os.environ['API_APP_NAME'],
+    'containerapp/' + os.environ['RUNTIME_APP_NAME'],
+    'managedEnvironment/' + os.environ['ENVIRONMENT_NAME'],
+]
+if not isinstance(targets, list) or not targets or len(targets) != len(set(targets)):
+    raise SystemExit('recovery deletion targets are malformed')
+if any(not isinstance(target, str) for target in targets) or targets != [target for target in allowed if target in targets] or targets[-1] != allowed[-1]:
+    raise SystemExit('recovery deletion targets are not an approved ordered subset')
+print('\n'.join(targets))
+PY
+)" || fail 'recovery deletion target validation failed'
+  mapfile -t targets <<<"$target_lines"
+  for target in "${targets[@]}"; do
+    case "$target" in
+      "containerapp/$FRONTEND_APP_NAME") az containerapp delete -g "$RESOURCE_GROUP" -n "$FRONTEND_APP_NAME" --yes --only-show-errors ;;
+      "containerapp/$API_APP_NAME") az containerapp delete -g "$RESOURCE_GROUP" -n "$API_APP_NAME" --yes --only-show-errors ;;
+      "containerapp/$RUNTIME_APP_NAME") az containerapp delete -g "$RESOURCE_GROUP" -n "$RUNTIME_APP_NAME" --yes --only-show-errors ;;
+      "managedEnvironment/$ENVIRONMENT_NAME") az containerapp env delete -g "$RESOURCE_GROUP" -n "$ENVIRONMENT_NAME" --yes --only-show-errors ;;
+      *) fail "unapproved recovery deletion target: $target" ;;
+    esac
   done
-  az containerapp env delete -g "$RESOURCE_GROUP" -n "$ENVIRONMENT_NAME" --yes --only-show-errors
 }
 
 foundation_output() {
@@ -259,7 +298,30 @@ for app in apps:
     ingress = p.get('configuration', {}).get('ingress', {})
     expected_identity = {'csa-workbench-frontend': os.environ['FRONTEND_IDENTITY_NAME'], 'csa-workbench-api': os.environ['API_IDENTITY_NAME'], 'csa-workbench-runtime': os.environ['RUNTIME_IDENTITY_NAME']}[repository]
     expected_identity_id = next(identity.get('id') for identity in identities if identity.get('name') == expected_identity)
-    if p.get('provisioningState') != 'Succeeded' or p.get('workloadProfileName') != 'Consumption' or ingress.get('external') is not external or ingress.get('targetPort') != port or ingress.get('transport', '').lower() != 'auto' or template.get('scale') != {'minReplicas': 0, 'maxReplicas': 1} or len(containers) != 1 or containers[0].get('image', '').split('/')[-1] != f'{repository}:{os.environ["SHA"]}' or set(app.get('identity', {}).get('userAssignedIdentities', {})) != {expected_identity_id} or p.get('configuration', {}).get('registries') != [{'server': f'{os.environ["ACR_NAME"]}.azurecr.io', 'identity': expected_identity_id}]: raise SystemExit('Container App identity, registry, or profile drifted')
+    scale = template.get('scale', {})
+    scale_valid = (
+        isinstance(scale, dict)
+        and set(scale) <= {'minReplicas', 'maxReplicas', 'cooldownPeriod', 'pollingInterval', 'rules'}
+        and type(scale.get('minReplicas')) is int and scale.get('minReplicas') == 0
+        and type(scale.get('maxReplicas')) is int and scale.get('maxReplicas') == 1
+        and scale.get('cooldownPeriod') in (None, 300)
+        and scale.get('pollingInterval') in (None, 30)
+        and scale.get('rules') is None
+    )
+    registries = p.get('configuration', {}).get('registries')
+    registry_valid = isinstance(registries, list) and len(registries) == 1 and isinstance(registries[0], dict)
+    if registry_valid:
+        registry = registries[0]
+        registry_valid = (
+            set(registry) <= {'server', 'identity', 'username', 'passwordSecretRef'}
+            and registry.get('server') == f'{os.environ["ACR_NAME"]}.azurecr.io'
+            and registry.get('identity', '').lower() == expected_identity_id.lower()
+            and registry.get('username') in (None, '')
+            and registry.get('passwordSecretRef') in (None, '')
+        )
+    identity_assignments = app.get('identity', {}).get('userAssignedIdentities')
+    assigned_identities = {identity_id.lower() for identity_id in identity_assignments} if isinstance(identity_assignments, dict) and all(isinstance(identity_id, str) for identity_id in identity_assignments) else set()
+    if p.get('provisioningState') != 'Succeeded' or p.get('workloadProfileName') != 'Consumption' or ingress.get('external') is not external or ingress.get('targetPort') != port or ingress.get('transport', '').lower() != 'auto' or not scale_valid or len(containers) != 1 or containers[0].get('image', '').split('/')[-1] != f'{repository}:{os.environ["SHA"]}' or not isinstance(identity_assignments, dict) or assigned_identities != {expected_identity_id.lower()} or not registry_valid: raise SystemExit('Container App identity, registry, or profile drifted')
     if app['name'] == os.environ['RUNTIME_APP_NAME']:
         runtime_env = {item.get('name'): item.get('value') for item in containers[0].get('env', []) if isinstance(item, dict)}
         endpoint = aoai.get('properties', {}).get('endpoint')
@@ -303,16 +365,18 @@ def verify_group(groups, zone, records):
     if len(groups) != 1 or groups[0].get('name') != 'default' or groups[0].get('provisioningState') != 'Succeeded': raise SystemExit(f'private DNS zone group drifted: {zone}')
     configs = groups[0].get('privateDnsZoneConfigs', [])
     if len(configs) != 1 or configs[0].get('privateDnsZoneId', '').lower() != expected_zone_id or not isinstance(configs[0].get('recordSets'), list) or {record.get('recordSetName') for record in configs[0]['recordSets']} != records: raise SystemExit(f'private DNS zone group wiring drifted: {zone}')
-    return {record['recordSetName']: record.get('ipAddresses') for record in configs[0]['recordSets']}
+    result = {record['recordSetName']: record.get('ipAddresses') for record in configs[0]['recordSets']}
+    if any(not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str) or not values[0] for values in result.values()): raise SystemExit(f'private DNS zone group address drifted: {zone}')
+    return result
 def verify_records(records, expected, zone):
     result = {record.get('name'): record.get('aRecords') for record in records}
-    if set(result) != expected or any(not isinstance(values, list) or len(values) != 1 for values in result.values()): raise SystemExit(f'private DNS A-record inventory drifted: {zone}')
+    if set(result) != expected or any(not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict) or not isinstance(values[0].get('ipv4Address'), str) or not values[0]['ipv4Address'] for values in result.values()): raise SystemExit(f'private DNS A-record inventory drifted: {zone}')
     return {name: [entry.get('ipv4Address') for entry in values] for name, values in result.items()}
 verify_link(cosmos_links, os.environ['COSMOS_PRIVATE_DNS_ZONE']); verify_link(storage_links, os.environ['STORAGE_PRIVATE_DNS_ZONE'])
 cosmos_names = {os.environ['COSMOS_ACCOUNT_NAME'], f'{os.environ["COSMOS_ACCOUNT_NAME"]}-{os.environ["LOCATION"]}'}
 storage_names = {os.environ['STORAGE_ACCOUNT_NAME']}
 cosmos_group = verify_group(cosmos_groups, os.environ['COSMOS_PRIVATE_DNS_ZONE'], cosmos_names); storage_group = verify_group(storage_groups, os.environ['STORAGE_PRIVATE_DNS_ZONE'], storage_names)
-if {name: [entry.get('ipAddress') for entry in values] for name, values in cosmos_group.items()} != verify_records(cosmos_records, cosmos_names, os.environ['COSMOS_PRIVATE_DNS_ZONE']) or {name: [entry.get('ipAddress') for entry in values] for name, values in storage_group.items()} != verify_records(storage_records, storage_names, os.environ['STORAGE_PRIVATE_DNS_ZONE']): raise SystemExit('private DNS A-record wiring drifted')
+if cosmos_group != verify_records(cosmos_records, cosmos_names, os.environ['COSMOS_PRIVATE_DNS_ZONE']) or storage_group != verify_records(storage_records, storage_names, os.environ['STORAGE_PRIVATE_DNS_ZONE']): raise SystemExit('private DNS A-record wiring drifted')
 expected_resources = {
   ('microsoft.app/managedenvironments', os.environ['ENVIRONMENT_NAME'].lower()), ('microsoft.app/containerapps', os.environ['FRONTEND_APP_NAME'].lower()), ('microsoft.app/containerapps', os.environ['API_APP_NAME'].lower()), ('microsoft.app/containerapps', os.environ['RUNTIME_APP_NAME'].lower()),
   ('microsoft.managedidentity/userassignedidentities', os.environ['FRONTEND_IDENTITY_NAME'].lower()), ('microsoft.managedidentity/userassignedidentities', os.environ['API_IDENTITY_NAME'].lower()), ('microsoft.managedidentity/userassignedidentities', os.environ['RUNTIME_IDENTITY_NAME'].lower()),

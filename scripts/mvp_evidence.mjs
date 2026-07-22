@@ -258,7 +258,8 @@ export function requireTargetUrl(value, label) {
 export function requireCleanWorktree(status) {
   const sourceChanges = status.split(/\r?\n/).filter(Boolean).filter((line) => {
     const path = line.slice(3);
-    return !path.startsWith("evidence/mvp/local-synthetic/");
+    return !path.startsWith("evidence/mvp/local-synthetic/")
+      && !path.startsWith("evidence/mvp/azure-demo/");
   });
   if (sourceChanges.length) throw new Error("live evidence requires a clean Git worktree");
 }
@@ -581,6 +582,9 @@ export function evaluateWorkflow({ definition, resetCount, sessionId, before, tu
   };
 }
 
-export function evidencePath(kind, runId) {
-  return `evidence/mvp/local-synthetic/${kind}/${runId}`;
+export function evidencePath(kind, runId, environment = "local-synthetic") {
+  if (!new Set(["local-synthetic", "azure-demo"]).has(environment)) {
+    throw new Error("evidence environment must be local-synthetic or azure-demo");
+  }
+  return `evidence/mvp/${environment}/${kind}/${runId}`;
 }

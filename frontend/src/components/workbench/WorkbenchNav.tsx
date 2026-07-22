@@ -89,6 +89,11 @@ export default function WorkbenchNav({
 
   useEffect(() => () => onDrawerOpenChange?.(false), [onDrawerOpenChange]);
 
+  // AI Mode ("/assistant") is the only destination that leaves the host route, so it is the
+  // only one that pays a first-visit route compile. Warm it on mount so the click is instant,
+  // matching the client-side "My work" view swaps.
+  useEffect(() => { router.prefetch("/assistant"); }, [router]);
+
   useEffect(() => {
     const query = window.matchMedia("(max-width: 1199px)");
     const onChange = (event: MediaQueryListEvent) => {
@@ -139,17 +144,20 @@ export default function WorkbenchNav({
           <X size={18} />
         </button>
       </div>
+      {/* Primary destinations: Home is the landing, Engagements is the core workspace. */}
+      {navItem("/home", "Home", Home)}
       {navItem("/engagements", "Engagements", FolderKanban)}
       <div data-testid="personal-space">
         <div className="tw-nav-section" data-testid="personal-nav-section">
           My work
         </div>
-        {navItem("/home", "Home", Home)}
         {navItem("/todo", "Tasks", CheckSquare)}
         {navItem("/calendar", "Calendar", Calendar)}
         {navItem("/reminders", "Reminders", Bell)}
       </div>
-      <div className="tw-nav-section">Assistant</div>
+      {/* AI Mode is a distinct full-screen surface, not a workbench destination, so a divider
+          sets it apart. No section header — a one-item header duplicated the item's own name. */}
+      <div className="my-1.5 border-t border-border-subtle/50" role="separator" />
       <button
         type="button"
         data-testid="nav-assistant"
@@ -161,7 +169,7 @@ export default function WorkbenchNav({
         aria-current={assistantActive ? "page" : undefined}
       >
         <Sparkles size={16} strokeWidth={2.25} />
-        <span>Assistant</span>
+        <span>AI Mode</span>
       </button>
 
       {navItem("/settings", "Settings", Settings)}

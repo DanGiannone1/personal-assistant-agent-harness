@@ -3,6 +3,30 @@
 This guide creates one isolated CSA Workbench instance with `infra/deploy.sh`. Planning is read-only.
 Deployment changes Azure resources and requires the user's explicit approval.
 
+## Human-to-agent quick start
+
+The human selects the Azure account. The coding agent performs the documented planning, deployment,
+and verification work.
+
+```bash
+az login --tenant '<tenant-id-or-domain>'
+az account set --subscription '<subscription-id-or-name>'
+az account show --query '{subscription:name,subscriptionId:id,tenantId:tenantId,user:user.name}' -o json
+```
+
+Then give the agent a request such as:
+
+```text
+Deploy CSA Workbench instance <instance> to the Azure tenant and subscription currently selected in
+Azure CLI, following docs/guides/deployment.md. Use identity mode <entra|demo> and these model values:
+<values>. I authorize the matching plan and apply. Stop for any unapproved deletion, target change,
+security choice, or material cost choice. Verify the deployed application end to end.
+```
+
+The agent owns the repository procedure, work record, exact plan confirmation, deployment commands,
+and evidence. The human does not need to translate the guide into individual shell commands. A
+request to inspect or plan is not authorization to apply.
+
 ## Before starting
 
 1. Read the current `infra/deploy.sh`.
@@ -16,6 +40,11 @@ az login --tenant '<tenant-id-or-domain>'
 az account set --subscription '<subscription-id-or-name>'
 az account show --query '{subscription:name,subscriptionId:id,tenantId:tenantId,user:user.name}' -o json
 ```
+
+For a VNet-integrated Container Apps environment, some subscriptions must first register
+`Microsoft.Network/AllowBringYourOwnPublicIpAddress` and then re-register the `Microsoft.Network`
+provider. The agent should inspect provider state and perform this registration only for the
+selected subscription when required by Azure.
 
 ## Required values
 
@@ -80,6 +109,11 @@ ports, replica limits, and Git-SHA image tag. It also checks the private network
 settings, managed-identity roles, and expected resource list. An unexpected application-owned
 resource causes the deployment check to fail.
 
+A first deployment can take tens of minutes. Container Apps environment creation or recovery and
+private-endpoint provisioning are long-running Azure control-plane operations; lack of terminal
+output during those operations is not evidence that the deployment is stuck. Do not start a second
+apply while the first is still active.
+
 ## Check application health
 
 After apply, resolve the public endpoints and call them:
@@ -115,10 +149,38 @@ export API_CLIENT_ID="$(az ad app list --display-name "CSA Workbench [${INSTANCE
 test -n "$API_CLIENT_ID"
 ACCESS_TOKEN="$(az account get-access-token --scope "api://${API_CLIENT_ID}/access_as_user" --query accessToken -o tsv)"
 ENTRA_ME="$(curl --fail --retry 6 --retry-all-errors --max-time 30 -H "Authorization: Bearer ${ACCESS_TOKEN}" "https://${API_FQDN}/auth/me")"
-unset ACCESS_TOKEN
 ENTRA_ME="$ENTRA_ME" python3 -c 'import json,os; value=json.loads(os.environ["ENTRA_ME"]); assert value.get("identity") == "entra" and value.get("id", "").startswith("u-")'
 unset ENTRA_ME
+
+SESSION_JSON="$(curl --fail --retry 6 --retry-all-errors --max-time 30 -X POST -H "Authorization: Bearer ${ACCESS_TOKEN}" -H 'Content-Type: application/json' -d '{}' "https://${API_FQDN}/sessions")"
+SESSION_ID="$(SESSION_JSON="$SESSION_JSON" python3 -c 'import json,os; value=json.loads(os.environ["SESSION_JSON"]); assert value.get("status") == "active"; print(value["session_id"])')"
+curl --fail --retry 6 --retry-all-errors --max-time 30 -X DELETE -H "Authorization: Bearer ${ACCESS_TOKEN}" "https://${API_FQDN}/sessions/${SESSION_ID}"
+unset ACCESS_TOKEN SESSION_JSON SESSION_ID
 ```
+
+The session round trip proves the API can call the private runtime with its managed identity. This
+CLI check validates the API's delegated Entra path; it does not replace an interactive browser
+redirect/MFA check when that experience is release-critical.
+
+For Entra v2 workload tokens, request the runtime scope as
+`api://<runtime-client-id>/.default`, but validate the token `aud` claim as the bare runtime client
+ID. Treat the scope URI and emitted audience as distinct values.
+
+## Acceptance evidence
+
+A deployment is complete only after all of the following pass:
+
+- the post-deployment inventory and private-network checks in `infra/deploy.sh`;
+- public frontend and API health checks, with the runtime remaining private;
+- immutable image tags matching the deployed Git SHA;
+- an authenticated API-to-runtime session round trip;
+- the remote browser suite for a dedicated demo instance; and
+- for Entra, delegated API authentication plus an interactive browser sign-in when required for the
+  release claim.
+
+Do not describe the MVP as production-ready solely because it is deployed to an instance named
+`prod`. Release readiness also requires current dependency-vulnerability review, observability,
+operational ownership, and the remaining production controls identified in the architecture docs.
 
 ## Reminder email
 

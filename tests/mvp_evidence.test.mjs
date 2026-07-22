@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
+import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
@@ -310,6 +310,7 @@ test("loopback and clean-worktree guards refuse crafted DNS, remote hosts, and s
   assert.throws(() => requireLoopbackUrl("https://example.com", "MVP_API_URL"), /loopback/);
   assert.throws(() => requireCleanWorktree(" M scripts/mvp_evidence.mjs\n"), /clean Git/);
   assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/local-synthetic/playwright/run/results.json\n"));
+  assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/azure-demo/playwright/run/results.json\n"));
   assert.doesNotThrow(() => requireCleanWorktree(""));
 });
 
@@ -328,4 +329,14 @@ test("requireTargetUrl stays loopback-only unless MVP_ALLOW_REMOTE=1 opts into a
   } finally {
     delete process.env.MVP_ALLOW_REMOTE;
   }
+});
+
+test("remote browser evidence is labeled and stored separately from local evidence", () => {
+  assert.equal(evidencePath("playwright", "run"), "evidence/mvp/local-synthetic/playwright/run");
+  assert.equal(evidencePath("playwright", "run", "azure-demo"), "evidence/mvp/azure-demo/playwright/run");
+  assert.throws(() => evidencePath("playwright", "run", "prod"), /evidence environment/);
+  const source = readFileSync(new URL("../scripts/mvp_playwright.mjs", import.meta.url), "utf8");
+  assert.match(source, /environment: EVIDENCE_ENVIRONMENT/);
+  assert.match(source, /expectedFixtureVersion, observedFixtureVersion: "UNVERIFIED"/);
+  assert.doesNotMatch(source, /fixtureVersion: expectedFixtureVersion/);
 });

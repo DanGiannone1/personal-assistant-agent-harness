@@ -2,11 +2,12 @@
 
 ## Main pages
 
-CSA Workbench opens on Engagements. The main navigation contains:
+CSA Workbench opens on Home. The main navigation contains:
 
+- **Home**, including the user's Engagement portfolio and personal agenda
 - **Engagements**
-- **My work:** Home, Tasks, Calendar, and Reminders
-- **Assistant**
+- **My work:** Tasks, Calendar, and Reminders
+- **AI Mode**, the dedicated assistant workspace
 - **Settings**
 
 Opening an Engagement shows Overview, Tasks, Artifacts, and Team & conventions. The header shows the
@@ -34,7 +35,7 @@ The assistant can navigate to eight destinations:
 | Calendar | `/calendar` |
 | Reminders | `/reminders` |
 
-Assistant and Settings are available through normal application controls but are not assistant
+AI Mode and Settings are available through normal application controls but are not assistant
 navigation destinations.
 
 ## Roles in the interface

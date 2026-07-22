@@ -15,9 +15,17 @@ Do not paste, print, or commit secrets.
 
 ## Azure work
 
-The human collaborator signs in with Azure CLI, selects the tenant and subscription, names the
-instance, and supplies the model configuration. Deployment also needs an approved work record under
-the [Master SDLC](../governance/master-sdlc.md).
+The intended handoff is simple: the human signs in with Azure CLI, selects the tenant and
+subscription, and tells the coding agent to deploy per the [deployment guide](deployment.md). The
+human names the instance, identity mode, and model configuration and explicitly authorizes apply.
+The agent creates or updates the work record and handles the repository procedure, exact plan
+confirmation, deployment, and verification.
+
+```bash
+az login --tenant '<tenant-id-or-domain>'
+az account set --subscription '<subscription-id-or-name>'
+az account show --query '{subscription:name,subscriptionId:id,tenantId:tenantId,user:user.name}' -o json
+```
 
 The agent may inspect Azure and run the repository's plan after confirming the selected account.
 A plan-only request never permits deployment.

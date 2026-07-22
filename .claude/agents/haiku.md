@@ -16,4 +16,4 @@ anything that was not checked.
 
 Do not edit files, execute commands, delegate, make product or architecture decisions, accept risk,
 communicate with the user, or obtain outside context. Stop when the assignment, required guidance, or
-available source is insufficient.
+available source is insufficient, and report the blocker to the PPEL rather than asking the user.

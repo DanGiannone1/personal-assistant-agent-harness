@@ -44,7 +44,7 @@ def _request(headers: dict[str, str] | None = None, path: str = "/session") -> R
 
 def _config() -> WorkloadAuthConfig:
     return WorkloadAuthConfig(
-        mode="entra", tenant_id="tenant-id", audience="api://runtime",
+        mode="entra", tenant_id="tenant-id", audience="runtime-client-id",
         caller_object_id="orchestrator-object-id", required_role="invoke",
     )
 
@@ -66,7 +66,7 @@ def _token(private_key: object, **overrides: object) -> str:
     claims = {
         "exp": int(time.time()) + 300,
         "iss": "https://login.microsoftonline.com/tenant-id/v2.0",
-        "aud": "api://runtime",
+        "aud": "runtime-client-id",
         "tid": "tenant-id",
         "oid": "orchestrator-object-id",
         "roles": ["invoke"],
@@ -91,7 +91,7 @@ def _token(private_key: object, **overrides: object) -> str:
 def test_entra_workload_config_requires_all_identity_values(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     monkeypatch.setenv("WORKLOAD_AUTH_MODE", "entra")
     monkeypatch.setenv("WORKLOAD_ENTRA_TENANT_ID", "tenant")
-    monkeypatch.setenv("WORKLOAD_ENTRA_AUDIENCE", "api://runtime")
+    monkeypatch.setenv("WORKLOAD_ENTRA_AUDIENCE", "runtime-client-id")
     monkeypatch.setenv("WORKLOAD_ENTRA_CALLER_OBJECT_ID", "orchestrator")
     monkeypatch.delenv(name)
     with pytest.raises(ValueError, match=name):

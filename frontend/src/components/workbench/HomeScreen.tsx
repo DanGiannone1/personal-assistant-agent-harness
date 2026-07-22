@@ -1,8 +1,9 @@
 "use client";
 
-import { Clock } from "lucide-react";
+import { ArrowRight, Clock } from "lucide-react";
 import type { AppState } from "@/lib/types";
 import { PriorityBadge, Stat, StatusBadge, absDate, dayLabel, isOverdue } from "./PersonalWorkspaceUI";
+import { EngagementPortfolioRow } from "./EngagementScreens";
 
 export default function HomeScreen({ appState, onNavigate }: {
   appState: AppState; onNavigate: (route: string) => void;
@@ -28,23 +29,42 @@ export default function HomeScreen({ appState, onNavigate }: {
       <h1 className="tw-h1">{appState.user ? `Welcome back, ${appState.user.displayName}` : "Home"}</h1>
       <p className="tw-subtle">Today&apos;s agenda — {absDate(today)}.</p>
 
+      {/* Engagements are the heart of the workbench, so Home leads with the portfolio
+          (the same rows as the Engagements screen) before the personal agenda below. */}
+      <section className="tw-section" data-testid="home-engagements">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <h2 className="tw-h2">Engagements <span className="tw-count">{engagements.length}</span></h2>
+          <button type="button" className="tw-btn-ghost" data-testid="home-view-all-engagements" onClick={() => onNavigate("/engagements")}>
+            View all <ArrowRight size={13} />
+          </button>
+        </div>
+        {engagements.length === 0 ? (
+          <div className="tw-empty-sm">
+            No engagements yet.{" "}
+            <button type="button" className="tw-btn-ghost" data-testid="home-create-engagement" onClick={() => onNavigate("/engagements")}>
+              Create your first engagement <ArrowRight size={13} />
+            </button>
+          </div>
+        ) : (
+          <div className="tw-doclist tw-engagement-portfolio" data-testid="home-engagement-cards">
+            {engagements.map((engagement) => (
+              <EngagementPortfolioRow
+                key={engagement.id}
+                engagement={engagement}
+                userId={appState.user?.id}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
       <section style={{ marginTop: 12 }} data-testid="home-quicklinks">
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <span className="tw-td-sub" style={{ fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 10.5 }}>Jump to</span>
           <button type="button" className="tw-chip" data-testid="quicklink--todo" onClick={() => onNavigate("/todo")}>Tasks</button>
           <button type="button" className="tw-chip" data-testid="quicklink--calendar" onClick={() => onNavigate("/calendar")}>Calendar</button>
           <button type="button" className="tw-chip" data-testid="quicklink--reminders" onClick={() => onNavigate("/reminders")}>Reminders</button>
-          {engagements.map((engagement) => (
-            <button
-              key={engagement.id}
-              type="button"
-              className="tw-chip"
-              data-testid={`quicklink-engagement-${engagement.id}`}
-              onClick={() => onNavigate(`/engagements/${engagement.id}`)}
-            >
-              {engagement.name}
-            </button>
-          ))}
         </div>
       </section>
 

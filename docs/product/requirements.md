@@ -19,8 +19,9 @@ use the assistant to perform supported actions through the same rules as the web
 9. The product includes the `engagement-meeting-prep`, `tasks`, `calendar`, and `weekly-review` skills.
 10. Azure deployment uses an explicit instance name and model configuration. Deployment changes need
     a current plan and the user's approval.
-11. Reminder email recipients come from the owning user's authenticated identity, and a failed send
-    is recorded on the Reminder.
+11. Reminder email recipients come from the owning user's authenticated identity. Delivery is
+    at-most-once, failures are recorded on the Reminder, and Reminders continue to work in-app when
+    email delivery is not configured.
 
 ## Main user journeys
 

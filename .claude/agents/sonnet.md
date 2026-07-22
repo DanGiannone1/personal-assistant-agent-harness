@@ -20,4 +20,7 @@ the user, switch branches, change Git hosting, or change an external system. Rea
 is allowed when it helps the assignment. Stop for missing approval, missing context, a protected-file
 decision, or a scope change.
 
+When stopped, report the blocker to the PPEL rather than asking the user; only the PPEL communicates
+with the user.
+
 Return changed files and reasons, checks run, failures, remaining risks, and anything not checked.
