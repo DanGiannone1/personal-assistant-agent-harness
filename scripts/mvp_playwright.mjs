@@ -351,6 +351,12 @@ try {
   check("MVP-P24-narrow-no-horizontal-overflow", await noHorizontalOverflow(narrow.page));
   const critical = await narrow.page.getByTestId("nav-toggle").boundingBox();
   check("MVP-P25-narrow-critical-control-not-clipped", !!critical && critical.x >= 0 && critical.y >= 0 && critical.x + critical.width <= 390 && critical.y + critical.height <= 844);
+  // Home is now the default landing and its Engagement portfolio is followed by personal-work
+  // sections. Run the final-card/launcher check on the dedicated Engagements page so scrolling to
+  // the end still measures the final Engagement rather than moving the portfolio behind the header.
+  await narrow.page.getByTestId("nav-toggle").click();
+  await narrow.page.getByTestId("nav--engagements").click();
+  await narrow.page.getByTestId("engagements-screen").waitFor({ state: "visible" });
   const narrowContent = narrow.page.getByTestId("workbench-content");
   await narrowContent.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
   await eventually(() => narrowContent.evaluate((element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 1));
