@@ -243,11 +243,11 @@ def _safe_error_message(error: object) -> str:
 # ───────────────────────── CSA Workbench tools as LangChain tools ─────────────────────────
 
 def _build_langchain_tools(working_dir: str, user_id: str) -> list:
-    engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
-    personal_service = PersonalWorkspaceService(AppdbPersonalWorkspaceRepository(appdb))
     """Port of agent._build_flow_tools as native LangChain tools (same names, args,
     marker-string returns, role gating, and ETag-safe writes). Closures over the
     session workspace + user."""
+    engagement_service = EngagementService(AppdbEngagementRepository(appdb), appdb.find_user)
+    personal_service = PersonalWorkspaceService(AppdbPersonalWorkspaceRepository(appdb))
 
     def _engagements() -> list[dict]:
         return engagement_service.list(user_id).record["engagements"]
