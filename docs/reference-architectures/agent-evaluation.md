@@ -114,9 +114,12 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 - Waza has an isolated skill-routing check for the `engagement-meeting-prep` skill only; its
   pass/fail gate covers Copilot laboratory behavior rather than Deep Agents product behavior, and
   it does not cover the other three skills.
-- There is no durable scorecard history, gold capability task set derived from real use cases,
-  repeated-trial orchestration, or calibrated automated judge yet. Judging today, when done, is
-  manual review rather than an automated grader.
+- The checked-in judge rubric now has strict advisory-record validation and scorecard reporting for
+  the canonical suite. Automated judging and judge calibration do not exist; records are supplied
+  evidence and cannot override deterministic product-runtime or Waza gates.
+- There is no durable scorecard history, gold capability task set derived from real use cases, or
+  repeated-trial orchestration yet. Judging today, when done, is manual review rather than an
+  automated grader.
 - Product-runtime token and cost capture are not implemented; only the Waza check reports those
   values.
 

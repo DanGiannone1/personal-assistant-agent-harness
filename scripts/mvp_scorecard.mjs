@@ -1,4 +1,5 @@
 import { MVP_EVAL_MANIFEST, hasExactCanonicalIds } from "./mvp_eval_manifest.mjs";
+import { summarizeMvpJudge } from "./mvp_judge.mjs";
 
 function countPassed(items = []) {
   return items.filter((item) => item.pass).length;
@@ -149,7 +150,7 @@ function bindGroundingReviews(productReport, reviewRecord) {
   };
 }
 
-export function buildMvpScorecard(productReport, wazaReport = null, groundingReviewRecord = null) {
+export function buildMvpScorecard(productReport, wazaReport = null, groundingReviewRecord = null, judgeRecord = null) {
   const atomic = productReport.results ?? [];
   const workflows = productReport.workflows ?? [];
   const fixtureVersion = productReport.fixture?.fixtureVersion;
@@ -166,6 +167,7 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
   const grounding = bindGroundingReviews(productReport, groundingReviewRecord);
   const groundingReviews = grounding.reviews;
   const waza = summarizeWaza(wazaReport);
+  const judge = summarizeMvpJudge(judgeRecord, productReport);
   const wazaSkillMatches = waza.status === "RECORDED"
     && waza.skill === productReport.skill?.name
     && waza.runnerProvenance?.skill?.name === productReport.skill?.name
@@ -202,6 +204,7 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
         skillNameMatchesProduct: wazaSkillMatches,
         sourceMatchesProduct: wazaSourceMatches,
       },
+      advisoryJudge: judge,
     },
     acceptance: {
       status: productHardGatePass && waza.status === "RECORDED" && waza.gatePass
@@ -216,6 +219,24 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
 export function renderMvpScorecard(scorecard) {
   const product = scorecard.lanes.productRuntime;
   const waza = scorecard.lanes.skillLaboratory;
+  const judge = scorecard.lanes.advisoryJudge;
+  const judgeBinding = judge.binding.expected;
+  const markdownCell = (value) => String(value ?? "UNSPECIFIED")
+    .replace(/[\r\n]+/g, " ")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("|", "\\|");
+  const judgeProvenance = judge.provenance?.judge
+    ? judge.provenance.judge.kind === "human"
+      ? `human reviewer=${markdownCell(judge.provenance.judge.reviewer)}`
+      : `model provider=${markdownCell(judge.provenance.judge.provider)}; model=${markdownCell(judge.provenance.judge.model)}`
+    : "NOT_RECORDED";
+  const judgeObservedBinding = judge.binding.observed
+    ? `run=${markdownCell(judge.binding.observed.productRunId)}; source=${markdownCell(judge.binding.observed.sourceRevision)}; fixture=${markdownCell(judge.binding.observed.fixtureVersion)}/${markdownCell(judge.binding.observed.fixtureHash)}; skill SHA-256=${markdownCell(judge.binding.observed.skillSha256)}`
+    : "NOT_RECORDED";
+  const judgeDimensions = (counts) => ["accuracy", "leakage", "tone"].map((dimension) => {
+    const value = counts.dimensions[dimension];
+    return `${dimension}: ${value.passed} pass / ${value.failed} fail / ${value.unknown} unknown (${value.total} total)`;
+  }).join("; ");
   const wazaTokens = waza.usage ? (waza.usage.input_tokens ?? 0) + (waza.usage.output_tokens ?? 0) : null;
   const wazaUsage = waza.usage
     ? `${waza.usage.turns ?? "?"} turns; ${wazaTokens} input+output tokens; ${waza.usage.premium_requests ?? "?"} premium requests`
@@ -238,6 +259,17 @@ export function renderMvpScorecard(scorecard) {
 | Canonical workflow suite | ${product.canonicalWorkflowSuite ? "PASS" : "FAIL"} |
 | Product hard gate | ${product.hardGatePass ? "PASS" : "FAIL"} |
 | Grounding review binding | ${product.groundingReviewBinding.status} |
+| Advisory judge | ${judge.status} (${judge.advisory ? "advisory" : "not advisory"}) |
+| Advisory judge binding | ${judge.binding.status} |
+| Advisory judge expected binding | run=${markdownCell(judgeBinding.productRunId)}; source=${markdownCell(judgeBinding.sourceRevision)}; fixture=${markdownCell(judgeBinding.fixtureVersion)}/${markdownCell(judgeBinding.fixtureHash)}; skill SHA-256=${markdownCell(judgeBinding.skillSha256)} |
+| Advisory judge observed binding | ${judgeObservedBinding} |
+| Advisory judge provenance | ${judgeProvenance} |
+| Advisory judge timestamp / rubric | ${markdownCell(judge.provenance?.judgedAt ?? "NOT_RECORDED")} / ${markdownCell(judge.provenance?.rubricVersion ?? "NOT_RECORDED")} |
+| Advisory judge atomic verdicts | ${judge.atomic.passed} pass / ${judge.atomic.failed} fail / ${judge.atomic.unknown} unknown (${judge.atomic.total} total) |
+| Advisory judge atomic dimensions | ${judgeDimensions(judge.atomic)} |
+| Advisory judge workflow verdicts | ${judge.workflows.passed} pass / ${judge.workflows.failed} fail / ${judge.workflows.unknown} unknown (${judge.workflows.total} total) |
+| Advisory judge workflow dimensions | ${judgeDimensions(judge.workflows)} |
+| Advisory judge diagnostic | ${markdownCell(judge.error ?? "VALID_OR_NOT_SUPPLIED")} |
 | Waza lane | ${waza.status} (${waza.provenance}) |
 | Waza run | ${waza.runId ?? "NOT_RECORDED"} |
 | Waza skill | ${waza.skill ?? "UNSPECIFIED"} (${waza.skillNameMatchesProduct ? "matches product" : "does not match product"}) |

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { evaluateCase, evaluateWorkflow } from "../scripts/mvp_evidence.mjs";
 import { MVP_EVAL_MANIFEST } from "../scripts/mvp_eval_manifest.mjs";
-import { buildMvpScorecard, summarizeWaza, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
+import { loadMvpJudgeRubric, summarizeMvpJudge, validateMvpJudgeRecord, validateMvpJudgeRubric } from "../scripts/mvp_judge.mjs";
+import { buildMvpScorecard, renderMvpScorecard, summarizeWaza, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
 
 const start = (run = "run-1") => ({ type: "RUN_STARTED", run_id: run, thread_id: "thread-1" });
 const finish = (run = "run-1") => ({ type: "RUN_FINISHED", run_id: run, thread_id: "thread-1" });
@@ -54,6 +58,39 @@ function canonicalAtomicResults(fixture) {
 
 function canonicalWorkflowResults(fixture, reviewStatus = "REVIEW_REQUIRED") {
   return MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: reviewStatus } }));
+}
+
+function canonicalJudgeProduct(overrides = {}) {
+  const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash" };
+  return {
+    runId: "product-run", completedAt: "2026-07-20T00:00:00Z", sourceRevision: "abc", scope: "all", fixture,
+    environment: "local-synthetic", harness: "deepagents", model: "product-model",
+    skill: { name: "engagement-meeting-prep", sha256: "hash" },
+    results: canonicalAtomicResults(fixture), workflows: canonicalWorkflowResults(fixture),
+    ...overrides,
+  };
+}
+
+function judgeRecord(product, verdict = "pass", judge = { kind: "human", reviewer: "Human Reviewer" }) {
+  const rubric = loadMvpJudgeRubric();
+  return {
+    schemaVersion: 1,
+    kind: "mvp-advisory-judge-record",
+    productRunId: product.runId,
+    sourceRevision: product.sourceRevision,
+    fixtureVersion: product.fixture.fixtureVersion,
+    fixtureHash: product.fixture.fixtureHash,
+    skillSha256: product.skill.sha256,
+    rubricVersion: rubric.version,
+    judge,
+    judgedAt: "2026-07-22T12:00:00Z",
+    atomicJudgments: rubric.rubrics.flatMap(({ caseId, questions }) => questions.map(({ dimension, question }) => ({
+      caseId, dimension, question, verdict, reason: "The recorded reply is adequately supported.",
+    }))),
+    workflowJudgments: rubric.workflows.flatMap(({ workflowId, questions }) => questions.map(({ dimension, question }) => ({
+      workflowId, dimension, question, verdict, reason: "The recorded conversation is adequately supported.",
+    }))),
+  };
 }
 
 test("Waza accepts internally consistent declared and observed task counts", () => {
@@ -517,4 +554,173 @@ test("human review, fixture, Waza source, and skill identities must all match be
   const mismatched = buildMvpScorecard(product, waza, { ...review, skillSha256: "wrong" });
   assert.equal(mismatched.lanes.productRuntime.groundingReviewBinding.status, "MISMATCHED");
   assert.equal(mismatched.acceptance.status, "INCOMPLETE");
+});
+
+test("the advisory judge record binds the complete canonical atomic and workflow rubric", () => {
+  const product = canonicalJudgeProduct();
+  const record = judgeRecord(product);
+  const validated = validateMvpJudgeRecord(record, product);
+  assert.equal(validated.atomicJudgments.length, MVP_EVAL_MANIFEST.atomicCaseIds.length * 3);
+  assert.equal(validated.workflowJudgments.length, MVP_EVAL_MANIFEST.workflowIds.length * 3);
+  assert.deepEqual(validated.judge, { kind: "human", reviewer: "Human Reviewer" });
+  assert.equal(validated.judgedAt, "2026-07-22T12:00:00Z");
+  const summary = summarizeMvpJudge(record, product);
+  assert.equal(summary.status, "RECORDED");
+  assert.equal(summary.binding.status, "MATCHED");
+  assert.deepEqual(summary.provenance, { rubricVersion: 1, judge: { kind: "human", reviewer: "Human Reviewer" }, judgedAt: "2026-07-22T12:00:00Z" });
+  assert.equal(summary.atomic.passed, 27);
+  assert.equal(summary.atomic.dimensions.accuracy.passed, 9);
+  assert.equal(summary.workflows.passed, 3);
+  assert.equal(summary.workflows.dimensions.tone.passed, 1);
+  assert.deepEqual(summary.atomic.judgments[0], record.atomicJudgments[0]);
+});
+
+test("the advisory judge rejects missing, extra, duplicate, and mismatched-bound records", () => {
+  const product = canonicalJudgeProduct();
+  const complete = judgeRecord(product);
+  const cases = [
+    ["missing", { ...complete, atomicJudgments: complete.atomicJudgments.slice(1) }],
+    ["extra", { ...complete, atomicJudgments: [...complete.atomicJudgments, complete.atomicJudgments[0]] }],
+    ["duplicate", { ...complete, atomicJudgments: [...complete.atomicJudgments.slice(0, -1), complete.atomicJudgments[0]] }],
+    ["unknown", { ...complete, atomicJudgments: [{ ...complete.atomicJudgments[0], caseId: "MVP-E99" }, ...complete.atomicJudgments.slice(1) ] }],
+    ["binding", { ...complete, skillSha256: "wrong" }],
+  ];
+  for (const [label, record] of cases) {
+    assert.throws(() => validateMvpJudgeRecord(record, product), Error, label);
+  }
+  const mismatch = summarizeMvpJudge(cases.at(-1)[1], product);
+  assert.equal(mismatch.status, "INVALID");
+  assert.equal(mismatch.binding.status, "MISMATCHED");
+});
+
+test("the advisory judge rejects malformed verdicts and reasons", () => {
+  const product = canonicalJudgeProduct();
+  const complete = judgeRecord(product);
+  for (const [label, judgment] of [
+    ["verdict", { ...complete.atomicJudgments[0], verdict: "approved" }],
+    ["blank reason", { ...complete.atomicJudgments[0], reason: "" }],
+    ["two sentences", { ...complete.atomicJudgments[0], reason: "It is grounded. It is useful." }],
+    ["unterminated reason", { ...complete.atomicJudgments[0], reason: "It is grounded" }],
+  ]) {
+    const record = { ...complete, atomicJudgments: [judgment, ...complete.atomicJudgments.slice(1)] };
+    assert.throws(() => validateMvpJudgeRecord(record, product), Error, label);
+  }
+});
+
+test("the advisory judge enforces human or independent-model provenance and valid timestamps", () => {
+  const product = canonicalJudgeProduct();
+  const modelRecord = judgeRecord(product, "pass", { kind: "model", provider: " example ", model: " judge-model " });
+  const humanRecord = judgeRecord(product, "pass", { kind: "human", reviewer: " Human Reviewer " });
+  assert.equal(validateMvpJudgeRecord(modelRecord, product).judge.model, "judge-model");
+  assert.equal(validateMvpJudgeRecord(modelRecord, product).judge.provider, "example");
+  assert.equal(validateMvpJudgeRecord(humanRecord, product).judge.reviewer, "Human Reviewer");
+  for (const [label, record] of [
+    ["same model", judgeRecord(product, "pass", { kind: "model", provider: "example", model: "product-model" })],
+    ["padded same model", judgeRecord(product, "pass", { kind: "model", provider: "example", model: " product-model " })],
+    ["bad timestamp", { ...judgeRecord(product), judgedAt: "2026-07-22" }],
+    ["extra judge field", judgeRecord(product, "pass", { kind: "human", reviewer: "Human Reviewer", provider: "example" })],
+    ["extra record field", { ...judgeRecord(product), unexpected: true }],
+    ["extra judgment field", { ...judgeRecord(product), atomicJudgments: [{ ...judgeRecord(product).atomicJudgments[0], unexpected: true }, ...judgeRecord(product).atomicJudgments.slice(1)] }],
+  ]) {
+    assert.throws(() => validateMvpJudgeRecord(record, product), Error, label);
+  }
+});
+
+test("the advisory judge requires each exact dimension question and the canonical product suite", () => {
+  const product = canonicalJudgeProduct();
+  const complete = judgeRecord(product);
+  const wrongDimension = {
+    ...complete,
+    atomicJudgments: [{ ...complete.atomicJudgments[0], dimension: "tone" }, ...complete.atomicJudgments.slice(1)],
+  };
+  assert.throws(() => validateMvpJudgeRecord(wrongDimension, product), Error);
+  assert.throws(() => validateMvpJudgeRecord(complete, { ...product, results: product.results.slice(1) }), Error);
+  assert.throws(() => validateMvpJudgeRecord(complete, { ...product, scope: "workflow" }), Error);
+  const inconsistentFixture = structuredClone(product);
+  inconsistentFixture.results[0] = {
+    ...inconsistentFixture.results[0],
+    fixture: { ...inconsistentFixture.fixture, fixtureHash: "inconsistent" },
+  };
+  assert.throws(() => validateMvpJudgeRecord(judgeRecord(inconsistentFixture), inconsistentFixture), Error);
+  const rubric = loadMvpJudgeRubric();
+  const extraEntryField = structuredClone(rubric);
+  extraEntryField.rubrics[0].unexpected = true;
+  const extraQuestionField = structuredClone(rubric);
+  extraQuestionField.rubrics[0].questions[0].unexpected = true;
+  const missingDimension = structuredClone(rubric);
+  missingDimension.rubrics[0].questions.pop();
+  for (const invalidRubric of [extraEntryField, extraQuestionField, missingDimension]) {
+    assert.throws(() => validateMvpJudgeRubric(invalidRubric), Error);
+  }
+});
+
+test("advisory judge verdicts never alter deterministic acceptance", () => {
+  const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash" };
+  const product = {
+    runId: "product-run", completedAt: "2026-07-20T00:00:00Z", sourceRevision: "abc", scope: "all", fixture,
+    environment: "local-synthetic", harness: "deepagents", model: "gpt-test",
+    skill: { name: "engagement-meeting-prep", sha256: "hash" },
+    results: canonicalAtomicResults(fixture), workflows: canonicalWorkflowResults(fixture),
+  };
+  const review = {
+    productRunId: "product-run", sourceRevision: "abc", fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash",
+    skillSha256: "hash", reviewer: "Human Reviewer", reviewedAt: "2026-07-20T01:00:00Z",
+    reviews: [{ workflowId: "MVP-W1-engagement-meeting-to-action", status: "APPROVED" }],
+  };
+  const passed = buildMvpScorecard(product, wazaGate(), review, judgeRecord(product, "pass"));
+  const failed = buildMvpScorecard(product, wazaGate(), review, judgeRecord(product, "fail"));
+  assert.equal(passed.lanes.advisoryJudge.status, "RECORDED");
+  assert.equal(failed.lanes.advisoryJudge.atomic.failed, 27);
+  assert.equal(passed.acceptance.status, "READY_FOR_BASELINE");
+  assert.equal(failed.acceptance.status, "READY_FOR_BASELINE");
+  assert.equal(passed.lanes.productRuntime.hardGatePass, failed.lanes.productRuntime.hardGatePass);
+});
+
+test("the scorecard preserves judge details and safely renders invalid judge diagnostics", () => {
+  const product = canonicalJudgeProduct();
+  const recorded = buildMvpScorecard(product, wazaGate(), null, judgeRecord(product));
+  assert.equal(recorded.lanes.advisoryJudge.atomic.judgments.length, 27);
+  assert.equal(recorded.lanes.advisoryJudge.workflows.judgments.length, 3);
+  const paddedReason = judgeRecord(product);
+  paddedReason.atomicJudgments[0].reason = "  The recorded reply is adequately supported.  ";
+  assert.equal(validateMvpJudgeRecord(paddedReason, product).atomicJudgments[0].reason, "The recorded reply is adequately supported.");
+  const invalid = buildMvpScorecard(product, wazaGate(), null, { ...judgeRecord(product), fixtureHash: "bad\r|hash" });
+  const markdown = renderMvpScorecard(invalid);
+  assert.equal(invalid.lanes.advisoryJudge.status, "INVALID");
+  assert.match(markdown, /Advisory judge diagnostic/);
+  assert.match(markdown, /bad \\\|hash/);
+  assert.doesNotMatch(markdown, /\r/);
+  const backslashPipe = buildMvpScorecard(product, wazaGate(), null, { ...judgeRecord(product), fixtureHash: "bad\\|hash" });
+  const backslashPipeMarkdown = renderMvpScorecard(backslashPipe);
+  const safelyEscaped = `bad${"\\".repeat(3)}|hash`;
+  assert.equal(backslashPipeMarkdown.includes(safelyEscaped), true);
+  assert.equal(backslashPipeMarkdown.includes("bad\\|hash"), false);
+});
+
+test("the scorecard merger keeps its three- and four-argument forms compatible", () => {
+  const directory = mkdtempSync(join(tmpdir(), "csa-mvp-scorecard-"));
+  try {
+    const product = canonicalJudgeProduct();
+    const review = {
+      productRunId: product.runId, sourceRevision: product.sourceRevision,
+      fixtureVersion: product.fixture.fixtureVersion, fixtureHash: product.fixture.fixtureHash, skillSha256: product.skill.sha256,
+      reviewer: "Human Reviewer", reviewedAt: "2026-07-20T01:00:00Z",
+      reviews: [{ workflowId: "MVP-W1-engagement-meeting-to-action", status: "APPROVED" }],
+    };
+    const productPath = join(directory, "product.json");
+    const wazaPath = join(directory, "waza.json");
+    const reviewPath = join(directory, "review.json");
+    writeFileSync(productPath, JSON.stringify(product));
+    writeFileSync(wazaPath, JSON.stringify(wazaGate()));
+    writeFileSync(reviewPath, JSON.stringify(review));
+    for (const [prefix, args] of [
+      [join(directory, "three"), [productPath, wazaPath, join(directory, "three")]],
+      [join(directory, "four"), [productPath, wazaPath, join(directory, "four"), reviewPath]],
+    ]) {
+      execFileSync(process.execPath, ["scripts/mvp_scorecard_merge.mjs", ...args], { cwd: process.cwd(), stdio: "pipe" });
+      assert.equal(JSON.parse(readFileSync(`${prefix}.json`, "utf8")).lanes.advisoryJudge.status, "NOT_SUPPLIED");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
