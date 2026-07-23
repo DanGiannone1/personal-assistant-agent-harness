@@ -1,5 +1,9 @@
 # Navigation (target design)
 
+> **Authority:** Target design, not a description of current behavior. The
+> [experience architecture](../architecture/capabilities/experience.md) owns the current boundary;
+> see “Current implementation” below for the gap.
+
 ## The simple version
 
 Navigation should feel like using an app, not operating an AI system.

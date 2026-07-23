@@ -37,6 +37,23 @@ Context supports the other designs. Navigation and CRUD use it to rank or defaul
 Document intake and retrieval use its user and Engagement scope. Context never grants access; each
 application service still checks current permissions.
 
+## High-level design decisions
+
+This is the shortest statement of what matters and what a good outcome looks like. The linked
+documents own the detailed contracts and current-versus-target evidence.
+
+| Design | What matters most | A good outcome |
+|---|---|---|
+| Context | Compose one small, explainable snapshot; use it to reduce repetition, never to grant access or replace a live read | The user can say “this” or “where I was,” the app can explain what it used, and every action still reauthorizes |
+| Navigation | Use deterministic routes for known destinations; use semantic selection only for unresolved natural-language intent | No invented URL, no AI delay for a click or known record, and every selected destination is live and authorized |
+| CRUD | Put REST and assistant tools over one application service; resolve only within authorized scope; commit before claiming success | Create/update/delete works from any page, ambiguity and destructive actions stop safely, and the UI reloads the committed record |
+| Document AI | Preserve the original, create one complete normalized rendition, and expose document work through scoped typed tools | Supported files become ready or fail explicitly; conversion never loses the original or leaks content across scopes |
+| RAG/QA | Search exactly one authorized logical scope, post-validate every passage, and answer only from current cited evidence | Every factual claim maps to an authenticated application citation; empty, partial, stale, or failed retrieval never becomes a guess |
+
+The first three designs extend capabilities that exist in narrower form today. Document AI and
+RAG/QA are not implemented. Their stored-data, security, Azure-cost, and rollout choices remain
+pending explicit owner approval in [issue #28](https://github.com/DanGiannone1/csa-workbench/issues/28).
+
 ## Document organization
 
 Each reference architecture contains:
@@ -47,8 +64,8 @@ Each reference architecture contains:
 4. a description of the current implementation.
 
 The larger system designs end with an implementation checklist. Agent evaluation uses a phased
-roadmap instead. Document AI and RAG end after describing the gap between the proposal and the
-current product because their next implementation steps depend on later product decisions.
+roadmap instead. Document AI and RAG include outcome criteria but remain proposals because their
+implementation depends on the approval recorded in issue #28.
 
 The current-implementation section is a bridge to today's architecture. The rest of each document
 describes the proposed design in depth.

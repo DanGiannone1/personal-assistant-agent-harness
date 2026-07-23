@@ -1,10 +1,15 @@
 # Document AI (target design)
 
+> **Authority:** Target design, not current behavior or approved implementation scope. The
+> [current data architecture](../architecture/capabilities/data.md) owns today’s file behavior.
+> Stored-data, security, Azure-cost, and rollout choices remain pending explicit owner approval in
+> [issue #28](https://github.com/DanGiannone1/csa-workbench/issues/28).
+
 ## The simple version
 
 An Engagement accumulates real documents: statements of work, architecture diagrams, spreadsheets,
 meeting decks. Today the product asks a CSA to keep that material in whatever tool produced it and
-paste in what matters. This design describes broad-format document intake — upload almost any
+paste in what matters. This design describes supported-format document intake — upload a common
 office/document format, get back a normalized, readable rendition, and let typed tools extract or
 summarize from it — scoped to the Engagement (or actor) that owns it.
 
@@ -13,11 +18,29 @@ where a document is stored or who may read it — those decisions stay with the 
 personal-workspace access rules used by [CRUD](crud.md). Retrieval and question answering
 over many documents at once is a separate concern — see [rag-qa.md](rag-qa.md).
 
+## What matters most
+
+1. **Scope before content.** A document has exactly one personal or Engagement owner, and every
+   upload, read, analysis, save, and delete rechecks that scope’s current authorization.
+2. **Original and rendition are different assets.** Preserve the original bytes. Publish normalized
+   Markdown only after complete conversion; never substitute an empty or partial rendition.
+3. **Lifecycle is explicit.** `pending`, `ready`, `failed`, `deleting`, and deleted states are durable
+   metadata, not claims inferred by the assistant.
+4. **Tools and skills stay narrow.** Upload, analysis, and creation skills call typed application
+   tools. A session draft becomes durable only after the user explicitly names its target scope.
+5. **Failure stays visible.** Unsupported, unavailable, or failed analysis never falls back to model
+   memory or exposes a provider path, credential, or payload.
+
+The recommended first delivery accepts `.md`, `.txt`, `.pdf`, `.doc`, `.docx`, `.ppt`, `.pptx`,
+`.xls`, and `.xlsx` up to the existing 20 MiB durable-file limit. It deliberately excludes macros,
+archives, executables, and OCR/image-only promises. Those boundaries are part of the pending approval,
+not current product behavior.
+
 ## What it adds beyond today
 
 Today, the only durable document capability is manual Engagement-artifact upload/list/download/delete,
-byte-for-byte, with no reading or understanding step; the only place a document is converted at all is
-a session upload, and only markdown is accepted there — see
+byte-for-byte, with no reading or understanding step. Session upload accepts and stores Markdown bytes
+only; it does not perform conversion — see
 [Documents and retrieval](../architecture/capabilities/data.md). This design adds three things:
 
 1. **Broad-format intake.** Accept common office and document formats (PDF, DOCX, XLSX, PPTX, and
@@ -63,6 +86,19 @@ upload (actor- or Engagement-scoped, authorized)
 
 A conversion failure leaves the original byte upload intact and reports a typed failure outcome; it
 never silently substitutes an empty or partial rendition.
+
+## Good outcome and controls
+
+- A viewer can read or analyze an authorized document; only an editor or owner can upload, promote,
+  save, index, or delete within an Engagement.
+- The original remains downloadable when normalization fails, and a retry cannot create two logical
+  documents or a partial ready state.
+- Normalized content and metadata remain in the same owning scope; actor/session/role values are
+  transport-bound rather than model arguments.
+- Format, empty-file, filename, size, quota, conversion, concurrent-delete, and revoked-membership
+  tests exercise both success and failure paths.
+- Managed identity and private application routes are the only service and citation boundaries; no
+  Blob URL, key, SAS token, or provider credential reaches the model or browser.
 
 ## Typed tool result structure
 
