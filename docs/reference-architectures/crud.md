@@ -1,5 +1,9 @@
 # CRUD (target design)
 
+> **Authority:** Target design, not a description of current behavior. The
+> [product overview](../product/overview.md) and [data architecture](../architecture/capabilities/data.md)
+> own the current boundary; see “Current implementation” below for the gap.
+
 ## The simple version
 
 The user should be able to create, update, or delete something without first finding the right

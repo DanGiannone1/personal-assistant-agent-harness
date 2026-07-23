@@ -498,11 +498,6 @@ def _build_flow_tools(working_dir: str, user_id: str) -> list:
     ]
 
 
-# Internal tool names never surfaced to the frontend (the "skill" tool is handled
-# separately via SkillInvokedData). Empty today; kept for easy extension.
-_HIDDEN_TOOLS: set[str] = set()
-
-
 class AgentSession:
     """Async context manager holding a persistent Copilot session (SDK 1.0.x)."""
 
@@ -731,7 +726,7 @@ class AgentSession:
             tool = data.tool_name or "tool"
             call_id = data.tool_call_id or str(uuid.uuid4())
             self._tool_names[call_id] = (tool, _time.monotonic())
-            if tool in _HIDDEN_TOOLS or tool == "skill":
+            if tool == "skill":
                 return
             self._status = f"tool:{tool}"
             self._enqueue(ToolCallStartEvent(
@@ -748,7 +743,7 @@ class AgentSession:
             call_id = data.tool_call_id
             entry = self._tool_names.pop(call_id, None) if call_id else None
             tool = entry[0] if entry else "tool"
-            if tool in _HIDDEN_TOOLS or tool == "skill":
+            if tool == "skill":
                 return
             self._status = "thinking"
             self._tools_called += 1

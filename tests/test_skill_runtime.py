@@ -15,6 +15,7 @@ for path in (ROOT, SESSION):
 from deepagents.middleware.filesystem import _check_fs_permission  # noqa: E402
 from deepagents.middleware.skills import _list_skills  # noqa: E402
 
+from agent import SYSTEM_PROMPT as COPILOT_SYSTEM_PROMPT  # noqa: E402
 from agent_deepagents import SYSTEM_PROMPT, _EXCLUDED_BUILTINS, _model_visible_text  # noqa: E402
 from skill_runtime import (  # noqa: E402
     INTERNAL_SKILL_TOOLS,
@@ -64,10 +65,15 @@ class SkillRuntimeTests(unittest.TestCase):
 
     def test_only_a_full_read_is_recorded_as_skill_invocation(self):
         for name in SKILL_NAMES:
+            line_count = len(skill_path(name).read_text().splitlines(keepends=True))
+            self.assertIsNone(
+                skill_name_for_read({"file_path": skill_virtual_path(name), "offset": 0, "limit": line_count - 1}),
+            )
             self.assertEqual(
-                skill_name_for_read({"file_path": skill_virtual_path(name), "offset": 0, "limit": 1000}),
+                skill_name_for_read({"file_path": skill_virtual_path(name), "offset": 0, "limit": line_count}),
                 name,
             )
+            self.assertEqual(skill_name_for_read({"file_path": skill_virtual_path(name)}), name)
         self.assertIsNone(skill_name_for_read({"file_path": "/other/SKILL.md", "offset": 0, "limit": 1000}))
         self.assertIsNone(
             skill_name_for_read({"file_path": skill_virtual_path(SKILL_NAMES[0]), "offset": 1, "limit": 1000}))
@@ -77,6 +83,12 @@ class SkillRuntimeTests(unittest.TestCase):
             content = "exact tool output"
 
         self.assertEqual(_model_visible_text(Result()), "exact tool output")
+
+    def test_both_adapter_prompts_retain_issue_21_operating_rules(self):
+        for prompt in (SYSTEM_PROMPT, COPILOT_SYSTEM_PROMPT):
+            self.assertIn("read the\nfull record with `get_engagement` before answering", prompt)
+            self.assertIn("When asked to read or show\nsomething, present what you found", prompt)
+            self.assertIn("Navigate at most once\nper turn", prompt)
 
 
 if __name__ == "__main__":

@@ -166,7 +166,7 @@ The logical schema is:
     "timezone": "America/New_York",
     "salience": []
   },
-  "retrieval": {"namespaceIds": ["personal:user-7", "engagement:eng-42"]},
+  "retrieval": {"selectedScope": {"kind": "engagement", "id": "eng-42"}},
   "applied": [],
   "omitted": []
 }
@@ -218,7 +218,8 @@ Backend tools receive opaque runtime context outside model arguments:
 - Actor ID and session ownership
 - `contextId` and snapshot time
 - Validated UI destination and scope hints
-- Effective capability hints and retrieval namespace filters
+- Effective capability hints and one validated retrieval-scope hint; every retrieval call still
+  selects exactly one scope and the backend rebuilds its filter
 - Workspace binding
 
 These are still hints, not cached authorization. Every tool re-reads current membership and relevant
@@ -451,7 +452,8 @@ context but are not a context store.
 
 - Permission-trim every source before composition, ranking, or retrieval.
 - Reauthorize every tool call against live state; never trust a permission snapshot alone.
-- Namespace retrieval indexes by actor and Engagement before any indexed-corpus rollout (see
+- Tag every indexed entry with one actor or Engagement scope, query exactly one scope at a time, and
+  post-validate results even when multiple scopes share one physical environment index (see
   [rag-qa.md](rag-qa.md)).
 - Cap behavioral history and make it clearable.
 - Keep raw documents and record collections out of prompt context unless explicitly retrieved.
@@ -496,4 +498,5 @@ contract, including the exact turn path and evidence status.
 - [ ] Quick links, semantic navigation, CRUD, and retrieval consume the same context contract.
 - [ ] Deep Agents receives the opening bundle in its system prompt at session creation, never
       checkpointed as actor speech.
-- [ ] Indexed-corpus retrieval is actor- and Engagement-filtered (see [rag-qa.md](rag-qa.md)).
+- [ ] Each indexed-corpus retrieval call selects exactly one actor or Engagement scope, applies a
+      server-built filter, and post-validates every result (see [rag-qa.md](rag-qa.md)).

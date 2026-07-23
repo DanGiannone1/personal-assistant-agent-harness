@@ -55,10 +55,17 @@ def skill_name_for_read(arguments: Any) -> str | None:
         return None
     offset = arguments.get("offset", 0)
     limit = arguments.get("limit", 100)
-    if not isinstance(offset, int) or offset != 0 or not isinstance(limit, int) or limit < 100:
+    if not isinstance(offset, int) or offset != 0 or not isinstance(limit, int):
         return None
     file_path = arguments.get("file_path")
-    return next((name for name in SKILL_NAMES if file_path == skill_virtual_path(name)), None)
+    name = next((name for name in SKILL_NAMES if file_path == skill_virtual_path(name)), None)
+    if name is None:
+        return None
+    # Deep Agents read_file uses a zero-indexed line offset and reads at most
+    # ``limit`` source lines. Evidence therefore requires a first-page limit
+    # that reaches this complete SKILL.md, rather than its generic 100-line
+    # default alone.
+    return name if limit >= len(skill_path(name).read_text().splitlines(keepends=True)) else None
 
 
 def deepagents_skill_config() -> dict[str, Any]:

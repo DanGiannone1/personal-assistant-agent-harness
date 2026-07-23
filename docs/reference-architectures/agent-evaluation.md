@@ -15,8 +15,9 @@ The proposed program measures six things:
    Improvements are measured with the same rigor as regressions.
 
 In the target program, every eval run scores all six and leaves a permanent scorecard, so any change
-can be compared against the last known-good state, metric by metric — no durable scorecard history
-exists today. The unit under evaluation is the **harness + model
+can be compared against the last known-good state, metric by metric. The local MVP now has a
+sanitized, immutable scorecard-history CLI and a separate human baseline-acceptance artifact; it
+does not have an accepted baseline yet. The unit under evaluation is the **harness + model
 pair**, not the model alone: every scorecard records harness, model deployment, and code revision,
 and the suite can run identical tasks against both Deep Agents and Copilot head-to-head.
 
@@ -107,16 +108,46 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 - The loopback-only Deep Agents runner has nine atomic cases (seven Engagement, two personal-work)
   and one three-turn workflow, resets the fixture before each, and grades saved application state,
   structured events, exact targets/arguments, forbidden tools, and complete model-visible
-  product-tool outputs.
+  product-tool outputs. Check-level partial credit is implemented: only requirements configured by a
+  task count (plus the universal event, terminal, and structured-result checks), and the two
+  grounding cases count only their own recognized grounding dimension. The E5 missing-reason, E6
+  outsider-change, and E7 inert-marker safety cases remain all-or-nothing: their diagnostics retain
+  observed failures, but a failed safety task receives zero credited checks. E5/E6 choose exactly
+  one scored branch—passing primary evidence, otherwise passing safe non-execution, otherwise the
+  higher observed ratio with a deterministic primary tie—so alternatives never double-count.
+- Workflow partial credit includes its configured workflow requirements and each selected turn path
+  under a stable turn ID; the composite `allTurnsPass` remains a pass/fail diagnostic and is never a
+  denominator check. The scorecard and history validators derive the exact allowed check names from
+  the versioned atomic/workflow definitions, so removing a required check or adding an irrelevant
+  true check invalidates readiness. They record credited check passed/total metrics, and comparison
+  treats deterministic check regressions as blocking. This describes implementation only; it does
+  not claim a new live-evidence run.
+- Evaluator evidence records an end-to-end harness wall-clock latency for every atomic result and
+  every workflow turn. It uses monotonic `performance.now()`, rounded to a non-negative integer
+  millisecond value, from just before the message POST through POST completion and the correlated
+  trace fetch/parse. It is explicitly non-gating and advisory in scorecards, history, and comparisons;
+  it is neither TTFT nor model-only latency. No live evaluation has been rerun for this measurement.
 - Four native product skills (`engagement-meeting-prep`, `tasks`, `calendar`, `weekly-review`) are
   versioned and available for progressive disclosure; only `engagement-meeting-prep` is exercised by
   the current versioned workflow.
 - Waza has an isolated skill-routing check for the `engagement-meeting-prep` skill only; its
   pass/fail gate covers Copilot laboratory behavior rather than Deep Agents product behavior, and
   it does not cover the other three skills.
-- There is no durable scorecard history, gold capability task set derived from real use cases,
-  repeated-trial orchestration, or calibrated automated judge yet. Judging today, when done, is
-  manual review rather than an automated grader.
+- The checked-in judge rubric now has strict advisory-record validation and scorecard reporting for
+  the canonical suite. Automated judging and judge calibration do not exist; records are supplied
+  evidence and cannot override deterministic product-runtime or Waza gates.
+- Local scorecard history rebuilds each scorecard from supplied product, Waza, grounding-review,
+  and optional advisory-judge evidence before hashing canonical JSON. It retains only bindings,
+  gate statuses, metrics, provenance, and evidence digests; it never retains transcript, product
+  data, fixture-path, or absolute-path payloads. History, acceptance, and comparison artifacts are
+  create-new and immutable. A separately authored exact-key human decision can accept only a
+  `READY_FOR_BASELINE` record. No accepted baseline is checked in because current evidence is not
+  eligible.
+- A comparison requires a matching baseline acceptance, reports product atomic/workflow and Waza
+  deltas plus explicit blocking-regression flags, and reports advisory judge deltas without letting
+  them affect blocking regressions or acceptance. Gold capability tasks and repeated-trial
+  orchestration do not exist yet. Judging today, when done, is manual review rather than an
+  automated grader.
 - Product-runtime token and cost capture are not implemented; only the Waza check reports those
   values.
 
@@ -126,10 +157,34 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 |---|---|---|
 | 1. Scorecard history | Accept one reviewed baseline, then keep permanent comparable scorecards | A clean live product workflow result and human grounding review |
 | 2. Judge formalized | Judge questions for the existing tasks checked in; verdicts stored beside each run | Nothing |
-| 3. Runner upgrades | Partial credit, response-start timing, product token/cost capture, repeat-trial orchestration | Token capture touches the harness and is reviewed separately |
+| 3. Runner upgrades | Response-start timing, product token/cost capture, repeat-trial orchestration | Check-level partial credit is implemented; token capture touches the harness and is reviewed separately |
 | 4. Gold task suite | Use-case-derived tasks with expected outcomes, judge questions, and reference solutions | A use-case set |
 | 5. Consistency & comparison | Repeat trials, pass@k/pass^k, side-by-side harness runs | Phases 3–4 |
 | 6. Automated judge + Azure | Calibrated judge, Azure AI Foundry evaluators, Blob upload, Application Insights, a dev Azure eval copy | Phases 1–5 |
+
+## Local history commands
+
+After producing a scorecard with matching exact product, Waza, and grounding-review JSON, record
+only a sanitized immutable projection in a caller-chosen local directory:
+
+```bash
+npm run eval:mvp:history -- record <scorecard.json> <product-results.json> <waza-results.json> <grounding-review.json> <history-root> [advisory-judge.json]
+```
+
+The separate decision is human-authored JSON with exactly `schemaVersion`, `kind`, `recordHash`,
+`reviewer`, `acceptedAt`, `decision`, and `rationale`; it uses schema version `1`, kind
+`mvp-scorecard-baseline-decision`, decision `ACCEPTED`, a strict RFC3339 timestamp, and a one-sentence
+rationale. It cannot be generated by the scorecard itself.
+
+```bash
+npm run eval:mvp:history -- accept <history-record.json> <human-decision.json> <scorecard.json> <product-results.json> <waza-results.json> <grounding-review.json> <history-root> [advisory-judge.json]
+npm run eval:mvp:history -- compare <baseline-history.json> <baseline-acceptance.json> <candidate-history.json> <history-root>
+```
+
+Acceptance rebuilds the supplied source bundle and requires it to match the immutable history record
+before writing the separate human decision. The SHA-256 values bind and detect accidental changes;
+they are not signatures and do not protect against a writer who can replace and rehash every local
+artifact. Repository review and version history remain the trust anchor.
 
 ## Related documents
 

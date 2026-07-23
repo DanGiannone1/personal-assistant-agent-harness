@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { evaluateCase, evaluateWorkflow } from "../scripts/mvp_evidence.mjs";
-import { MVP_EVAL_MANIFEST } from "../scripts/mvp_eval_manifest.mjs";
-import { buildMvpScorecard, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
+import { MVP_EVAL_MANIFEST, expectedAtomicScoredCheckNames, expectedWorkflowCheckContract, expectedWorkflowScoredCheckNames } from "../scripts/mvp_eval_manifest.mjs";
+import { loadMvpJudgeRubric, summarizeMvpJudge, validateMvpJudgeRecord, validateMvpJudgeRubric } from "../scripts/mvp_judge.mjs";
+import { buildMvpScorecard, renderMvpScorecard, summarizeWaza, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
 
 const start = (run = "run-1") => ({ type: "RUN_STARTED", run_id: run, thread_id: "thread-1" });
 const finish = (run = "run-1") => ({ type: "RUN_FINISHED", run_id: run, thread_id: "thread-1" });
@@ -34,11 +38,13 @@ const wazaGate = (overrides = {}) => ({
   eval_id: "waza-run",
   skill: "engagement-meeting-prep",
   config: { model_id: "claude-sonnet-4.6", engine_type: "copilot-sdk" },
-  summary: { total_tests: 4, failed: 0, errors: 0, skipped: 0 },
+  summary: { total_tests: 4, succeeded: 4, failed: 0, errors: 0, skipped: 0 },
   tasks: WAZA_GATE_TASK_IDS.map((test_id) => ({ test_id, status: "passed" })),
   csaMvpProvenance: {
     runner: "scripts/waza_eval.sh",
     wazaVersion: "0.38.3",
+    tag: "gate",
+    eval: "tests/evals/waza/engagement-meeting-prep/eval.yaml",
     sourceRevision: "abc",
     sourceRevisionAfter: "abc",
     sourceDirtyBefore: false,
@@ -49,12 +55,93 @@ const wazaGate = (overrides = {}) => ({
 });
 
 function canonicalAtomicResults(fixture) {
-  return MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => ({ id, pass: true, fixture }));
+  return MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => {
+    const names = expectedAtomicScoredCheckNames(id, "primary");
+    const scoredChecks = Object.fromEntries(names.map((name) => [name, true]));
+    return {
+      id, pass: true, fixture, latencyMs: 100 + index, checks: { ...scoredChecks }, scoredChecks,
+      checkScore: { mode: MVP_EVAL_MANIFEST.safetyAtomicCaseIds.includes(id) ? "all-or-nothing" : "partial", path: "primary", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } },
+    };
+  });
 }
 
 function canonicalWorkflowResults(fixture, reviewStatus = "REVIEW_REQUIRED") {
-  return MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: reviewStatus } }));
+  return MVP_EVAL_MANIFEST.workflowIds.map((id, workflowIndex) => {
+    const contract = expectedWorkflowCheckContract(id);
+    const names = expectedWorkflowScoredCheckNames(id);
+    const scoredChecks = Object.fromEntries(names.map((name) => [name, true]));
+    const turnResults = contract.turns.map((turn, turnIndex) => {
+      const turnChecks = Object.fromEntries(turn.names.map((name) => [name, true]));
+      return { pass: true, latencyMs: 300 + workflowIndex * 10 + turnIndex, checks: { ...turnChecks }, scoredChecks: turnChecks, checkScore: { mode: "partial", path: "primary", observed: { passed: turn.names.length, total: turn.names.length, failed: [] }, credit: { passed: turn.names.length, total: turn.names.length } } };
+    });
+    const checks = { ...Object.fromEntries(contract.workflowNames.map((name) => [name, true])), allTurnsPass: true };
+    const turns = turnResults.map((result, turnIndex) => ({ ...structuredClone(result), id: contract.turns[turnIndex].id }));
+    return { id, pass: true, fixture, latencyMs: 200 + workflowIndex, checks, scoredChecks, turns, turnResults, groundingReview: { status: reviewStatus }, checkScore: { mode: "partial", path: "workflow", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } } };
+  });
 }
+
+function canonicalJudgeProduct(overrides = {}) {
+  const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash" };
+  return {
+    runId: "product-run", completedAt: "2026-07-20T00:00:00Z", sourceRevision: "abc", scope: "all", fixture,
+    environment: "local-synthetic", harness: "deepagents", model: "product-model",
+    skill: { name: "engagement-meeting-prep", sha256: "hash" },
+    results: canonicalAtomicResults(fixture), workflows: canonicalWorkflowResults(fixture),
+    ...overrides,
+  };
+}
+
+function judgeRecord(product, verdict = "pass", judge = { kind: "human", reviewer: "Human Reviewer" }) {
+  const rubric = loadMvpJudgeRubric();
+  return {
+    schemaVersion: 1,
+    kind: "mvp-advisory-judge-record",
+    productRunId: product.runId,
+    sourceRevision: product.sourceRevision,
+    fixtureVersion: product.fixture.fixtureVersion,
+    fixtureHash: product.fixture.fixtureHash,
+    skillSha256: product.skill.sha256,
+    rubricVersion: rubric.version,
+    judge,
+    judgedAt: "2026-07-22T12:00:00Z",
+    atomicJudgments: rubric.rubrics.flatMap(({ caseId, questions }) => questions.map(({ dimension, question }) => ({
+      caseId, dimension, question, verdict, reason: "The recorded reply is adequately supported.",
+    }))),
+    workflowJudgments: rubric.workflows.flatMap(({ workflowId, questions }) => questions.map(({ dimension, question }) => ({
+      workflowId, dimension, question, verdict, reason: "The recorded conversation is adequately supported.",
+    }))),
+  };
+}
+
+test("Waza accepts internally consistent declared and observed task counts", () => {
+  const summary = summarizeWaza(wazaGate());
+  assert.equal(summary.countsConsistent, true);
+  assert.equal(summary.status, "RECORDED");
+  assert.equal(summary.gatePass, true);
+});
+
+test("Waza rejects inconsistent declared counts and result collections", () => {
+  for (const [label, report] of [
+    ["total", wazaGate({ summary: { total_tests: 3, succeeded: 4, failed: 0, errors: 0, skipped: 0 } })],
+    ["passed", wazaGate({ summary: { total_tests: 4, succeeded: 3, failed: 0, errors: 0, skipped: 0 } })],
+    ["failed", wazaGate({ summary: { total_tests: 4, succeeded: 4, failed: 1, errors: 0, skipped: 0 } })],
+    ["results", wazaGate({ tasks: WAZA_GATE_TASK_IDS.slice(0, -1).map((test_id) => ({ test_id, status: "passed" })) })],
+  ]) {
+    const summary = summarizeWaza(report);
+    assert.equal(summary.countsConsistent, false, label);
+    assert.equal(summary.status, "FAILED", label);
+    assert.equal(summary.gatePass, false, label);
+  }
+});
+
+test("Waza gate rejects advisory or duplicate five-task counterexamples", () => {
+  const duplicate = wazaGate({
+    summary: { total_tests: 5, succeeded: 5, failed: 0, errors: 0, skipped: 0 },
+    tasks: [...WAZA_GATE_TASK_IDS, WAZA_GATE_TASK_IDS[0]].map((test_id) => ({ test_id, status: "passed" })),
+    csaMvpProvenance: { ...wazaGate().csaMvpProvenance, tag: "advisory" },
+  });
+  assert.equal(summarizeWaza(duplicate).gatePass, false);
+});
 
 test("atomic case definitions name forbidden tools and bind rejection attempts to the intended target", () => {
   const suite = JSON.parse(readFileSync(new URL("./evals/mvp-cases.json", import.meta.url)));
@@ -69,6 +156,7 @@ test("atomic case definitions name forbidden tools and bind rejection attempts t
     assert.equal(item.expectation.toolCall.args.engagement_id, "eng-product-launch");
   }
   assert.deepEqual(suite.cases.map((item) => item.id), MVP_EVAL_MANIFEST.atomicCaseIds);
+  assert.deepEqual(MVP_EVAL_MANIFEST.safetyAtomicCaseIds, ["MVP-E5-missing-reason", "MVP-E6-outsider-change", "MVP-E7-marker-prose-is-inert"]);
   assert.deepEqual(workflows.workflows.map((item) => item.id), MVP_EVAL_MANIFEST.workflowIds);
   assert.deepEqual(
     suite.cases.find((item) => item.id === "MVP-E1-list-authorized").expectation.modelVisibleOutput,
@@ -113,6 +201,8 @@ test("E1 and E2 require exact native model-visible renderings and a user-visible
     rawRecords: [rawTool({ id: "list-1", name: "list_engagements", args: {}, output: validListOutput.replace(/\n/g, "\r\n"), result: listResult })],
   });
   assert.equal(validList.pass, true);
+  assert.equal(validList.checkScore.observed.failed.includes("engagementDetailFactsGrounded"), false);
+  assert.equal(validList.checkScore.observed.total, 10);
   assert.equal(validList.checks.authorizedEngagementIdsGrounded, true);
 
   for (const [label, output] of [
@@ -191,6 +281,8 @@ test("E1 and E2 require exact native model-visible renderings and a user-visible
     rawRecords: [rawTool({ id: "get-1", name: "get_engagement", args: { engagement_id: "eng-product-launch" }, output: validDetailOutput.replace(/\n/g, "\r\n"), result: getResult })],
   });
   assert.equal(validDetail.pass, true);
+  assert.equal(validDetail.checkScore.observed.failed.includes("authorizedEngagementIdsGrounded"), false);
+  assert.equal(validDetail.checkScore.observed.total, 13);
   assert.equal(validDetail.checks.engagementDetailFactsGrounded, true);
 
   for (const [label, output] of [
@@ -344,6 +436,18 @@ test("the workflow fixture allows control-only exact navigation while requiring 
   assert.equal(failed.checks.oneSession, false);
 });
 
+test("workflow check scoring namespaces selected turn checks and excludes the all-turns composite", () => {
+  const state = { engagements: [] };
+  const definition = { turns: [{ id: "only", expectation: { zeroToolResults: true, stateChanged: false, noNavigation: true } }] };
+  const passing = evaluateWorkflow({ definition, resetCount: 1, sessionId: "session-1", before: state, after: state, turns: [{ id: "only", sessionId: "session-1", before: state, after: state, events: [start(), finish()], rawRecords: [] }] });
+  assert.equal(passing.checkScore.path, "workflow");
+  assert.equal(passing.checkScore.observed.failed.includes("allTurnsPass"), false);
+  assert.equal(passing.checkScore.observed.total, 9);
+  const failed = evaluateWorkflow({ definition, resetCount: 1, sessionId: "session-1", before: state, after: state, turns: [{ id: "only", sessionId: "session-1", before: state, after: state, events: [start(), ...tool({ id: "list", name: "list_engagements", args: {}, result: { operation: "list", status: "succeeded", code: "engagement.listed" } }), finish()], rawRecords: [] }] });
+  assert.equal(failed.checkScore.observed.failed.some((name) => name.startsWith("only.")), true);
+  assert.equal(failed.checkScore.observed.failed.includes("allTurnsPass"), false);
+});
+
 test("the scorecard keeps product and Waza provenance separate and never self-accepts a baseline", () => {
   const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash" };
   const product = {
@@ -355,8 +459,8 @@ test("the scorecard keeps product and Waza provenance separate and never self-ac
     harness: "deepagents",
     model: "gpt-test",
     skill: { name: "engagement-meeting-prep", sha256: "hash" },
-    results: [{ id: "a", pass: true, fixture }],
-    workflows: [{ id: "w", pass: true, fixture, groundingReview: { status: "REVIEW_REQUIRED" } }],
+    results: [{ id: "a", pass: true, fixture, latencyMs: 100 }],
+    workflows: [{ id: "w", pass: true, fixture, latencyMs: 200, turns: [], groundingReview: { status: "REVIEW_REQUIRED" } }],
   };
   const waza = wazaGate();
   const scorecard = buildMvpScorecard(product, waza);
@@ -387,6 +491,55 @@ test("only the exact all-scope canonical suite can pass the product hard gate", 
   assert.equal(full.lanes.productRuntime.canonicalWorkflowSuite, true);
   assert.equal(full.lanes.productRuntime.hardGatePass, true);
   assert.equal(full.acceptance.status, "INCOMPLETE");
+  assert.deepEqual(full.lanes.productRuntime.latency, {
+    measurement: "end-to-end harness wall-clock", unit: "ms", gating: false,
+    atomic: { count: 9, totalMs: 936, minMs: 100, maxMs: 108, meanMs: 104 },
+    workflowTurns: { count: 3, totalMs: 903, minMs: 300, maxMs: 302, meanMs: 301 },
+  });
+
+  const truthy = structuredClone(product);
+  truthy.results[0].pass = "true";
+  const truthyScorecard = buildMvpScorecard(truthy);
+  assert.equal(truthyScorecard.lanes.productRuntime.atomic.passed, MVP_EVAL_MANIFEST.atomicCaseIds.length - 1);
+  assert.deepEqual(truthyScorecard.lanes.productRuntime.atomic.failed, [MVP_EVAL_MANIFEST.atomicCaseIds[0]]);
+  assert.equal(truthyScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const inconsistentCredit = structuredClone(product);
+  inconsistentCredit.results[0].checkScore.credit.passed = 0;
+  const inconsistentCreditScorecard = buildMvpScorecard(inconsistentCredit);
+  assert.equal(inconsistentCreditScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(inconsistentCreditScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const forgedDiagnostics = structuredClone(product);
+  forgedDiagnostics.results[0].checks.only = false;
+  const forgedDiagnosticsScorecard = buildMvpScorecard(forgedDiagnostics);
+  assert.equal(forgedDiagnosticsScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(forgedDiagnosticsScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const forgedSafePath = structuredClone(product);
+  const e7 = forgedSafePath.results.find((item) => item.id === "MVP-E7-marker-prose-is-inert");
+  e7.checkScore.path = "safeNonExecution";
+  const forgedSafePathScorecard = buildMvpScorecard(forgedSafePath);
+  assert.equal(forgedSafePathScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(forgedSafePathScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const wrongPathPriority = structuredClone(product);
+  const e5 = wrongPathPriority.results.find((item) => item.id === "MVP-E5-missing-reason");
+  e5.checks.extraIrrelevantDiagnostic = false;
+  const safeNames = expectedAtomicScoredCheckNames(e5.id, "safeNonExecution");
+  e5.safeNonExecution = { pass: true, checks: Object.fromEntries(safeNames.map((name) => [name, true])) };
+  e5.scoredChecks = { ...e5.safeNonExecution.checks };
+  e5.checkScore = { mode: "all-or-nothing", path: "safeNonExecution", observed: { passed: safeNames.length, total: safeNames.length, failed: [] }, credit: { passed: safeNames.length, total: safeNames.length } };
+  const wrongPathPriorityScorecard = buildMvpScorecard(wrongPathPriority);
+  assert.equal(wrongPathPriorityScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(wrongPathPriorityScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const forgedWorkflowTurn = structuredClone(product);
+  const firstTurn = forgedWorkflowTurn.workflows[0].turnResults[0];
+  firstTurn.checks[Object.keys(firstTurn.checks)[0]] = false;
+  const forgedWorkflowTurnScorecard = buildMvpScorecard(forgedWorkflowTurn);
+  assert.equal(forgedWorkflowTurnScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(forgedWorkflowTurnScorecard.lanes.productRuntime.hardGatePass, false);
 
   const review = {
     productRunId: "product-run", sourceRevision: "abc", fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash",
@@ -425,6 +578,7 @@ test("a workflow-only report remains evidence, not full readiness", () => {
   assert.equal(scorecard.lanes.productRuntime.canonicalWorkflowSuite, true);
   assert.equal(scorecard.lanes.productRuntime.hardGatePass, false);
   assert.equal(scorecard.acceptance.status, "INCOMPLETE");
+  assert.deepEqual(scorecard.lanes.productRuntime.latency.atomic, { count: 0, totalMs: 0, minMs: null, maxMs: null, meanMs: null });
 });
 
 test("human review, fixture, Waza source, and skill identities must all match before a candidate is ready", () => {
@@ -496,4 +650,173 @@ test("human review, fixture, Waza source, and skill identities must all match be
   const mismatched = buildMvpScorecard(product, waza, { ...review, skillSha256: "wrong" });
   assert.equal(mismatched.lanes.productRuntime.groundingReviewBinding.status, "MISMATCHED");
   assert.equal(mismatched.acceptance.status, "INCOMPLETE");
+});
+
+test("the advisory judge record binds the complete canonical atomic and workflow rubric", () => {
+  const product = canonicalJudgeProduct();
+  const record = judgeRecord(product);
+  const validated = validateMvpJudgeRecord(record, product);
+  assert.equal(validated.atomicJudgments.length, MVP_EVAL_MANIFEST.atomicCaseIds.length * 3);
+  assert.equal(validated.workflowJudgments.length, MVP_EVAL_MANIFEST.workflowIds.length * 3);
+  assert.deepEqual(validated.judge, { kind: "human", reviewer: "Human Reviewer" });
+  assert.equal(validated.judgedAt, "2026-07-22T12:00:00Z");
+  const summary = summarizeMvpJudge(record, product);
+  assert.equal(summary.status, "RECORDED");
+  assert.equal(summary.binding.status, "MATCHED");
+  assert.deepEqual(summary.provenance, { rubricVersion: 1, judge: { kind: "human", reviewer: "Human Reviewer" }, judgedAt: "2026-07-22T12:00:00Z" });
+  assert.equal(summary.atomic.passed, 27);
+  assert.equal(summary.atomic.dimensions.accuracy.passed, 9);
+  assert.equal(summary.workflows.passed, 3);
+  assert.equal(summary.workflows.dimensions.tone.passed, 1);
+  assert.deepEqual(summary.atomic.judgments[0], record.atomicJudgments[0]);
+});
+
+test("the advisory judge rejects missing, extra, duplicate, and mismatched-bound records", () => {
+  const product = canonicalJudgeProduct();
+  const complete = judgeRecord(product);
+  const cases = [
+    ["missing", { ...complete, atomicJudgments: complete.atomicJudgments.slice(1) }],
+    ["extra", { ...complete, atomicJudgments: [...complete.atomicJudgments, complete.atomicJudgments[0]] }],
+    ["duplicate", { ...complete, atomicJudgments: [...complete.atomicJudgments.slice(0, -1), complete.atomicJudgments[0]] }],
+    ["unknown", { ...complete, atomicJudgments: [{ ...complete.atomicJudgments[0], caseId: "MVP-E99" }, ...complete.atomicJudgments.slice(1) ] }],
+    ["binding", { ...complete, skillSha256: "wrong" }],
+  ];
+  for (const [label, record] of cases) {
+    assert.throws(() => validateMvpJudgeRecord(record, product), Error, label);
+  }
+  const mismatch = summarizeMvpJudge(cases.at(-1)[1], product);
+  assert.equal(mismatch.status, "INVALID");
+  assert.equal(mismatch.binding.status, "MISMATCHED");
+});
+
+test("the advisory judge rejects malformed verdicts and reasons", () => {
+  const product = canonicalJudgeProduct();
+  const complete = judgeRecord(product);
+  for (const [label, judgment] of [
+    ["verdict", { ...complete.atomicJudgments[0], verdict: "approved" }],
+    ["blank reason", { ...complete.atomicJudgments[0], reason: "" }],
+    ["two sentences", { ...complete.atomicJudgments[0], reason: "It is grounded. It is useful." }],
+    ["unterminated reason", { ...complete.atomicJudgments[0], reason: "It is grounded" }],
+  ]) {
+    const record = { ...complete, atomicJudgments: [judgment, ...complete.atomicJudgments.slice(1)] };
+    assert.throws(() => validateMvpJudgeRecord(record, product), Error, label);
+  }
+});
+
+test("the advisory judge enforces human or independent-model provenance and valid timestamps", () => {
+  const product = canonicalJudgeProduct();
+  const modelRecord = judgeRecord(product, "pass", { kind: "model", provider: " example ", model: " judge-model " });
+  const humanRecord = judgeRecord(product, "pass", { kind: "human", reviewer: " Human Reviewer " });
+  assert.equal(validateMvpJudgeRecord(modelRecord, product).judge.model, "judge-model");
+  assert.equal(validateMvpJudgeRecord(modelRecord, product).judge.provider, "example");
+  assert.equal(validateMvpJudgeRecord(humanRecord, product).judge.reviewer, "Human Reviewer");
+  for (const [label, record] of [
+    ["same model", judgeRecord(product, "pass", { kind: "model", provider: "example", model: "product-model" })],
+    ["padded same model", judgeRecord(product, "pass", { kind: "model", provider: "example", model: " product-model " })],
+    ["bad timestamp", { ...judgeRecord(product), judgedAt: "2026-07-22" }],
+    ["extra judge field", judgeRecord(product, "pass", { kind: "human", reviewer: "Human Reviewer", provider: "example" })],
+    ["extra record field", { ...judgeRecord(product), unexpected: true }],
+    ["extra judgment field", { ...judgeRecord(product), atomicJudgments: [{ ...judgeRecord(product).atomicJudgments[0], unexpected: true }, ...judgeRecord(product).atomicJudgments.slice(1)] }],
+  ]) {
+    assert.throws(() => validateMvpJudgeRecord(record, product), Error, label);
+  }
+});
+
+test("the advisory judge requires each exact dimension question and the canonical product suite", () => {
+  const product = canonicalJudgeProduct();
+  const complete = judgeRecord(product);
+  const wrongDimension = {
+    ...complete,
+    atomicJudgments: [{ ...complete.atomicJudgments[0], dimension: "tone" }, ...complete.atomicJudgments.slice(1)],
+  };
+  assert.throws(() => validateMvpJudgeRecord(wrongDimension, product), Error);
+  assert.throws(() => validateMvpJudgeRecord(complete, { ...product, results: product.results.slice(1) }), Error);
+  assert.throws(() => validateMvpJudgeRecord(complete, { ...product, scope: "workflow" }), Error);
+  const inconsistentFixture = structuredClone(product);
+  inconsistentFixture.results[0] = {
+    ...inconsistentFixture.results[0],
+    fixture: { ...inconsistentFixture.fixture, fixtureHash: "inconsistent" },
+  };
+  assert.throws(() => validateMvpJudgeRecord(judgeRecord(inconsistentFixture), inconsistentFixture), Error);
+  const rubric = loadMvpJudgeRubric();
+  const extraEntryField = structuredClone(rubric);
+  extraEntryField.rubrics[0].unexpected = true;
+  const extraQuestionField = structuredClone(rubric);
+  extraQuestionField.rubrics[0].questions[0].unexpected = true;
+  const missingDimension = structuredClone(rubric);
+  missingDimension.rubrics[0].questions.pop();
+  for (const invalidRubric of [extraEntryField, extraQuestionField, missingDimension]) {
+    assert.throws(() => validateMvpJudgeRubric(invalidRubric), Error);
+  }
+});
+
+test("advisory judge verdicts never alter deterministic acceptance", () => {
+  const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash" };
+  const product = {
+    runId: "product-run", completedAt: "2026-07-20T00:00:00Z", sourceRevision: "abc", scope: "all", fixture,
+    environment: "local-synthetic", harness: "deepagents", model: "gpt-test",
+    skill: { name: "engagement-meeting-prep", sha256: "hash" },
+    results: canonicalAtomicResults(fixture), workflows: canonicalWorkflowResults(fixture),
+  };
+  const review = {
+    productRunId: "product-run", sourceRevision: "abc", fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash",
+    skillSha256: "hash", reviewer: "Human Reviewer", reviewedAt: "2026-07-20T01:00:00Z",
+    reviews: [{ workflowId: "MVP-W1-engagement-meeting-to-action", status: "APPROVED" }],
+  };
+  const passed = buildMvpScorecard(product, wazaGate(), review, judgeRecord(product, "pass"));
+  const failed = buildMvpScorecard(product, wazaGate(), review, judgeRecord(product, "fail"));
+  assert.equal(passed.lanes.advisoryJudge.status, "RECORDED");
+  assert.equal(failed.lanes.advisoryJudge.atomic.failed, 27);
+  assert.equal(passed.acceptance.status, "READY_FOR_BASELINE");
+  assert.equal(failed.acceptance.status, "READY_FOR_BASELINE");
+  assert.equal(passed.lanes.productRuntime.hardGatePass, failed.lanes.productRuntime.hardGatePass);
+});
+
+test("the scorecard preserves judge details and safely renders invalid judge diagnostics", () => {
+  const product = canonicalJudgeProduct();
+  const recorded = buildMvpScorecard(product, wazaGate(), null, judgeRecord(product));
+  assert.equal(recorded.lanes.advisoryJudge.atomic.judgments.length, 27);
+  assert.equal(recorded.lanes.advisoryJudge.workflows.judgments.length, 3);
+  const paddedReason = judgeRecord(product);
+  paddedReason.atomicJudgments[0].reason = "  The recorded reply is adequately supported.  ";
+  assert.equal(validateMvpJudgeRecord(paddedReason, product).atomicJudgments[0].reason, "The recorded reply is adequately supported.");
+  const invalid = buildMvpScorecard(product, wazaGate(), null, { ...judgeRecord(product), fixtureHash: "bad\r|hash" });
+  const markdown = renderMvpScorecard(invalid);
+  assert.equal(invalid.lanes.advisoryJudge.status, "INVALID");
+  assert.match(markdown, /Advisory judge diagnostic/);
+  assert.match(markdown, /bad \\\|hash/);
+  assert.doesNotMatch(markdown, /\r/);
+  const backslashPipe = buildMvpScorecard(product, wazaGate(), null, { ...judgeRecord(product), fixtureHash: "bad\\|hash" });
+  const backslashPipeMarkdown = renderMvpScorecard(backslashPipe);
+  const safelyEscaped = `bad${"\\".repeat(3)}|hash`;
+  assert.equal(backslashPipeMarkdown.includes(safelyEscaped), true);
+  assert.equal(backslashPipeMarkdown.includes("bad\\|hash"), false);
+});
+
+test("the scorecard merger keeps its three- and four-argument forms compatible", () => {
+  const directory = mkdtempSync(join(tmpdir(), "csa-mvp-scorecard-"));
+  try {
+    const product = canonicalJudgeProduct();
+    const review = {
+      productRunId: product.runId, sourceRevision: product.sourceRevision,
+      fixtureVersion: product.fixture.fixtureVersion, fixtureHash: product.fixture.fixtureHash, skillSha256: product.skill.sha256,
+      reviewer: "Human Reviewer", reviewedAt: "2026-07-20T01:00:00Z",
+      reviews: [{ workflowId: "MVP-W1-engagement-meeting-to-action", status: "APPROVED" }],
+    };
+    const productPath = join(directory, "product.json");
+    const wazaPath = join(directory, "waza.json");
+    const reviewPath = join(directory, "review.json");
+    writeFileSync(productPath, JSON.stringify(product));
+    writeFileSync(wazaPath, JSON.stringify(wazaGate()));
+    writeFileSync(reviewPath, JSON.stringify(review));
+    for (const [prefix, args] of [
+      [join(directory, "three"), [productPath, wazaPath, join(directory, "three")]],
+      [join(directory, "four"), [productPath, wazaPath, join(directory, "four"), reviewPath]],
+    ]) {
+      execFileSync(process.execPath, ["scripts/mvp_scorecard_merge.mjs", ...args], { cwd: process.cwd(), stdio: "pipe" });
+      assert.equal(JSON.parse(readFileSync(`${prefix}.json`, "utf8")).lanes.advisoryJudge.status, "NOT_SUPPLIED");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -103,9 +103,11 @@ def test_isolated_config_refuses_shared_cosmos_or_invalid_ports(field: str, valu
 
 
 def test_preflight_ports_refuses_an_existing_loopback_listener() -> None:
-    config = dev_launcher.build_config(isolated_env())
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", config.api_port))
+        listener.bind(("127.0.0.1", 0))
+        env = isolated_env()
+        env["CSA_API_PORT"] = str(listener.getsockname()[1])
+        config = dev_launcher.build_config(env)
         listener.listen()
         with pytest.raises(RuntimeError, match="already in use"):
             dev_launcher.preflight_ports(config)

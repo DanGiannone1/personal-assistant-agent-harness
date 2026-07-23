@@ -253,11 +253,25 @@ foundation_output() {
 }
 
 verify_inventory() {
-  local apps deployments identities resources acr azure_open_ai cosmos storage vnet private_endpoints private_dns_zones managed_environment network_security_groups cosmos_dns_links storage_dns_links cosmos_dns_groups storage_dns_groups cosmos_dns_records storage_dns_records frontend_principal api_principal runtime_principal assignments cosmos_sql_assignments
+  local apps deployments identities resources system_topics system_topic_name system_topic_subscriptions acr azure_open_ai cosmos storage vnet private_endpoints private_dns_zones managed_environment network_security_groups cosmos_dns_links storage_dns_links cosmos_dns_groups storage_dns_groups cosmos_dns_records storage_dns_records frontend_principal api_principal runtime_principal assignments cosmos_sql_assignments
   apps="$(az containerapp list -g "$RESOURCE_GROUP" -o json)"
   deployments="$(az cognitiveservices account deployment list -g "$RESOURCE_GROUP" -n "$AOAI_NAME" -o json)"
   identities="$(az identity list -g "$RESOURCE_GROUP" -o json)"
   resources="$(az resource list -g "$RESOURCE_GROUP" -o json)"
+  system_topics="$(az eventgrid system-topic list -g "$RESOURCE_GROUP" --query "[].{name:name,provisioningState:provisioningState,source:source,topicType:topicType}" -o json)"
+  system_topic_name="$(SYSTEM_TOPICS="$system_topics" python3 - <<'PY'
+import json, os
+topics = json.loads(os.environ['SYSTEM_TOPICS'])
+if not isinstance(topics, list) or len(topics) > 1 or any(not isinstance(topic, dict) for topic in topics):
+    raise SystemExit('tenant-managed Event Grid system topic inventory drifted')
+print('' if not topics else topics[0].get('name', ''))
+PY
+)" || fail 'tenant-managed Event Grid system topic inventory validation failed'
+  if [[ -n "$system_topic_name" ]]; then
+    system_topic_subscriptions="$(az eventgrid system-topic event-subscription list -g "$RESOURCE_GROUP" --system-topic-name "$system_topic_name" --query "[].{name:name,provisioningState:provisioningState,destination:{endpointType:destination.endpointType,endpointBaseUrl:destination.endpointBaseUrl,aadApplication:destination.azureActiveDirectoryApplicationIdOrUri,aadTenant:destination.azureActiveDirectoryTenantId,maxEventsPerBatch:destination.maxEventsPerBatch,preferredBatchSizeInKilobytes:destination.preferredBatchSizeInKilobytes,deliveryAttributeMappings:destination.deliveryAttributeMappings},eventDeliverySchema:eventDeliverySchema,filter:filter,retryPolicy:retryPolicy,deadLetterDestination:deadLetterDestination,deadLetterWithResourceIdentity:deadLetterWithResourceIdentity,deliveryWithResourceIdentity:deliveryWithResourceIdentity,expirationTimeUtc:expirationTimeUtc,labels:labels}" -o json)"
+  else
+    system_topic_subscriptions='[]'
+  fi
   acr="$(az acr show -g "$RESOURCE_GROUP" -n "$ACR_NAME" -o json)"
   azure_open_ai="$(az cognitiveservices account show -g "$RESOURCE_GROUP" -n "$AOAI_NAME" -o json)"
   cosmos="$(az cosmosdb show -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT_NAME" -o json)"
@@ -278,10 +292,12 @@ verify_inventory() {
   runtime_principal="$(az identity show -g "$RESOURCE_GROUP" -n "$RUNTIME_IDENTITY_NAME" --query principalId -o tsv)"
   assignments="[$(az role assignment list --assignee "$frontend_principal" --all -o json),$(az role assignment list --assignee "$api_principal" --all -o json),$(az role assignment list --assignee "$runtime_principal" --all -o json)]"
   cosmos_sql_assignments="$(az cosmosdb sql role assignment list -g "$RESOURCE_GROUP" -a "$COSMOS_ACCOUNT_NAME" -o json)"
-  APPS="$apps" DEPLOYMENTS="$deployments" IDENTITIES="$identities" RESOURCES="$resources" ACR="$acr" AZURE_OPEN_AI="$azure_open_ai" COSMOS="$cosmos" STORAGE="$storage" VNET="$vnet" PRIVATE_ENDPOINTS="$private_endpoints" PRIVATE_DNS_ZONES="$private_dns_zones" MANAGED_ENVIRONMENT="$managed_environment" NETWORK_SECURITY_GROUPS="$network_security_groups" COSMOS_DNS_LINKS="$cosmos_dns_links" STORAGE_DNS_LINKS="$storage_dns_links" COSMOS_DNS_GROUPS="$cosmos_dns_groups" STORAGE_DNS_GROUPS="$storage_dns_groups" COSMOS_DNS_RECORDS="$cosmos_dns_records" STORAGE_DNS_RECORDS="$storage_dns_records" ASSIGNMENTS="$assignments" COSMOS_SQL_ASSIGNMENTS="$cosmos_sql_assignments" FRONTEND_APP_NAME="$FRONTEND_APP_NAME" API_APP_NAME="$API_APP_NAME" RUNTIME_APP_NAME="$RUNTIME_APP_NAME" FRONTEND_IDENTITY_NAME="$FRONTEND_IDENTITY_NAME" API_IDENTITY_NAME="$API_IDENTITY_NAME" RUNTIME_IDENTITY_NAME="$RUNTIME_IDENTITY_NAME" MODEL_DEPLOYMENT_NAME="$MODEL_DEPLOYMENT_NAME" MODEL_NAME="$MODEL_NAME" MODEL_VERSION="$MODEL_VERSION" MODEL_SKU_NAME="$MODEL_SKU_NAME" MODEL_CAPACITY="$MODEL_CAPACITY" SHA="$SHA" RESOURCE_GROUP="$RESOURCE_GROUP" SUBSCRIPTION_ID="$SUBSCRIPTION_ID" ENVIRONMENT_NAME="$ENVIRONMENT_NAME" DATABASE_NAME="$DATABASE_NAME" VNET_NAME="$VNET_NAME" COSMOS_ACCOUNT_NAME="$COSMOS_ACCOUNT_NAME" STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" ACR_NAME="$ACR_NAME" AOAI_NAME="$AOAI_NAME" COSMOS_PRIVATE_ENDPOINT_NAME="$COSMOS_PRIVATE_ENDPOINT_NAME" STORAGE_PRIVATE_ENDPOINT_NAME="$STORAGE_PRIVATE_ENDPOINT_NAME" COSMOS_PRIVATE_DNS_ZONE="$COSMOS_PRIVATE_DNS_ZONE" STORAGE_PRIVATE_DNS_ZONE="$STORAGE_PRIVATE_DNS_ZONE" PRIVATE_DNS_VNET_LINK_NAME="$PRIVATE_DNS_VNET_LINK_NAME" FRONTEND_PRINCIPAL="$frontend_principal" API_PRINCIPAL="$api_principal" RUNTIME_PRINCIPAL="$runtime_principal" LOCATION="$LOCATION" python3 - <<'PY'
+  APPS="$apps" DEPLOYMENTS="$deployments" IDENTITIES="$identities" RESOURCES="$resources" SYSTEM_TOPICS="$system_topics" SYSTEM_TOPIC_SUBSCRIPTIONS="$system_topic_subscriptions" ACR="$acr" AZURE_OPEN_AI="$azure_open_ai" COSMOS="$cosmos" STORAGE="$storage" VNET="$vnet" PRIVATE_ENDPOINTS="$private_endpoints" PRIVATE_DNS_ZONES="$private_dns_zones" MANAGED_ENVIRONMENT="$managed_environment" NETWORK_SECURITY_GROUPS="$network_security_groups" COSMOS_DNS_LINKS="$cosmos_dns_links" STORAGE_DNS_LINKS="$storage_dns_links" COSMOS_DNS_GROUPS="$cosmos_dns_groups" STORAGE_DNS_GROUPS="$storage_dns_groups" COSMOS_DNS_RECORDS="$cosmos_dns_records" STORAGE_DNS_RECORDS="$storage_dns_records" ASSIGNMENTS="$assignments" COSMOS_SQL_ASSIGNMENTS="$cosmos_sql_assignments" FRONTEND_APP_NAME="$FRONTEND_APP_NAME" API_APP_NAME="$API_APP_NAME" RUNTIME_APP_NAME="$RUNTIME_APP_NAME" FRONTEND_IDENTITY_NAME="$FRONTEND_IDENTITY_NAME" API_IDENTITY_NAME="$API_IDENTITY_NAME" RUNTIME_IDENTITY_NAME="$RUNTIME_IDENTITY_NAME" MODEL_DEPLOYMENT_NAME="$MODEL_DEPLOYMENT_NAME" MODEL_NAME="$MODEL_NAME" MODEL_VERSION="$MODEL_VERSION" MODEL_SKU_NAME="$MODEL_SKU_NAME" MODEL_CAPACITY="$MODEL_CAPACITY" SHA="$SHA" RESOURCE_GROUP="$RESOURCE_GROUP" SUBSCRIPTION_ID="$SUBSCRIPTION_ID" ENVIRONMENT_NAME="$ENVIRONMENT_NAME" DATABASE_NAME="$DATABASE_NAME" VNET_NAME="$VNET_NAME" COSMOS_ACCOUNT_NAME="$COSMOS_ACCOUNT_NAME" STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" ACR_NAME="$ACR_NAME" AOAI_NAME="$AOAI_NAME" COSMOS_PRIVATE_ENDPOINT_NAME="$COSMOS_PRIVATE_ENDPOINT_NAME" STORAGE_PRIVATE_ENDPOINT_NAME="$STORAGE_PRIVATE_ENDPOINT_NAME" COSMOS_PRIVATE_DNS_ZONE="$COSMOS_PRIVATE_DNS_ZONE" STORAGE_PRIVATE_DNS_ZONE="$STORAGE_PRIVATE_DNS_ZONE" PRIVATE_DNS_VNET_LINK_NAME="$PRIVATE_DNS_VNET_LINK_NAME" FRONTEND_PRINCIPAL="$frontend_principal" API_PRINCIPAL="$api_principal" RUNTIME_PRINCIPAL="$runtime_principal" LOCATION="$LOCATION" python3 - <<'PY'
 import json, os
 apps = json.loads(os.environ['APPS']); deployments = json.loads(os.environ['DEPLOYMENTS']); identities = json.loads(os.environ['IDENTITIES'])
+import uuid
 resources = json.loads(os.environ['RESOURCES']); acr = json.loads(os.environ['ACR']); aoai = json.loads(os.environ['AZURE_OPEN_AI'])
+system_topics = json.loads(os.environ['SYSTEM_TOPICS']); system_topic_subscriptions = json.loads(os.environ['SYSTEM_TOPIC_SUBSCRIPTIONS'])
 cosmos = json.loads(os.environ['COSMOS']); storage = json.loads(os.environ['STORAGE']); vnet = json.loads(os.environ['VNET'])
 private_endpoints = json.loads(os.environ['PRIVATE_ENDPOINTS']); zones = json.loads(os.environ['PRIVATE_DNS_ZONES']); environment = json.loads(os.environ['MANAGED_ENVIRONMENT'])
 network_security_groups = json.loads(os.environ['NETWORK_SECURITY_GROUPS'])
@@ -332,7 +348,7 @@ model = d.get('properties', {}).get('model', {})
 if d.get('name') != os.environ['MODEL_DEPLOYMENT_NAME'] or d.get('properties', {}).get('provisioningState') != 'Succeeded' or model.get('format') != 'OpenAI' or d.get('sku', {}).get('name') != os.environ['MODEL_SKU_NAME'] or d.get('sku', {}).get('capacity') != int(os.environ['MODEL_CAPACITY']) or model.get('name') != os.environ['MODEL_NAME'] or model.get('version') != os.environ['MODEL_VERSION']: raise SystemExit('Azure OpenAI model profile drifted')
 if acr.get('name') != os.environ['ACR_NAME'] or acr.get('sku', {}).get('name') != 'Basic' or acr.get('adminUserEnabled') is not False: raise SystemExit('Container Registry profile drifted')
 if aoai.get('name') != os.environ['AOAI_NAME'] or aoai.get('kind') != 'OpenAI' or aoai.get('sku', {}).get('name') != 'S0' or aoai.get('properties', {}).get('disableLocalAuth') is not True: raise SystemExit('Azure OpenAI account profile drifted')
-if cosmos.get('disableLocalAuth') is not True or cosmos.get('publicNetworkAccess') != 'Disabled': raise SystemExit('Cosmos authentication/network profile drifted')
+if cosmos.get('disableLocalAuth') is not True or cosmos.get('publicNetworkAccess') != 'Disabled' or cosmos.get('enableAutomaticFailover') is not True: raise SystemExit('Cosmos authentication/network/failover profile drifted')
 if storage.get('publicNetworkAccess') != 'Disabled' or storage.get('allowSharedKeyAccess') is not False or storage.get('allowBlobPublicAccess') is not False: raise SystemExit('Storage authentication/public-blob profile drifted')
 subnets = {subnet.get('name'): subnet for subnet in vnet.get('subnets', [])}
 if vnet.get('name') != os.environ['VNET_NAME'] or vnet.get('addressSpace', {}).get('addressPrefixes') != ['10.42.0.0/24'] or set(subnets) != {'aca-infrastructure', 'private-endpoints'} or subnets['aca-infrastructure'].get('addressPrefix') != '10.42.0.0/27' or subnets['private-endpoints'].get('addressPrefix') != '10.42.0.32/27' or subnets['private-endpoints'].get('privateEndpointNetworkPolicies') != 'Disabled': raise SystemExit('virtual network profile drifted')
@@ -382,6 +398,57 @@ expected_resources = {
   ('microsoft.managedidentity/userassignedidentities', os.environ['FRONTEND_IDENTITY_NAME'].lower()), ('microsoft.managedidentity/userassignedidentities', os.environ['API_IDENTITY_NAME'].lower()), ('microsoft.managedidentity/userassignedidentities', os.environ['RUNTIME_IDENTITY_NAME'].lower()),
   ('microsoft.containerregistry/registries', os.environ['ACR_NAME'].lower()), ('microsoft.cognitiveservices/accounts', os.environ['AOAI_NAME'].lower()), ('microsoft.documentdb/databaseaccounts', os.environ['COSMOS_ACCOUNT_NAME'].lower()), ('microsoft.storage/storageaccounts', os.environ['STORAGE_ACCOUNT_NAME'].lower()), ('microsoft.network/virtualnetworks', os.environ['VNET_NAME'].lower()), ('microsoft.network/privateendpoints', os.environ['COSMOS_PRIVATE_ENDPOINT_NAME'].lower()), ('microsoft.network/privateendpoints', os.environ['STORAGE_PRIVATE_ENDPOINT_NAME'].lower()), ('microsoft.network/privatednszones', os.environ['COSMOS_PRIVATE_DNS_ZONE'].lower()), ('microsoft.network/privatednszones', os.environ['STORAGE_PRIVATE_DNS_ZONE'].lower()),
 }
+if not isinstance(system_topics, list) or not isinstance(system_topic_subscriptions, list) or len(system_topics) > 1:
+    raise SystemExit('tenant-managed Event Grid system topic inventory drifted')
+expected_system_topic_resources = set()
+if system_topics:
+    topic = system_topics[0]
+    topic_name = topic.get('name') if isinstance(topic, dict) else None
+    expected_topic_prefix = f'{os.environ["STORAGE_ACCOUNT_NAME"]}-'
+    try:
+        valid_topic_name = isinstance(topic_name, str) and topic_name.startswith(expected_topic_prefix) and str(uuid.UUID(topic_name[len(expected_topic_prefix):])) == topic_name[len(expected_topic_prefix):]
+    except (ValueError, AttributeError):
+        valid_topic_name = False
+    expected_source = f'/subscriptions/{os.environ["SUBSCRIPTION_ID"]}/resourceGroups/{os.environ["RESOURCE_GROUP"]}/providers/Microsoft.Storage/storageAccounts/{os.environ["STORAGE_ACCOUNT_NAME"]}'.lower()
+    if not valid_topic_name or topic.get('provisioningState') != 'Succeeded' or topic.get('source', '').lower() != expected_source or topic.get('topicType', '').lower() != 'microsoft.storage.storageaccounts':
+        raise SystemExit('tenant-managed Event Grid system topic inventory drifted')
+    if len(system_topic_subscriptions) != 1:
+        raise SystemExit('Defender Storage Antimalware subscription inventory drifted')
+    subscription = system_topic_subscriptions[0]
+    expected_subscription = {
+        'name': 'StorageAntimalwareSubscription',
+        'provisioningState': 'Succeeded',
+        'destination': {
+            'endpointType': 'WebHook',
+            'endpointBaseUrl': f'https://{os.environ["LOCATION"]}.a3.storageav.azure.com:5142/EventCapture/{os.environ["SUBSCRIPTION_ID"]}/{os.environ["STORAGE_ACCOUNT_NAME"]}',
+            'aadApplication': 'f1f8da5f-609a-401d-85b2-d498116b7265',
+            'aadTenant': '33e01921-4d64-4f8c-a055-5bdaffd5e33d',
+            'maxEventsPerBatch': 1,
+            'preferredBatchSizeInKilobytes': 64,
+            'deliveryAttributeMappings': None,
+        },
+        'eventDeliverySchema': 'EventGridSchema',
+        'filter': {
+            'advancedFilters': [{'key': 'data.blobType', 'operatorType': 'StringContains', 'values': ['BlockBlob']}],
+            'enableAdvancedFilteringOnArrays': None,
+            'includedEventTypes': ['Microsoft.Storage.BlobCreated', 'Microsoft.Storage.BlobRenamed'],
+            'isSubjectCaseSensitive': None,
+            'subjectBeginsWith': '',
+            'subjectEndsWith': '',
+        },
+        'retryPolicy': {'eventTimeToLiveInMinutes': 1440, 'maxDeliveryAttempts': 30},
+        'deadLetterDestination': None,
+        'deadLetterWithResourceIdentity': None,
+        'deliveryWithResourceIdentity': None,
+        'expirationTimeUtc': None,
+        'labels': None,
+    }
+    if subscription != expected_subscription:
+        raise SystemExit('Defender Storage Antimalware subscription inventory drifted')
+    expected_system_topic_resources.add(('microsoft.eventgrid/systemtopics', topic_name.lower()))
+elif system_topic_subscriptions:
+    raise SystemExit('Defender Storage Antimalware subscription inventory drifted')
+expected_resources |= expected_system_topic_resources
 expected_resources |= {('microsoft.network/networkinterfaces', name) for name in nic_names}
 if network_security_groups:
     expected_resources |= {('microsoft.network/networksecuritygroups', name) for name in expected_nsgs}

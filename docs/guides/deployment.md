@@ -43,8 +43,11 @@ az account show --query '{subscription:name,subscriptionId:id,tenantId:tenantId,
 
 For a VNet-integrated Container Apps environment, some subscriptions must first register
 `Microsoft.Network/AllowBringYourOwnPublicIpAddress` and then re-register the `Microsoft.Network`
-provider. The agent should inspect provider state and perform this registration only for the
-selected subscription when required by Azure.
+provider. `infra/deploy.sh` does not perform that subscription-level registration. The agent may
+inspect its state, but must stop and obtain explicit approval before registering it, or ask the human
+to complete the prerequisite in the selected subscription. Authorization to apply the instance plan
+does not implicitly authorize provider or feature registration. After the human-approved prerequisite
+completes, rerun `az account show` and `./infra/deploy.sh plan`; never reuse an earlier confirmation.
 
 ## Required values
 

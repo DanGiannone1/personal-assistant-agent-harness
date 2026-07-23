@@ -4,8 +4,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
-import { evidencePath, evaluateCase, evaluateWorkflow, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, selectMvpEvalScope } from "./mvp_evidence.mjs";
+import { evidencePath, evaluateCase, evaluateWorkflow, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireStableSourceRevision, selectMvpEvalScope } from "./mvp_evidence.mjs";
 import { buildMvpScorecard, renderMvpScorecard } from "./mvp_scorecard.mjs";
+import { atomicScoringMode } from "./mvp_eval_manifest.mjs";
 
 const startedAt = new Date().toISOString();
 const scope = parseMvpEvalScope(process.env.MVP_EVAL_SCOPE);
@@ -80,7 +81,7 @@ function readRawRecords(rawPath, runIdForTurn) {
 }
 
 async function turn(session, prompt) {
-  const started = Date.now();
+  const started = performance.now();
   const response = await fetch(`${API}/sessions/${session.sessionId}/messages`, {
     method: "POST", headers: session.headers, body: JSON.stringify({ prompt, navigation_version: 0 }),
   });
@@ -90,7 +91,11 @@ async function turn(session, prompt) {
   const runIdForTurn = events.find((event) => event.type === "RUN_STARTED")?.run_id;
   if (!runIdForTurn) throw new Error("agent turn did not emit a correlated RUN_STARTED event");
   const trace = await json(`/sessions/${session.sessionId}/trace`, { headers: session.headers });
-  return { events, rawRecords: readRawRecords(trace.raw_sdk_trace, runIdForTurn), latencyMs: Date.now() - started };
+  return {
+    events,
+    rawRecords: readRawRecords(trace.raw_sdk_trace, runIdForTurn),
+    latencyMs: Math.max(0, Math.round(performance.now() - started)),
+  };
 }
 
 mkdirSync(out, { recursive: true });
@@ -106,7 +111,7 @@ for (const item of selectedSuites.atomicCases) {
   const before = await state(observer);
   const observed = await turn(session, item.prompt);
   const after = await state(observer);
-  const verdict = evaluateCase({ expectation: item.expectation, before, after, events: observed.events, rawRecords: observed.rawRecords });
+  const verdict = evaluateCase({ expectation: item.expectation, before, after, events: observed.events, rawRecords: observed.rawRecords, scoringMode: atomicScoringMode(item.id) });
   results.push({ id: item.id, actor: item.actor, observerActor, prompt: item.prompt, fixture: caseFixture, ...verdict, latencyMs: observed.latencyMs, before, after, events: observed.events, rawRecords: observed.rawRecords });
 }
 
@@ -137,7 +142,7 @@ for (const sourceDefinition of selectedSuites.workflowDefinitions) {
     });
   }
   const after = await state(session);
-  const verdict = evaluateWorkflow({ definition, resetCount: 1, sessionId: session.sessionId, before, turns: turnEvidence, after });
+  const verdict = evaluateWorkflow({ definition, resetCount: 1, sessionId: session.sessionId, before, turns: turnEvidence, after, scoringMode: "partial" });
   workflows.push({
     id: definition.id,
     actor: definition.actor,
@@ -151,16 +156,19 @@ for (const sourceDefinition of selectedSuites.workflowDefinitions) {
   });
 }
 const endingSourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-if (endingSourceRevision !== sourceRevision) throw new Error("source revision changed during the live eval run");
-requireCleanWorktree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
+requireStableSourceRevision(sourceRevision, endingSourceRevision, execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
 const completedAt = new Date().toISOString();
 const report = {
-  schemaVersion: 3, kind: "mvp-agent-eval", runId, sourceRevision, scope,
+  schemaVersion: 5, kind: "mvp-agent-eval", runId, sourceRevision, scope,
   fixture, environment: "local-synthetic", harness, model: process.env.AZURE_DEPLOYMENT || "UNSPECIFIED",
   skill, api: API, startedAt, completedAt, results, workflows,
   summary: {
-    atomic: { passed: results.filter((result) => result.pass).length, failed: results.filter((result) => !result.pass).map((result) => result.id) },
-    workflows: { passed: workflows.filter((result) => result.pass).length, failed: workflows.filter((result) => !result.pass).map((result) => result.id) },
+    atomic: { passed: results.filter((result) => result.pass === true).length, failed: results.filter((result) => result.pass !== true).map((result) => result.id) },
+    workflows: { passed: workflows.filter((result) => result.pass === true).length, failed: workflows.filter((result) => result.pass !== true).map((result) => result.id) },
+    checks: {
+      passed: [...results, ...workflows].reduce((total, result) => total + result.checkScore.credit.passed, 0),
+      total: [...results, ...workflows].reduce((total, result) => total + result.checkScore.credit.total, 0),
+    },
   },
 };
 writeFileSync(`${out}/results.json`, JSON.stringify(report, null, 2));

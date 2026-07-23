@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
+import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireStableSourceRevision, requireTargetUrl, selectMvpEvalScope, stateFingerprint, validEventSequence } from "../scripts/mvp_evidence.mjs";
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
@@ -38,6 +38,29 @@ test("parses only one JSON event per SSE frame", () => {
   const events = parseSse('data: {"type":"RUN_STARTED"}\n\ndata: {"type":"RUN_FINISHED"}\n\n');
   assert.equal(events.length, 2);
   assert.throws(() => parseSse("data: {}\ndata: {}\n\n"), /exactly one/);
+});
+
+test("browser evidence fails fast for one completed terminal RUN_ERROR without exposing stream details", () => {
+  const source = readFileSync(new URL("../scripts/mvp_playwright.mjs", import.meta.url), "utf8");
+  const helper = source.match(/function throwOnCompletedRunError\(sseBodies\) \{[\s\S]*?\n\}\n\nmkdirSync/);
+  assert.ok(helper, "browser evidence must inspect completed SSE bodies before turn-meta succeeds");
+  const throwOnCompletedRunError = new Function("parseSse", "terminalEvents", "validEventSequence", `${helper[0].slice(0, -"\n\nmkdirSync".length)}\nreturn throwOnCompletedRunError;`)(parseSse, (events) => events.filter((event) => event.type === "RUN_FINISHED" || event.type === "RUN_ERROR"), validEventSequence);
+  const errorBody = 'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_ERROR","message":"authorization=test-secret"}\n\n';
+
+  assert.throws(() => throwOnCompletedRunError([errorBody]), (error) => {
+    assert.match(error.message, /^Agent turn ended with RUN_ERROR;/);
+    assert.doesNotMatch(error.message, /test-secret|authorization/);
+    return true;
+  });
+  assert.doesNotThrow(() => throwOnCompletedRunError([
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_FINISHED","run_id":"run-1","thread_id":"thread-1"}\n\n',
+    'data: {"type":"RUN_ERROR","message":"not-terminal"}\n\ndata: {"type":"TEXT_MESSAGE_START","message_id":"message-1","role":"assistant"}\n\n',
+    'data: {"type":"RUN_ERROR","message":"first"}\n\ndata: {"type":"RUN_ERROR","message":"second"}\n\n',
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_ERROR","message":"unterminated"}',
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_ERROR"}\n\n',
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"UNKNOWN"}\n\ndata: {"type":"RUN_ERROR","message":"invalid sequence"}\n\n',
+  ]));
+  assert.match(source, /layoutsDuring\.push\(await wideLayout\(dan\.page\)\);\s*throwOnCompletedRunError\(sseBodies\);\s*return \(await dan\.page\.getByTestId\("turn-meta"\)\.count\(\)\) > turnMetaBefore;/);
 });
 
 test("MVP eval scope defaults to all and selects only the requested versioned suite", () => {
@@ -83,6 +106,41 @@ test("the evaluation oracle requires structured evidence, one terminal, and stat
   assert.equal(missingResource.pass, false);
 });
 
+test("explicit tool-call arguments require canonical exact equality", () => {
+  const state = { engagements: [{ id: "eng-a", status: "green" }] };
+  const expectation = {
+    operation: "get", status: "succeeded", stateChanged: false,
+    toolCall: { name: "get_engagement", args: { engagement_id: "eng-a" } },
+  };
+  const exact = evaluateCase({
+    expectation, before: state, after: state,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "get_engagement" },
+      { type: "TOOL_CALL_ARGS", tool_call_id: "call-1", delta: '{"engagement_id":"eng-a"}' },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation: "get", status: "succeeded", code: "engagement.retrieved" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-1" },
+      finish,
+    ],
+  });
+  assert.equal(exact.pass, true);
+  assert.equal(exact.checks.expectedToolCall, true);
+
+  const extraArgument = evaluateCase({
+    expectation, before: state, after: state,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "get_engagement" },
+      { type: "TOOL_CALL_ARGS", tool_call_id: "call-1", delta: '{"engagement_id":"eng-a","unexpected":"extra"}' },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation: "get", status: "succeeded", code: "engagement.retrieved" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-1" },
+      finish,
+    ],
+  });
+  assert.equal(extraArgument.pass, false);
+  assert.equal(extraArgument.checks.expectedToolCall, false);
+});
+
 test("valid assistant prose or a bare terminal cannot make an eval case pass", () => {
   const state = { engagements: [{ id: "eng-a", status: "green" }] };
   const prose = evaluateCase({
@@ -118,6 +176,31 @@ test("marker cases require zero tool results and no structured navigation", () =
   assert.equal(toolLeak.pass, false);
 });
 
+test("check scoring counts only applicable checks and keeps safety credit all-or-nothing", () => {
+  const state = { engagements: [{ id: "eng-a", status: "green" }] };
+  const partial = evaluateCase({
+    expectation: { stateChanged: false }, before: state, after: state, events: [start, ...toolEvents("list", "succeeded"), finish], scoringMode: "partial",
+  });
+  assert.deepEqual(partial.checkScore, {
+    mode: "partial", path: "primary",
+    observed: { passed: 4, total: 4, failed: [] }, credit: { passed: 4, total: 4 },
+  });
+
+  const safety = evaluateCase({
+    expectation: { stateChanged: false, zeroToolResults: true, noNavigation: true }, before: state, after: state,
+    events: [start, ...toolEvents("list", "succeeded"), finish], scoringMode: "all-or-nothing",
+  });
+  assert.equal(safety.pass, false);
+  assert.equal(safety.checkScore.observed.passed < safety.checkScore.observed.total, true);
+  assert.deepEqual(safety.checkScore.credit, { passed: 0, total: safety.checkScore.observed.total });
+
+  const unknownGrounding = evaluateCase({
+    expectation: { stateChanged: false, modelVisibleOutput: { kind: "unknown" } }, before: state, after: state, events: [start, ...toolEvents("list", "succeeded"), finish],
+  });
+  assert.equal(unknownGrounding.pass, false);
+  assert.deepEqual(unknownGrounding.checkScore.observed.failed, ["modelVisibleOutputKindRecognized"]);
+});
+
 test("case-specific safe non-execution alternatives are exact and never inspect prose", () => {
   const before = { engagements: [{ id: "eng-a", status: "yellow", statusNote: "review", activity: [] }], currentRoute: "/engagements" };
   const e5 = {
@@ -131,9 +214,22 @@ test("case-specific safe non-execution alternatives are exact and never inspect 
   const noExecution = evaluateCase({ expectation: e5, before, after: before, events: [start, ...assistantText("declined"), finish] });
   assert.equal(noExecution.pass, true);
   assert.equal(noExecution.safeNonExecution.pass, true);
+  assert.equal(noExecution.checkScore.path, "safeNonExecution");
+  assert.equal(noExecution.checkScore.observed.total, 7);
   const listOnly = evaluateCase({ expectation: e6, before, after: before, events: [start, ...toolEvents("list", "succeeded"), finish] });
   assert.equal(listOnly.pass, true);
   assert.equal(listOnly.safeNonExecution.pass, true);
+  assert.equal(listOnly.checkScore.observed.total, 7);
+});
+
+test("safe alternatives select the primary path when it passes and retain a deterministic failed-path ratio", () => {
+  const before = { engagements: [{ id: "eng-a", status: "yellow", statusNote: "review", activity: [] }] };
+  const expectation = { operation: "update", status: "invalid", stateChanged: false, noCommitted: true, safeNonExecution: { targetId: "eng-a", allowedResults: [] } };
+  const primary = evaluateCase({ expectation, before, after: before, events: [start, ...toolEvents("update", "invalid"), finish] });
+  assert.equal(primary.checkScore.path, "primary");
+  const failed = evaluateCase({ expectation, before, after: { ...before, extra: true }, events: [start, ...toolEvents("list", "succeeded"), finish] });
+  assert.equal(failed.pass, false);
+  assert.ok(["primary", "safeNonExecution"].includes(failed.checkScore.path));
 });
 
 test("safe non-execution rejects state changes, commits, navigation, and unlisted results", () => {
@@ -237,6 +333,41 @@ test("event lifecycle rejects orphan or mismatched text, args, reasoning, unknow
   ]), true);
 });
 
+test("event lifecycle accepts every personal-workspace tool with its emitted operation", () => {
+  const state = { engagements: [] };
+  const personalTools = [
+    ["list_tasks", "list_tasks"],
+    ["create_task", "create_task"],
+    ["update_task", "update_task"],
+    ["delete_task", "delete_task"],
+    ["add_subtask", "add_subtask"],
+    ["list_events", "list_events"],
+    ["create_event", "create_event"],
+    ["update_event", "update_event"],
+    ["delete_event", "delete_event"],
+    ["list_reminders", "list_reminders"],
+    ["create_reminder", "create_reminder"],
+    ["update_reminder", "update_reminder"],
+    ["delete_reminder", "delete_reminder"],
+  ];
+  const valid = (toolName, operation) => evaluateCase({
+    expectation: { stateChanged: false }, before: state, after: state,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: toolName },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation, status: "succeeded", code: "personal.test" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-1" },
+      finish,
+    ],
+  }).checks.validEventSequence;
+
+  for (const [toolName, operation] of personalTools) {
+    assert.equal(valid(toolName, operation), true, toolName);
+    assert.equal(valid(toolName, `${operation}_mismatch`), false, `${toolName} rejects a mismatched operation`);
+  }
+  assert.equal(valid("unknown_personal_tool", "unknown_personal_tool"), false);
+});
+
 test("tool and navigation lifecycle events must bind to one call and result", () => {
   const state = { engagements: [] };
   const missingStart = evaluateCase({ expectation: { operation: "list", status: "succeeded" }, before: state, after: state, events: [start, { type: "TOOL_CALL_RESULT", tool_call_id: "missing", result: { operation: "list", status: "succeeded", code: "engagement.listed" } }, finish] });
@@ -312,6 +443,11 @@ test("loopback and clean-worktree guards refuse crafted DNS, remote hosts, and s
   assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/local-synthetic/playwright/run/results.json\n"));
   assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/azure-demo/playwright/run/results.json\n"));
   assert.doesNotThrow(() => requireCleanWorktree(""));
+  assert.doesNotThrow(() => requireStableSourceRevision("abc123", "abc123", ""));
+  assert.doesNotThrow(() => requireStableSourceRevision("abc123", "abc123", "?? evidence/mvp/local-synthetic/playwright/run/results.json\n"));
+  assert.throws(() => requireStableSourceRevision("abc123", "def456", ""), /source revision changed/);
+  assert.throws(() => requireStableSourceRevision("abc123", "abc123", " M scripts\/mvp_playwright.mjs\n"), /clean Git/);
+  assert.throws(() => requireStableSourceRevision("", "abc123", ""), /valid starting and ending/);
 });
 
 test("requireTargetUrl stays loopback-only unless MVP_ALLOW_REMOTE=1 opts into an ACA https host", () => {
@@ -338,5 +474,7 @@ test("remote browser evidence is labeled and stored separately from local eviden
   const source = readFileSync(new URL("../scripts/mvp_playwright.mjs", import.meta.url), "utf8");
   assert.match(source, /environment: EVIDENCE_ENVIRONMENT/);
   assert.match(source, /expectedFixtureVersion, observedFixtureVersion: "UNVERIFIED"/);
+  assert.match(source, /requireStableSourceRevision\(report\.sourceRevision, endingSourceRevision, endingStatus\)/);
+  assert.match(source, /check\("MVP-P-SOURCE-STABLE", false, detail\)/);
   assert.doesNotMatch(source, /fixtureVersion: expectedFixtureVersion/);
 });
