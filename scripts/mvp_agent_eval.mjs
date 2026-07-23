@@ -81,7 +81,7 @@ function readRawRecords(rawPath, runIdForTurn) {
 }
 
 async function turn(session, prompt) {
-  const started = Date.now();
+  const started = performance.now();
   const response = await fetch(`${API}/sessions/${session.sessionId}/messages`, {
     method: "POST", headers: session.headers, body: JSON.stringify({ prompt, navigation_version: 0 }),
   });
@@ -91,7 +91,11 @@ async function turn(session, prompt) {
   const runIdForTurn = events.find((event) => event.type === "RUN_STARTED")?.run_id;
   if (!runIdForTurn) throw new Error("agent turn did not emit a correlated RUN_STARTED event");
   const trace = await json(`/sessions/${session.sessionId}/trace`, { headers: session.headers });
-  return { events, rawRecords: readRawRecords(trace.raw_sdk_trace, runIdForTurn), latencyMs: Date.now() - started };
+  return {
+    events,
+    rawRecords: readRawRecords(trace.raw_sdk_trace, runIdForTurn),
+    latencyMs: Math.max(0, Math.round(performance.now() - started)),
+  };
 }
 
 mkdirSync(out, { recursive: true });
@@ -156,12 +160,12 @@ if (endingSourceRevision !== sourceRevision) throw new Error("source revision ch
 requireCleanWorktree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
 const completedAt = new Date().toISOString();
 const report = {
-  schemaVersion: 4, kind: "mvp-agent-eval", runId, sourceRevision, scope,
+  schemaVersion: 5, kind: "mvp-agent-eval", runId, sourceRevision, scope,
   fixture, environment: "local-synthetic", harness, model: process.env.AZURE_DEPLOYMENT || "UNSPECIFIED",
   skill, api: API, startedAt, completedAt, results, workflows,
   summary: {
-    atomic: { passed: results.filter((result) => result.pass).length, failed: results.filter((result) => !result.pass).map((result) => result.id) },
-    workflows: { passed: workflows.filter((result) => result.pass).length, failed: workflows.filter((result) => !result.pass).map((result) => result.id) },
+    atomic: { passed: results.filter((result) => result.pass === true).length, failed: results.filter((result) => result.pass !== true).map((result) => result.id) },
+    workflows: { passed: workflows.filter((result) => result.pass === true).length, failed: workflows.filter((result) => result.pass !== true).map((result) => result.id) },
     checks: {
       passed: [...results, ...workflows].reduce((total, result) => total + result.checkScore.credit.passed, 0),
       total: [...results, ...workflows].reduce((total, result) => total + result.checkScore.credit.total, 0),

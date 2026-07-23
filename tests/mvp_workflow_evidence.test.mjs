@@ -55,27 +55,28 @@ const wazaGate = (overrides = {}) => ({
 });
 
 function canonicalAtomicResults(fixture) {
-  return MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => {
+  return MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => {
     const names = expectedAtomicScoredCheckNames(id, "primary");
     const scoredChecks = Object.fromEntries(names.map((name) => [name, true]));
     return {
-      id, pass: true, fixture, checks: { ...scoredChecks }, scoredChecks,
+      id, pass: true, fixture, latencyMs: 100 + index, checks: { ...scoredChecks }, scoredChecks,
       checkScore: { mode: MVP_EVAL_MANIFEST.safetyAtomicCaseIds.includes(id) ? "all-or-nothing" : "partial", path: "primary", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } },
     };
   });
 }
 
 function canonicalWorkflowResults(fixture, reviewStatus = "REVIEW_REQUIRED") {
-  return MVP_EVAL_MANIFEST.workflowIds.map((id) => {
+  return MVP_EVAL_MANIFEST.workflowIds.map((id, workflowIndex) => {
     const contract = expectedWorkflowCheckContract(id);
     const names = expectedWorkflowScoredCheckNames(id);
     const scoredChecks = Object.fromEntries(names.map((name) => [name, true]));
-    const turnResults = contract.turns.map((turn) => {
+    const turnResults = contract.turns.map((turn, turnIndex) => {
       const turnChecks = Object.fromEntries(turn.names.map((name) => [name, true]));
-      return { pass: true, checks: { ...turnChecks }, scoredChecks: turnChecks, checkScore: { mode: "partial", path: "primary", observed: { passed: turn.names.length, total: turn.names.length, failed: [] }, credit: { passed: turn.names.length, total: turn.names.length } } };
+      return { pass: true, latencyMs: 300 + workflowIndex * 10 + turnIndex, checks: { ...turnChecks }, scoredChecks: turnChecks, checkScore: { mode: "partial", path: "primary", observed: { passed: turn.names.length, total: turn.names.length, failed: [] }, credit: { passed: turn.names.length, total: turn.names.length } } };
     });
     const checks = { ...Object.fromEntries(contract.workflowNames.map((name) => [name, true])), allTurnsPass: true };
-    return { id, pass: true, fixture, checks, scoredChecks, turnResults, groundingReview: { status: reviewStatus }, checkScore: { mode: "partial", path: "workflow", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } } };
+    const turns = turnResults.map((result, turnIndex) => ({ ...structuredClone(result), id: contract.turns[turnIndex].id }));
+    return { id, pass: true, fixture, latencyMs: 200 + workflowIndex, checks, scoredChecks, turns, turnResults, groundingReview: { status: reviewStatus }, checkScore: { mode: "partial", path: "workflow", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } } };
   });
 }
 
@@ -458,8 +459,8 @@ test("the scorecard keeps product and Waza provenance separate and never self-ac
     harness: "deepagents",
     model: "gpt-test",
     skill: { name: "engagement-meeting-prep", sha256: "hash" },
-    results: [{ id: "a", pass: true, fixture }],
-    workflows: [{ id: "w", pass: true, fixture, groundingReview: { status: "REVIEW_REQUIRED" } }],
+    results: [{ id: "a", pass: true, fixture, latencyMs: 100 }],
+    workflows: [{ id: "w", pass: true, fixture, latencyMs: 200, turns: [], groundingReview: { status: "REVIEW_REQUIRED" } }],
   };
   const waza = wazaGate();
   const scorecard = buildMvpScorecard(product, waza);
@@ -490,11 +491,17 @@ test("only the exact all-scope canonical suite can pass the product hard gate", 
   assert.equal(full.lanes.productRuntime.canonicalWorkflowSuite, true);
   assert.equal(full.lanes.productRuntime.hardGatePass, true);
   assert.equal(full.acceptance.status, "INCOMPLETE");
+  assert.deepEqual(full.lanes.productRuntime.latency, {
+    measurement: "end-to-end harness wall-clock", unit: "ms", gating: false,
+    atomic: { count: 9, totalMs: 936, minMs: 100, maxMs: 108, meanMs: 104 },
+    workflowTurns: { count: 3, totalMs: 903, minMs: 300, maxMs: 302, meanMs: 301 },
+  });
 
   const truthy = structuredClone(product);
   truthy.results[0].pass = "true";
   const truthyScorecard = buildMvpScorecard(truthy);
   assert.equal(truthyScorecard.lanes.productRuntime.atomic.passed, MVP_EVAL_MANIFEST.atomicCaseIds.length - 1);
+  assert.deepEqual(truthyScorecard.lanes.productRuntime.atomic.failed, [MVP_EVAL_MANIFEST.atomicCaseIds[0]]);
   assert.equal(truthyScorecard.lanes.productRuntime.hardGatePass, false);
 
   const inconsistentCredit = structuredClone(product);
@@ -571,6 +578,7 @@ test("a workflow-only report remains evidence, not full readiness", () => {
   assert.equal(scorecard.lanes.productRuntime.canonicalWorkflowSuite, true);
   assert.equal(scorecard.lanes.productRuntime.hardGatePass, false);
   assert.equal(scorecard.acceptance.status, "INCOMPLETE");
+  assert.deepEqual(scorecard.lanes.productRuntime.latency.atomic, { count: 0, totalMs: 0, minMs: null, maxMs: null, meanMs: null });
 });
 
 test("human review, fixture, Waza source, and skill identities must all match before a candidate is ready", () => {

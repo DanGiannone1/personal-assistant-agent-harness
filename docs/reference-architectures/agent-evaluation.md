@@ -122,6 +122,11 @@ is demonstrated, and humans keep spot-checking occasionally forever.
   true check invalidates readiness. They record credited check passed/total metrics, and comparison
   treats deterministic check regressions as blocking. This describes implementation only; it does
   not claim a new live-evidence run.
+- Evaluator evidence records an end-to-end harness wall-clock latency for every atomic result and
+  every workflow turn. It uses monotonic `performance.now()`, rounded to a non-negative integer
+  millisecond value, from just before the message POST through POST completion and the correlated
+  trace fetch/parse. It is explicitly non-gating and advisory in scorecards, history, and comparisons;
+  it is neither TTFT nor model-only latency. No live evaluation has been rerun for this measurement.
 - Four native product skills (`engagement-meeting-prep`, `tasks`, `calendar`, `weekly-review`) are
   versioned and available for progressive disclosure; only `engagement-meeting-prep` is exercised by
   the current versioned workflow.

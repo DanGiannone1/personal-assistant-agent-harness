@@ -3,7 +3,7 @@ import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readF
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
 import { buildMvpScorecard, hasCompleteCheckScore, WAZA_GATE_TASK_IDS } from "./mvp_scorecard.mjs";
-import { MVP_EVAL_MANIFEST, atomicScoringMode, expectedAtomicScoredCheckNames, expectedWorkflowScoredCheckNames } from "./mvp_eval_manifest.mjs";
+import { MVP_EVAL_MANIFEST, atomicScoringMode, expectedAtomicScoredCheckNames, expectedWorkflowCheckContract, expectedWorkflowScoredCheckNames } from "./mvp_eval_manifest.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -157,6 +157,43 @@ function countMetrics(counts, label) {
   return { passed: counts.passed, total: counts.total, failed: [...counts.failed] };
 }
 
+function latencyAggregate(metrics, label) {
+  exactKeys(metrics, ["count", "totalMs", "minMs", "maxMs", "meanMs"], label);
+  if (!Number.isSafeInteger(metrics.count) || metrics.count < 0 || !Number.isSafeInteger(metrics.totalMs) || metrics.totalMs < 0) {
+    throw new Error(`${label} count and totalMs must be non-negative safe integers`);
+  }
+  if (metrics.count === 0) {
+    if (metrics.totalMs !== 0 || metrics.minMs !== null || metrics.maxMs !== null || metrics.meanMs !== null) throw new Error(`${label} empty aggregate is invalid`);
+    return structuredClone(metrics);
+  }
+  for (const key of ["minMs", "maxMs", "meanMs"]) {
+    if (!Number.isSafeInteger(metrics[key]) || metrics[key] < 0) throw new Error(`${label}.${key} must be a non-negative safe integer`);
+  }
+  const count = BigInt(metrics.count);
+  const total = BigInt(metrics.totalMs);
+  const min = BigInt(metrics.minMs);
+  const max = BigInt(metrics.maxMs);
+  const minimumPossibleTotal = max + min * (count - 1n);
+  const maximumPossibleTotal = min + max * (count - 1n);
+  if (metrics.minMs > metrics.maxMs || total < minimumPossibleTotal || total > maximumPossibleTotal
+    || metrics.meanMs !== Math.floor(metrics.totalMs / metrics.count)) throw new Error(`${label} arithmetic is invalid`);
+  return structuredClone(metrics);
+}
+
+function latencyMetrics(metrics, label) {
+  exactKeys(metrics, ["measurement", "unit", "gating", "atomic", "workflowTurns"], label);
+  if (metrics.measurement !== "end-to-end harness wall-clock" || metrics.unit !== "ms" || metrics.gating !== false) {
+    throw new Error(`${label} metadata is invalid`);
+  }
+  return {
+    measurement: metrics.measurement,
+    unit: metrics.unit,
+    gating: metrics.gating,
+    atomic: latencyAggregate(metrics.atomic, `${label}.atomic`),
+    workflowTurns: latencyAggregate(metrics.workflowTurns, `${label}.workflowTurns`),
+  };
+}
+
 function judgeMetrics(counts, label, status) {
   exactKeys(counts, ["passed", "failed", "unknown", "total", "dimensions"], label);
   for (const key of ["failed", "unknown"]) {
@@ -284,7 +321,7 @@ function validateCheckScore(value, item, label, expectedMode, expectedPaths, exp
 
 export function validateProductEvidence(product) {
   exactKeys(product, PRODUCT_KEYS, "Product evidence");
-  if (product.schemaVersion !== 4 || product.kind !== "mvp-agent-eval") throw new Error("Product evidence has an unsupported schema");
+  if (product.schemaVersion !== 5 || product.kind !== "mvp-agent-eval") throw new Error("Product evidence has an unsupported schema");
   requireRunId(product.runId, "Product evidence.runId");
   if (typeof product.sourceRevision !== "string" || !/^[a-f0-9]{7,64}$/.test(product.sourceRevision)) throw new Error("Product evidence.sourceRevision must be a lowercase Git revision");
   isOneOf(product.scope, ["all", "atomic", "workflow"], "Product evidence.scope");
@@ -300,18 +337,29 @@ export function validateProductEvidence(product) {
   requireRfc3339(product.completedAt, "Product evidence.completedAt");
   if (Date.parse(product.completedAt) < Date.parse(product.startedAt)) throw new Error("Product evidence timestamps are invalid");
   if (!Array.isArray(product.results) || !Array.isArray(product.workflows)) throw new Error("Product evidence suites are invalid");
-  const validateItems = (items, canonicalIds, label, modeForItem, paths, expectedNamesForItem, kind) => {
+  const validateItems = (items, canonicalIds, label, modeForItem, paths, expectedNamesForItem, kind, requiresLatency = false) => {
     if (!items.every((item) => item && typeof item === "object" && typeof item.id === "string" && typeof item.pass === "boolean")) throw new Error(`${label} items are invalid`);
     if (!items.every((item) => canonicalIds.includes(item.id))) throw new Error(`${label} IDs are invalid`);
     if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error(`${label} IDs are duplicated`);
     for (const item of items) {
       requireFixtureBinding(item.fixture, `${label}.${item.id}.fixture`);
+      if (requiresLatency && (!Number.isSafeInteger(item.latencyMs) || item.latencyMs < 0)) throw new Error(`${label}.${item.id}.latencyMs must be a non-negative safe integer`);
       validateCheckScore(item.checkScore, item, `${label}.${item.id}`, modeForItem(item), paths, expectedNamesForItem);
       if (!hasCompleteCheckScore(item, kind)) throw new Error(`${label}.${item.id}.checkScore does not match canonical source evidence`);
     }
   };
-  validateItems(product.results, MVP_EVAL_MANIFEST.atomicCaseIds, "Product evidence atomic", (item) => atomicScoringMode(item.id), ["primary", "safeNonExecution"], (item, path) => expectedAtomicScoredCheckNames(item.id, path), "atomic");
+  validateItems(product.results, MVP_EVAL_MANIFEST.atomicCaseIds, "Product evidence atomic", (item) => atomicScoringMode(item.id), ["primary", "safeNonExecution"], (item, path) => expectedAtomicScoredCheckNames(item.id, path), "atomic", true);
   validateItems(product.workflows, MVP_EVAL_MANIFEST.workflowIds, "Product evidence workflow", () => "partial", ["workflow"], (item) => expectedWorkflowScoredCheckNames(item.id), "workflow");
+  for (const workflow of product.workflows) {
+    const contract = expectedWorkflowCheckContract(workflow.id);
+    if (!Array.isArray(workflow.turns) || workflow.turns.length !== contract.turns.length
+      || workflow.turns.some((turn, index) => turn?.id !== contract.turns[index].id)) {
+      throw new Error(`Product evidence workflow.${workflow.id}.turns does not match the canonical workflow`);
+    }
+    for (const turn of workflow.turns) {
+      if (!Number.isSafeInteger(turn?.latencyMs) || turn.latencyMs < 0) throw new Error(`Product evidence workflow.${workflow.id} turn latencyMs must be a non-negative safe integer`);
+    }
+  }
   const expectedAtomic = product.scope === "workflow" ? [] : MVP_EVAL_MANIFEST.atomicCaseIds;
   const expectedWorkflows = product.scope === "atomic" ? [] : MVP_EVAL_MANIFEST.workflowIds;
   if (product.results.length !== expectedAtomic.length || product.workflows.length !== expectedWorkflows.length
@@ -391,7 +439,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
 
   const rebuilt = buildMvpScorecard(product, waza, groundingReview, judgeRecord);
   requireExactValue(scorecard, rebuilt, "Scorecard");
-  if (scorecard.kind !== "mvp-eval-scorecard" || scorecard.schemaVersion !== 2) throw new Error("Scorecard has an unsupported schema");
+  if (scorecard.kind !== "mvp-eval-scorecard" || scorecard.schemaVersion !== 3) throw new Error("Scorecard has an unsupported schema");
 
   const productLane = scorecard.lanes?.productRuntime;
   const wazaLane = scorecard.lanes?.skillLaboratory;
@@ -406,7 +454,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
   if (!productLane || !wazaLane || !judgeLane) throw new Error("Scorecard lanes are required");
 
   const record = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: "mvp-scorecard-history-record",
     runId: scorecard.runId,
     sourceRevision: scorecard.sourceRevision,
@@ -453,6 +501,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
         atomic: countMetrics(productLane.atomic, "productRuntime.atomic"),
         workflows: countMetrics(productLane.workflows, "productRuntime.workflows"),
         checks: { passed: productLane.checks?.passed, total: productLane.checks?.total },
+        latency: latencyMetrics(productLane.latency, "productRuntime.latency"),
       },
       skillLaboratory: {
         passed: wazaLane.passed,
@@ -478,7 +527,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
 
 export function validateScorecardHistoryRecord(record) {
   exactKeys(record, HISTORY_KEYS, "History record");
-  if (record.schemaVersion !== 2 || record.kind !== "mvp-scorecard-history-record") throw new Error("History record has an unsupported schema");
+  if (record.schemaVersion !== 3 || record.kind !== "mvp-scorecard-history-record") throw new Error("History record has an unsupported schema");
   requireRunId(record.runId);
   requireSafeIdentifier(record.sourceRevision, "History record.sourceRevision");
   if (!record.fixture || typeof record.fixture.fixtureVersion !== "string" || typeof record.fixture.fixtureHash !== "string") throw new Error("History record fixture is invalid");
@@ -525,13 +574,18 @@ export function validateScorecardHistoryRecord(record) {
     throw new Error("History record grounding-review IDs are invalid");
   }
   exactKeys(record.metrics, ["productRuntime", "skillLaboratory", "advisoryJudge"], "History record.metrics");
-  exactKeys(record.metrics?.productRuntime, ["atomic", "workflows", "checks"], "History record product metrics");
+  exactKeys(record.metrics?.productRuntime, ["atomic", "workflows", "checks", "latency"], "History record product metrics");
   countMetrics(record.metrics.productRuntime.atomic, "History record atomic metrics");
   countMetrics(record.metrics.productRuntime.workflows, "History record workflow metrics");
   exactKeys(record.metrics.productRuntime.checks, ["passed", "total"], "History record check metrics");
   if (![record.metrics.productRuntime.checks.passed, record.metrics.productRuntime.checks.total].every((value) => Number.isInteger(value) && value >= 0)
     || record.metrics.productRuntime.checks.total <= 0 || record.metrics.productRuntime.checks.passed > record.metrics.productRuntime.checks.total) throw new Error("History record check metrics are invalid");
   const product = record.metrics.productRuntime;
+  latencyMetrics(product.latency, "History record product latency");
+  if (product.latency.atomic.count !== product.atomic.total) throw new Error("History record atomic latency count is inconsistent");
+  const expectedWorkflowTurns = product.workflows.total === 0 ? 0 : MVP_EVAL_MANIFEST.workflowIds
+    .reduce((total, workflowId) => total + expectedWorkflowCheckContract(workflowId).turns.length, 0);
+  if (product.latency.workflowTurns.count !== expectedWorkflowTurns) throw new Error("History record workflow-turn latency count is inconsistent");
   if (record.gates.scope === "all" && record.gates.canonicalAtomicSuite) {
     if (product.atomic.total !== MVP_EVAL_MANIFEST.atomicCaseIds.length || new Set(product.atomic.failed).size !== product.atomic.failed.length || !product.atomic.failed.every((id) => MVP_EVAL_MANIFEST.atomicCaseIds.includes(id))) throw new Error("History record canonical atomic metrics are invalid");
   }
@@ -585,7 +639,7 @@ export function renderScorecardHistoryRecord(record) {
   const validated = validateScorecardHistoryRecord(record);
   const { productRuntime: product, skillLaboratory: waza, advisoryJudge: judge } = validated.metrics;
   const cell = (value) => String(value).replace(/[\r\n]+/g, " ").replaceAll("\\", "\\\\").replaceAll("|", "\\|");
-  return `# CSA Workbench scorecard history\n\n| Field | Value |\n|---|---|\n| Run | ${cell(validated.runId)} |\n| Record SHA-256 | ${cell(validated.recordHash)} |\n| Source revision | ${cell(validated.sourceRevision)} |\n| Fixture | ${cell(validated.fixture.fixtureVersion)} / ${cell(validated.fixture.fixtureHash)} |\n| Skill | ${cell(validated.skill.name)} @ ${cell(validated.skill.sha256)} |\n| Product runtime | ${cell(validated.provenance.productRuntime.provenance)}; ${cell(validated.provenance.productRuntime.environment)} |\n| Waza runtime | ${cell(validated.provenance.skillLaboratory.provenance)}; ${cell(validated.provenance.skillLaboratory.engine ?? "NOT_RECORDED")} / ${cell(validated.provenance.skillLaboratory.model ?? "NOT_RECORDED")} |\n| Scorecard acceptance | ${cell(validated.gates.scorecardAcceptance)} |\n| Product hard gate | ${validated.gates.productHardGate ? "PASS" : "FAIL"} |\n| Atomic tasks | ${product.atomic.passed}/${product.atomic.total} |\n| Workflow tasks | ${product.workflows.passed}/${product.workflows.total} |\n| Credited checks | ${product.checks.passed}/${product.checks.total} |\n| Waza | ${waza.passed}/${waza.total}; gate ${validated.gates.wazaGate ? "PASS" : "FAIL"} |\n| Advisory judge | ${cell(judge.status)}; ${judge.atomic.passed}/${judge.atomic.total} atomic, ${judge.workflows.passed}/${judge.workflows.total} workflow |\n\nThis sanitized history contains evidence digests, not transcripts, fixture paths, or product data.\n`;
+  return `# CSA Workbench scorecard history\n\n| Field | Value |\n|---|---|\n| Run | ${cell(validated.runId)} |\n| Record SHA-256 | ${cell(validated.recordHash)} |\n| Source revision | ${cell(validated.sourceRevision)} |\n| Fixture | ${cell(validated.fixture.fixtureVersion)} / ${cell(validated.fixture.fixtureHash)} |\n| Skill | ${cell(validated.skill.name)} @ ${cell(validated.skill.sha256)} |\n| Product runtime | ${cell(validated.provenance.productRuntime.provenance)}; ${cell(validated.provenance.productRuntime.environment)} |\n| Waza runtime | ${cell(validated.provenance.skillLaboratory.provenance)}; ${cell(validated.provenance.skillLaboratory.engine ?? "NOT_RECORDED")} / ${cell(validated.provenance.skillLaboratory.model ?? "NOT_RECORDED")} |\n| Scorecard acceptance | ${cell(validated.gates.scorecardAcceptance)} |\n| Product hard gate | ${validated.gates.productHardGate ? "PASS" : "FAIL"} |\n| Atomic tasks | ${product.atomic.passed}/${product.atomic.total} |\n| Workflow tasks | ${product.workflows.passed}/${product.workflows.total} |\n| Credited checks | ${product.checks.passed}/${product.checks.total} |\n| Atomic end-to-end harness wall-clock | ${product.latency.atomic.count} turns; ${product.latency.atomic.totalMs} ms total; ${product.latency.atomic.meanMs ?? "N/A"} ms mean (non-gating) |\n| Workflow-turn end-to-end harness wall-clock | ${product.latency.workflowTurns.count} turns; ${product.latency.workflowTurns.totalMs} ms total; ${product.latency.workflowTurns.meanMs ?? "N/A"} ms mean (non-gating) |\n| Waza | ${waza.passed}/${waza.total}; gate ${validated.gates.wazaGate ? "PASS" : "FAIL"} |\n| Advisory judge | ${cell(judge.status)}; ${judge.atomic.passed}/${judge.atomic.total} atomic, ${judge.workflows.passed}/${judge.workflows.total} workflow |\n\nThis sanitized history contains evidence digests, not transcripts, fixture paths, or product data. End-to-end harness wall-clock timing covers POST completion plus trace fetch and parse; it is non-gating and is not TTFT or model-only latency.\n`;
 }
 
 function validateDecision(decision) {
@@ -656,6 +710,10 @@ function delta(baseline, candidate) {
   return { baseline, candidate, delta: candidate - baseline };
 }
 
+function nullableDelta(baseline, candidate) {
+  return { baseline, candidate, delta: baseline === null || candidate === null ? null : candidate - baseline };
+}
+
 function regression(baseline, candidate, baselineGate = null, candidateGate = null) {
   const failedCount = (metrics) => Array.isArray(metrics.failed) ? metrics.failed.length : metrics.failed;
   return {
@@ -693,7 +751,7 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
   const readinessRegressed = baseline.gates.scorecardAcceptance === "READY_FOR_BASELINE" && candidate.gates.scorecardAcceptance !== "READY_FOR_BASELINE";
   const blockingRegression = readinessRegressed || Object.values(atomicRegression).some(Boolean) || Object.values(workflowRegression).some(Boolean) || Object.values(checkRegression).some(Boolean) || Object.values(wazaRegression).some(Boolean);
   const comparison = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: "mvp-scorecard-comparison",
     baseline: { runId: baseline.runId, recordHash: baseline.recordHash, acceptanceHash: acceptance.acceptanceHash, productHardGate: baseline.gates.productHardGate, wazaGate: baseline.gates.wazaGate },
     candidate: { runId: candidate.runId, recordHash: candidate.recordHash, readyForBaseline: candidate.gates.scorecardAcceptance === "READY_FOR_BASELINE", productHardGate: candidate.gates.productHardGate, wazaGate: candidate.gates.wazaGate },
@@ -701,6 +759,17 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
       atomic: { passed: delta(baseProduct.atomic.passed, candidateProduct.atomic.passed), total: delta(baseProduct.atomic.total, candidateProduct.atomic.total), failed: delta(baseProduct.atomic.failed.length, candidateProduct.atomic.failed.length) },
       workflows: { passed: delta(baseProduct.workflows.passed, candidateProduct.workflows.passed), total: delta(baseProduct.workflows.total, candidateProduct.workflows.total), failed: delta(baseProduct.workflows.failed.length, candidateProduct.workflows.failed.length) },
       checks: { passed: delta(baseProduct.checks.passed, candidateProduct.checks.passed), total: delta(baseProduct.checks.total, candidateProduct.checks.total) },
+      latency: {
+        advisory: true,
+        atomic: {
+          totalMs: delta(baseProduct.latency.atomic.totalMs, candidateProduct.latency.atomic.totalMs),
+          meanMs: nullableDelta(baseProduct.latency.atomic.meanMs, candidateProduct.latency.atomic.meanMs),
+        },
+        workflowTurns: {
+          totalMs: delta(baseProduct.latency.workflowTurns.totalMs, candidateProduct.latency.workflowTurns.totalMs),
+          meanMs: nullableDelta(baseProduct.latency.workflowTurns.meanMs, candidateProduct.latency.workflowTurns.meanMs),
+        },
+      },
       waza: { passed: delta(baseWaza.passed, candidateWaza.passed), total: delta(baseWaza.total, candidateWaza.total), failed: delta(baseWaza.failed.length, candidateWaza.failed.length), errors: delta(baseWaza.errors, candidateWaza.errors), skipped: delta(baseWaza.skipped, candidateWaza.skipped), aggregateScore: baseWaza.aggregateScore === null || candidateWaza.aggregateScore === null ? null : delta(baseWaza.aggregateScore, candidateWaza.aggregateScore), durationMs: baseWaza.durationMs === null || candidateWaza.durationMs === null ? null : delta(baseWaza.durationMs, candidateWaza.durationMs) },
       advisoryJudge: {
         advisory: true,
@@ -716,7 +785,7 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
       advisoryJudge: { advisory: true, atomic: judgeAtomic, workflows: judgeWorkflow },
       readinessRegressed,
       blockingRegression,
-      note: "Advisory judge deltas are reported but never change blocking regression or baseline acceptance.",
+      note: "Advisory judge and end-to-end harness wall-clock latency deltas are reported but never change blocking regression or baseline acceptance.",
     },
   };
   comparison.comparisonHash = sha256Canonical(comparison);
@@ -725,7 +794,7 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
 
 export function validateScorecardComparison(comparison) {
   exactKeys(comparison, COMPARISON_KEYS, "Scorecard comparison");
-  if (comparison.schemaVersion !== 2 || comparison.kind !== "mvp-scorecard-comparison") throw new Error("Scorecard comparison has an unsupported schema");
+  if (comparison.schemaVersion !== 3 || comparison.kind !== "mvp-scorecard-comparison") throw new Error("Scorecard comparison has an unsupported schema");
   exactKeys(comparison.baseline, ["runId", "recordHash", "acceptanceHash", "productHardGate", "wazaGate"], "Scorecard comparison.baseline");
   exactKeys(comparison.candidate, ["runId", "recordHash", "readyForBaseline", "productHardGate", "wazaGate"], "Scorecard comparison.candidate");
   requireRunId(comparison.baseline.runId, "Baseline runId");
@@ -736,7 +805,7 @@ export function validateScorecardComparison(comparison) {
   if (![comparison.baseline.productHardGate, comparison.baseline.wazaGate, comparison.candidate.readyForBaseline, comparison.candidate.productHardGate, comparison.candidate.wazaGate].every((value) => typeof value === "boolean")) throw new Error("Scorecard comparison candidate readiness is invalid");
   if (!comparison.baseline.productHardGate || !comparison.baseline.wazaGate) throw new Error("Scorecard comparison baseline must be ready");
   if (comparison.candidate.readyForBaseline && (!comparison.candidate.productHardGate || !comparison.candidate.wazaGate)) throw new Error("Scorecard comparison candidate readiness is inconsistent");
-  exactKeys(comparison.deltas, ["atomic", "workflows", "checks", "waza", "advisoryJudge"], "Scorecard comparison.deltas");
+  exactKeys(comparison.deltas, ["atomic", "workflows", "checks", "latency", "waza", "advisoryJudge"], "Scorecard comparison.deltas");
   const validateDelta = (value, label) => {
     exactKeys(value, ["baseline", "candidate", "delta"], label);
     if (![value.baseline, value.candidate, value.delta].every((item) => typeof item === "number" && Number.isFinite(item)) || value.delta !== value.candidate - value.baseline) throw new Error(`${label} is invalid`);
@@ -747,6 +816,25 @@ export function validateScorecardComparison(comparison) {
   }
   exactKeys(comparison.deltas.checks, ["passed", "total"], "Scorecard comparison.deltas.checks");
   for (const key of ["passed", "total"]) validateDelta(comparison.deltas.checks[key], `Scorecard comparison.deltas.checks.${key}`);
+  exactKeys(comparison.deltas.latency, ["advisory", "atomic", "workflowTurns"], "Scorecard comparison.deltas.latency");
+  if (comparison.deltas.latency.advisory !== true) throw new Error("Scorecard comparison must label latency deltas advisory");
+  const validateNullableDelta = (value, label) => {
+    exactKeys(value, ["baseline", "candidate", "delta"], label);
+    if (![value.baseline, value.candidate].every((item) => item === null || Number.isSafeInteger(item) && item >= 0)
+      || !(value.delta === null || Number.isSafeInteger(value.delta))
+      || value.delta !== (value.baseline === null || value.candidate === null ? null : value.candidate - value.baseline)) throw new Error(`${label} is invalid`);
+  };
+  const validateLatencyDelta = (value, label) => {
+    exactKeys(value, ["baseline", "candidate", "delta"], label);
+    if (![value.baseline, value.candidate].every((item) => Number.isSafeInteger(item) && item >= 0)
+      || !Number.isSafeInteger(value.delta)
+      || value.delta !== value.candidate - value.baseline) throw new Error(`${label} is invalid`);
+  };
+  for (const name of ["atomic", "workflowTurns"]) {
+    exactKeys(comparison.deltas.latency[name], ["totalMs", "meanMs"], `Scorecard comparison.deltas.latency.${name}`);
+    validateLatencyDelta(comparison.deltas.latency[name].totalMs, `Scorecard comparison.deltas.latency.${name}.totalMs`);
+    validateNullableDelta(comparison.deltas.latency[name].meanMs, `Scorecard comparison.deltas.latency.${name}.meanMs`);
+  }
   exactKeys(comparison.deltas.waza, ["passed", "total", "failed", "errors", "skipped", "aggregateScore", "durationMs"], "Scorecard comparison.deltas.waza");
   for (const key of ["passed", "total", "failed", "errors", "skipped"]) validateDelta(comparison.deltas.waza[key], `Scorecard comparison.deltas.waza.${key}`);
   for (const key of ["aggregateScore", "durationMs"]) {
@@ -791,8 +879,11 @@ export function validateScorecardComparison(comparison) {
 export function renderScorecardComparison(comparison) {
   const validated = validateScorecardComparison(comparison);
   const line = (name, value) => `| ${name} | ${value.baseline} | ${value.candidate} | ${value.delta >= 0 ? "+" : ""}${value.delta} |`;
-  return `# CSA Workbench scorecard comparison\n\n| Metric | Baseline | Candidate | Delta |\n|---|---:|---:|---:|\n${line("Atomic passed", validated.deltas.atomic.passed)}\n${line("Workflow passed", validated.deltas.workflows.passed)}\n${line("Credited checks passed", validated.deltas.checks.passed)}\n${line("Credited checks total", validated.deltas.checks.total)}\n${line("Waza passed", validated.deltas.waza.passed)}\n\n- Blocking regression: ${validated.regressions.blockingRegression ? "YES" : "NO"}
-- Advisory judge deltas are non-gating and cannot alter baseline acceptance.\n`;
+  const nullableLine = (name, value) => value.delta === null
+    ? `| ${name} | ${value.baseline ?? "N/A"} | ${value.candidate ?? "N/A"} | N/A |`
+    : line(name, value);
+  return `# CSA Workbench scorecard comparison\n\n| Metric | Baseline | Candidate | Delta |\n|---|---:|---:|---:|\n${line("Atomic passed", validated.deltas.atomic.passed)}\n${line("Workflow passed", validated.deltas.workflows.passed)}\n${line("Credited checks passed", validated.deltas.checks.passed)}\n${line("Credited checks total", validated.deltas.checks.total)}\n${line("Waza passed", validated.deltas.waza.passed)}\n${line("Atomic end-to-end harness wall-clock total ms", validated.deltas.latency.atomic.totalMs)}\n${nullableLine("Atomic end-to-end harness wall-clock mean ms", validated.deltas.latency.atomic.meanMs)}\n${line("Workflow-turn end-to-end harness wall-clock total ms", validated.deltas.latency.workflowTurns.totalMs)}\n${nullableLine("Workflow-turn end-to-end harness wall-clock mean ms", validated.deltas.latency.workflowTurns.meanMs)}\n\n- Blocking regression: ${validated.regressions.blockingRegression ? "YES" : "NO"}
+- Advisory judge and end-to-end harness wall-clock latency deltas are non-gating and cannot alter baseline acceptance. Timing covers POST completion plus trace fetch and parse; it is not TTFT or model-only latency.\n`;
 }
 
 function historyRoot(root) {

@@ -5,6 +5,35 @@ function countPassed(items = []) {
   return items.filter((item) => item.pass === true).length;
 }
 
+function latencyAggregate(items, label) {
+  const values = items.map((item) => item?.latencyMs);
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Error(`${label} latencyMs must be a non-negative safe integer`);
+  }
+  const totalMs = values.reduce((total, value) => total + value, 0);
+  if (!Number.isSafeInteger(totalMs)) throw new Error(`${label} latency total exceeds the safe integer range`);
+  return values.length === 0
+    ? { count: 0, totalMs: 0, minMs: null, maxMs: null, meanMs: null }
+    : { count: values.length, totalMs, minMs: Math.min(...values), maxMs: Math.max(...values), meanMs: Math.floor(totalMs / values.length) };
+}
+
+function workflowTurnLatencyItems(workflows) {
+  const items = [];
+  for (const workflow of workflows) {
+    let contract;
+    try { contract = expectedWorkflowCheckContract(workflow.id); } catch {
+      items.push(...(workflow.turns ?? []));
+      continue;
+    }
+    if (!Array.isArray(workflow.turns) || workflow.turns.length !== contract.turns.length
+      || workflow.turns.some((turn, index) => turn?.id !== contract.turns[index].id)) {
+      throw new Error(`Workflow ${workflow.id} latency turns do not match the canonical workflow`);
+    }
+    items.push(...workflow.turns);
+  }
+  return items;
+}
+
 function hasExactKeys(value, expected) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();
@@ -311,8 +340,15 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
     && waza.runnerProvenance?.sourceDirtyAfter === false
     && waza.runnerProvenance?.sourceRevision === productReport.sourceRevision
     && waza.runnerProvenance?.sourceRevisionAfter === productReport.sourceRevision;
+  const latency = {
+    measurement: "end-to-end harness wall-clock",
+    unit: "ms",
+    gating: false,
+    atomic: latencyAggregate(atomic, "Atomic product evidence"),
+    workflowTurns: latencyAggregate(workflowTurnLatencyItems(workflows), "Workflow-turn product evidence"),
+  };
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: "mvp-eval-scorecard",
     runId: productReport.runId,
     generatedAt: productReport.completedAt ?? new Date().toISOString(),
@@ -324,9 +360,10 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
         provenance: `${productReport.harness}/${productReport.model}`,
         environment: productReport.environment,
         scope: productReport.scope ?? "UNSPECIFIED",
-        atomic: { passed: countPassed(atomic), total: atomic.length, failed: atomic.filter((item) => !item.pass).map((item) => item.id) },
-        workflows: { passed: countPassed(workflows), total: workflows.length, failed: workflows.filter((item) => !item.pass).map((item) => item.id) },
+        atomic: { passed: countPassed(atomic), total: atomic.length, failed: atomic.filter((item) => item.pass !== true).map((item) => item.id) },
+        workflows: { passed: countPassed(workflows), total: workflows.length, failed: workflows.filter((item) => item.pass !== true).map((item) => item.id) },
         checks: checkEvidence.checks,
+        latency,
         checkEvidenceComplete: checkEvidence.complete,
         fixtureConsistent,
         canonicalAtomicSuite,
@@ -392,6 +429,8 @@ export function renderMvpScorecard(scorecard) {
 | Atomic tasks | ${product.atomic.passed}/${product.atomic.total} |
 | Workflow tasks | ${product.workflows.passed}/${product.workflows.total} |
 | Credited check pass rate | ${product.checks.passed}/${product.checks.total}${product.checkEvidenceComplete ? "" : " (incomplete evidence)"} |
+| Atomic end-to-end harness wall-clock | ${product.latency.atomic.count} turns; ${product.latency.atomic.totalMs} ms total; ${product.latency.atomic.meanMs ?? "N/A"} ms mean (non-gating) |
+| Workflow-turn end-to-end harness wall-clock | ${product.latency.workflowTurns.count} turns; ${product.latency.workflowTurns.totalMs} ms total; ${product.latency.workflowTurns.meanMs ?? "N/A"} ms mean (non-gating) |
 | Fixture consistency | ${product.fixtureConsistent ? "PASS" : "FAIL"} |
 | Canonical atomic suite | ${product.canonicalAtomicSuite ? "PASS" : "FAIL"} |
 | Canonical workflow suite | ${product.canonicalWorkflowSuite ? "PASS" : "FAIL"} |
@@ -425,5 +464,8 @@ ${reviews}
 
 Waza skill-laboratory evidence and Deep Agents product-runtime evidence intentionally retain
 separate provenance. Neither substitutes for the other.
+
+End-to-end harness wall-clock timing covers POST completion plus trace fetch and parse. It is reported
+in milliseconds only and is non-gating; it is not TTFT or model-only latency.
 `;
 }

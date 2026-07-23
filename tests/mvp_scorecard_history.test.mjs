@@ -49,14 +49,15 @@ function atomicCheckEvidence(id, failed = []) {
   });
 }
 
-function workflowCheckEvidence(id) {
+function workflowCheckEvidence(id, latencyMs = 200) {
   const contract = expectedWorkflowCheckContract(id);
   const evidence = checkEvidence(expectedWorkflowScoredCheckNames(id), {
     mode: "partial",
     path: "workflow",
     sourceChecks: { ...Object.fromEntries(contract.workflowNames.map((name) => [name, true])), allTurnsPass: true },
   });
-  evidence.turnResults = contract.turns.map((turn) => checkEvidence(turn.names, { mode: "partial", path: "primary" }));
+  evidence.turnResults = contract.turns.map((turn, index) => ({ ...checkEvidence(turn.names, { mode: "partial", path: "primary" }), latencyMs: latencyMs + index }));
+  evidence.turns = evidence.turnResults.map((result, index) => ({ ...structuredClone(result), id: contract.turns[index].id }));
   for (const result of evidence.turnResults) result.pass = true;
   return evidence;
 }
@@ -104,12 +105,12 @@ function reorder(value) {
 function inputs(overrides = {}) {
   const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "b".repeat(64), fixturePath: "/absolute/fixture.json" };
   const product = {
-    schemaVersion: 4, kind: "mvp-agent-eval", runId: "product-run", startedAt: "2026-07-22T11:59:00Z", completedAt: "2026-07-22T12:00:00Z", sourceRevision: "c".repeat(40), scope: "all",
+    schemaVersion: 5, kind: "mvp-agent-eval", runId: "product-run", startedAt: "2026-07-22T11:59:00Z", completedAt: "2026-07-22T12:00:00Z", sourceRevision: "c".repeat(40), scope: "all",
     fixture, environment: "local-synthetic", harness: "deepagents", model: "product-model",
     skill: { name: "engagement-meeting-prep", version: "1.0.0", path: "session-container/product-skills/engagement-meeting-prep/SKILL.md", sha256: skillHash },
     api: "http://127.0.0.1:18000",
-    results: MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => ({ id, pass: true, fixture, ...atomicCheckEvidence(id) })),
-    workflows: MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: "REVIEW_REQUIRED" }, ...workflowCheckEvidence(id) })),
+    results: MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: true, fixture, latencyMs: 100 + index, ...atomicCheckEvidence(id) })),
+    workflows: MVP_EVAL_MANIFEST.workflowIds.map((id, index) => ({ id, pass: true, fixture, latencyMs: 200 + index, groundingReview: { status: "REVIEW_REQUIRED" }, ...workflowCheckEvidence(id, 300 + index * 10) })),
     summary: { atomic: { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length, failed: [] }, workflows: { passed: MVP_EVAL_MANIFEST.workflowIds.length, failed: [] }, checks: { passed: 0, total: 0 } },
   };
   product.summary.checks = [...product.results, ...product.workflows].reduce((counts, item) => ({ passed: counts.passed + item.checkScore.credit.passed, total: counts.total + item.checkScore.credit.total }), { passed: 0, total: 0 });
@@ -184,8 +185,10 @@ test("record rebuilds source binding, hashes it, and stores only a sanitized pro
   assert.ok(!stored.includes("DO NOT STORE THIS TRANSCRIPT"));
   assert.equal(record.evidence.productSha256, sha256Canonical(values.product));
   assert.equal(record.gates.scorecardAcceptance, "READY_FOR_BASELINE");
-  assert.equal(record.schemaVersion, 2);
+  assert.equal(record.schemaVersion, 3);
   assert.deepEqual(record.metrics.productRuntime.checks, values.product.summary.checks);
+  assert.deepEqual(record.metrics.productRuntime.latency.atomic, { count: 9, totalMs: 936, minMs: 100, maxMs: 108, meanMs: 104 });
+  assert.deepEqual(record.metrics.productRuntime.latency.workflowTurns, { count: 3, totalMs: 903, minMs: 300, maxMs: 302, meanMs: 301 });
 });
 
 test("optional advisory judge evidence is bound and hashed rather than trusted from a supplied digest", () => {
@@ -267,6 +270,61 @@ test("strict product validation rejects check-score and summary-credit tampering
   assert.throws(() => buildScorecardHistoryRecord(buildMvpScorecard(irrelevantApplicable, values.waza, values.grounding), irrelevantApplicable, values.waza, values.grounding), /canonical scored checks/);
 });
 
+test("strict product validation rejects missing, negative, fractional, and unsafe latencies", () => {
+  const values = inputs();
+  for (const [label, mutate] of [
+    ["missing atomic", (product) => { delete product.results[0].latencyMs; }],
+    ["negative atomic", (product) => { product.results[0].latencyMs = -1; }],
+    ["fractional atomic", (product) => { product.results[0].latencyMs = 1.5; }],
+    ["unsafe atomic", (product) => { product.results[0].latencyMs = Number.MAX_SAFE_INTEGER + 1; }],
+    ["missing workflow turn", (product) => { delete product.workflows[0].turns[0].latencyMs; }],
+    ["negative workflow turn", (product) => { product.workflows[0].turns[0].latencyMs = -1; }],
+    ["fractional workflow turn", (product) => { product.workflows[0].turns[0].latencyMs = 1.5; }],
+    ["unsafe workflow turn", (product) => { product.workflows[0].turns[0].latencyMs = Number.MAX_SAFE_INTEGER + 1; }],
+  ]) {
+    const product = structuredClone(values.product);
+    mutate(product);
+    assert.throws(() => buildScorecardHistoryRecord(values.scorecard, product, values.waza, values.grounding), /latencyMs/, label);
+  }
+});
+
+test("workflow latency binds to the exact canonical raw turn sequence", () => {
+  const values = inputs();
+  for (const [label, mutate] of [
+    ["missing turn", (product) => { product.workflows[0].turns.pop(); }],
+    ["extra turn", (product) => { product.workflows[0].turns.push(structuredClone(product.workflows[0].turns[0])); }],
+    ["wrong turn ID", (product) => { product.workflows[0].turns[0].id = "forged"; }],
+  ]) {
+    const product = structuredClone(values.product);
+    mutate(product);
+    assert.throws(() => buildMvpScorecard(product, values.waza, values.grounding), /latency turns/, label);
+    assert.throws(() => buildScorecardHistoryRecord(values.scorecard, product, values.waza, values.grounding), /canonical workflow/, label);
+  }
+});
+
+test("scorecard and rehashed history reject latency aggregate tampering", () => {
+  const values = history();
+  const scorecardTamper = structuredClone(values.scorecard);
+  scorecardTamper.lanes.productRuntime.latency.atomic.totalMs += 1;
+  assert.throws(() => buildScorecardHistoryRecord(scorecardTamper, values.product, values.waza, values.grounding), /Scorecard/);
+
+  const historyTamper = structuredClone(values.record);
+  historyTamper.metrics.productRuntime.latency.workflowTurns.meanMs += 1;
+  rehash(historyTamper, "recordHash");
+  assert.throws(() => validateScorecardHistoryRecord(historyTamper), /arithmetic/);
+  const countTamper = structuredClone(values.record);
+  countTamper.metrics.productRuntime.latency.atomic.count -= 1;
+  countTamper.metrics.productRuntime.latency.atomic.totalMs = 832;
+  countTamper.metrics.productRuntime.latency.atomic.meanMs = 104;
+  rehash(countTamper, "recordHash");
+  assert.throws(() => validateScorecardHistoryRecord(countTamper), /latency count/);
+  const extremaTamper = structuredClone(values.record);
+  extremaTamper.metrics.productRuntime.latency.atomic.minMs = 0;
+  extremaTamper.metrics.productRuntime.latency.atomic.maxMs = 1000;
+  rehash(extremaTamper, "recordHash");
+  assert.throws(() => validateScorecardHistoryRecord(extremaTamper), /arithmetic/);
+});
+
 test("history validation rejects extra keys, altered hashes, and incomplete evidence digests", () => {
   const { record } = history();
   assert.throws(() => validateScorecardHistoryRecord({ ...record, extra: true }), /exactly these keys/);
@@ -339,7 +397,7 @@ test("human acceptance requires a separately bound exact decision and ready hist
 
 test("acceptance rejects incomplete records and validates copied audit bindings", () => {
   const values = inputs();
-  values.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: values.product.fixture, ...atomicCheckEvidence(id, index === 0 ? ["matchedStructuredResult"] : []) }));
+  values.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: values.product.fixture, latencyMs: 100 + index, ...atomicCheckEvidence(id, index === 0 ? ["matchedStructuredResult"] : []) }));
   values.product.summary.atomic = { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length - 1, failed: [MVP_EVAL_MANIFEST.atomicCaseIds[0]] };
   values.product.summary.checks.passed -= 1;
   values.scorecard = buildMvpScorecard(values.product, values.waza, values.grounding, null);
@@ -395,7 +453,7 @@ test("comparison reports deterministic product and Waza regressions while keepin
   const base = history();
   const acceptance = accept(base);
   const candidateValues = inputs({ product: { runId: "candidate-run" } });
-  candidateValues.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: candidateValues.product.fixture, ...atomicCheckEvidence(id, index === 0 ? ["matchedStructuredResult"] : []) }));
+  candidateValues.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: candidateValues.product.fixture, latencyMs: 100 + index, ...atomicCheckEvidence(id, index === 0 ? ["matchedStructuredResult"] : []) }));
   candidateValues.product.summary.atomic = { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length - 1, failed: [MVP_EVAL_MANIFEST.atomicCaseIds[0]] };
   candidateValues.product.summary.checks.passed -= 1;
   candidateValues.waza.summary = { ...candidateValues.waza.summary, succeeded: 3, failed: 1 };
@@ -412,6 +470,18 @@ test("comparison reports deterministic product and Waza regressions while keepin
   assert.equal(comparison.regressions.readinessRegressed, true);
   assert.equal(comparison.regressions.blockingRegression, true);
   assert.equal(comparison.deltas.advisoryJudge.advisory, true);
+
+  const latencyOnlyValues = inputs({ product: { runId: "latency-only-candidate" }, grounding: { productRunId: "latency-only-candidate" } });
+  for (const item of latencyOnlyValues.product.results) item.latencyMs += 10;
+  for (const turn of latencyOnlyValues.product.workflows[0].turns) turn.latencyMs += 10;
+  latencyOnlyValues.scorecard = buildMvpScorecard(latencyOnlyValues.product, latencyOnlyValues.waza, latencyOnlyValues.grounding, null);
+  const latencyOnly = buildScorecardHistoryRecord(latencyOnlyValues.scorecard, latencyOnlyValues.product, latencyOnlyValues.waza, latencyOnlyValues.grounding);
+  const latencyComparison = buildScorecardComparison(base.record, acceptance, latencyOnly);
+  assert.equal(latencyComparison.deltas.latency.advisory, true);
+  assert.equal(latencyComparison.deltas.latency.atomic.totalMs.delta, 90);
+  assert.equal(latencyComparison.deltas.latency.atomic.meanMs.delta, 10);
+  assert.equal(latencyComparison.deltas.latency.workflowTurns.totalMs.delta, 30);
+  assert.equal(latencyComparison.regressions.blockingRegression, false);
 
   const judgeOnly = recordedJudgeCandidate(base.record);
   judgeOnly.metrics.advisoryJudge.atomic.failed += 1;
@@ -439,6 +509,22 @@ test("comparison reports deterministic product and Waza regressions while keepin
   comparisonTamper.deltas.atomic.passed.delta = 99;
   rehash(comparisonTamper, "comparisonHash");
   assert.throws(() => validateScorecardComparison(comparisonTamper), /invalid/);
+  const latencyTamper = structuredClone(latencyComparison);
+  latencyTamper.deltas.latency.atomic.meanMs.delta = 99;
+  rehash(latencyTamper, "comparisonHash");
+  assert.throws(() => validateScorecardComparison(latencyTamper), /invalid/);
+  for (const [label, value] of [
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+  ]) {
+    const totalTamper = structuredClone(latencyComparison);
+    totalTamper.deltas.latency.atomic.totalMs.baseline = value;
+    totalTamper.deltas.latency.atomic.totalMs.candidate = value;
+    totalTamper.deltas.latency.atomic.totalMs.delta = 0;
+    rehash(totalTamper, "comparisonHash");
+    assert.throws(() => validateScorecardComparison(totalTamper), /invalid/, label);
+  }
 });
 
 test("CLI records, accepts, compares, and never overwrites immutable history", () => {
