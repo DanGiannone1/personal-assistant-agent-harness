@@ -413,7 +413,7 @@ export function onlyPersonalAggregateMayChange(before, after, aggregateKey) {
   return remaining.length === 1;
 }
 
-function validEventSequence(events) {
+export function validEventSequence(events) {
   if (!Array.isArray(events) || events.length < 2 || events[0]?.type !== "RUN_STARTED") return false;
   const terminals = terminalEvents(events);
   const runId = events[0]?.run_id;

@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { chromium } from "@playwright/test";
-import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireStableSourceRevision, requireTargetUrl, terminalEvents } from "./mvp_evidence.mjs";
+import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireStableSourceRevision, requireTargetUrl, terminalEvents, validEventSequence } from "./mvp_evidence.mjs";
 
 const startedAt = new Date().toISOString();
 const REMOTE = process.env.MVP_ALLOW_REMOTE === "1";
@@ -173,6 +173,21 @@ async function newPage(browser, viewport, user) {
   await signIn(page, user);
   return { context, page, errors };
 }
+function throwOnCompletedRunError(sseBodies) {
+  for (const body of sseBodies) {
+    // response.text() can expose an incomplete final frame if transport handling
+    // changes. Only a frame closed by the SSE blank-line delimiter is complete.
+    if (typeof body !== "string" || !/\r?\n\r?\n$/.test(body)) continue;
+    let events;
+    try { events = parseSse(body); } catch { continue; }
+    const terminals = terminalEvents(events);
+    if (validEventSequence(events) && terminals[0]?.type === "RUN_ERROR") {
+      // The typed terminal proves the turn failed, but its message may contain
+      // provider diagnostics. Keep evidence output free of stream details.
+      throw new Error("Agent turn ended with RUN_ERROR; typed error details intentionally omitted.");
+    }
+  }
+}
 
 mkdirSync(out, { recursive: true });
 const report = { schemaVersion: 1, kind: "mvp-playwright", runId, sourceRevision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), fixture: null, environment: EVIDENCE_ENVIRONMENT, harness: process.env.AGENT_BACKEND || "deepagents", model: process.env.AZURE_DEPLOYMENT || "UNSPECIFIED", app: APP, api: API, startedAt };
@@ -311,6 +326,7 @@ try {
   const layoutsDuring = [await wideLayout(dan.page)];
   await eventually(async () => {
     layoutsDuring.push(await wideLayout(dan.page));
+    throwOnCompletedRunError(sseBodies);
     return (await dan.page.getByTestId("turn-meta").count()) > turnMetaBefore;
   }, 180_000);
   check("MVP-P28-wide-layout-during-agent", !!layoutBefore && layoutsDuring.length > 0 && layoutsDuring.every((layout) => stableWideLayout(layout, layoutBefore)));

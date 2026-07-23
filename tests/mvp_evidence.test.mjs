@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireStableSourceRevision, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
+import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireStableSourceRevision, requireTargetUrl, selectMvpEvalScope, stateFingerprint, validEventSequence } from "../scripts/mvp_evidence.mjs";
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
@@ -38,6 +38,29 @@ test("parses only one JSON event per SSE frame", () => {
   const events = parseSse('data: {"type":"RUN_STARTED"}\n\ndata: {"type":"RUN_FINISHED"}\n\n');
   assert.equal(events.length, 2);
   assert.throws(() => parseSse("data: {}\ndata: {}\n\n"), /exactly one/);
+});
+
+test("browser evidence fails fast for one completed terminal RUN_ERROR without exposing stream details", () => {
+  const source = readFileSync(new URL("../scripts/mvp_playwright.mjs", import.meta.url), "utf8");
+  const helper = source.match(/function throwOnCompletedRunError\(sseBodies\) \{[\s\S]*?\n\}\n\nmkdirSync/);
+  assert.ok(helper, "browser evidence must inspect completed SSE bodies before turn-meta succeeds");
+  const throwOnCompletedRunError = new Function("parseSse", "terminalEvents", "validEventSequence", `${helper[0].slice(0, -"\n\nmkdirSync".length)}\nreturn throwOnCompletedRunError;`)(parseSse, (events) => events.filter((event) => event.type === "RUN_FINISHED" || event.type === "RUN_ERROR"), validEventSequence);
+  const errorBody = 'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_ERROR","message":"authorization=test-secret"}\n\n';
+
+  assert.throws(() => throwOnCompletedRunError([errorBody]), (error) => {
+    assert.match(error.message, /^Agent turn ended with RUN_ERROR;/);
+    assert.doesNotMatch(error.message, /test-secret|authorization/);
+    return true;
+  });
+  assert.doesNotThrow(() => throwOnCompletedRunError([
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_FINISHED","run_id":"run-1","thread_id":"thread-1"}\n\n',
+    'data: {"type":"RUN_ERROR","message":"not-terminal"}\n\ndata: {"type":"TEXT_MESSAGE_START","message_id":"message-1","role":"assistant"}\n\n',
+    'data: {"type":"RUN_ERROR","message":"first"}\n\ndata: {"type":"RUN_ERROR","message":"second"}\n\n',
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_ERROR","message":"unterminated"}',
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"RUN_ERROR"}\n\n',
+    'data: {"type":"RUN_STARTED","run_id":"run-1","thread_id":"thread-1"}\n\ndata: {"type":"UNKNOWN"}\n\ndata: {"type":"RUN_ERROR","message":"invalid sequence"}\n\n',
+  ]));
+  assert.match(source, /layoutsDuring\.push\(await wideLayout\(dan\.page\)\);\s*throwOnCompletedRunError\(sseBodies\);\s*return \(await dan\.page\.getByTestId\("turn-meta"\)\.count\(\)\) > turnMetaBefore;/);
 });
 
 test("MVP eval scope defaults to all and selects only the requested versioned suite", () => {
