@@ -83,6 +83,41 @@ test("the evaluation oracle requires structured evidence, one terminal, and stat
   assert.equal(missingResource.pass, false);
 });
 
+test("explicit tool-call arguments require canonical exact equality", () => {
+  const state = { engagements: [{ id: "eng-a", status: "green" }] };
+  const expectation = {
+    operation: "get", status: "succeeded", stateChanged: false,
+    toolCall: { name: "get_engagement", args: { engagement_id: "eng-a" } },
+  };
+  const exact = evaluateCase({
+    expectation, before: state, after: state,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "get_engagement" },
+      { type: "TOOL_CALL_ARGS", tool_call_id: "call-1", delta: '{"engagement_id":"eng-a"}' },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation: "get", status: "succeeded", code: "engagement.retrieved" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-1" },
+      finish,
+    ],
+  });
+  assert.equal(exact.pass, true);
+  assert.equal(exact.checks.expectedToolCall, true);
+
+  const extraArgument = evaluateCase({
+    expectation, before: state, after: state,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: "get_engagement" },
+      { type: "TOOL_CALL_ARGS", tool_call_id: "call-1", delta: '{"engagement_id":"eng-a","unexpected":"extra"}' },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation: "get", status: "succeeded", code: "engagement.retrieved" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-1" },
+      finish,
+    ],
+  });
+  assert.equal(extraArgument.pass, false);
+  assert.equal(extraArgument.checks.expectedToolCall, false);
+});
+
 test("valid assistant prose or a bare terminal cannot make an eval case pass", () => {
   const state = { engagements: [{ id: "eng-a", status: "green" }] };
   const prose = evaluateCase({

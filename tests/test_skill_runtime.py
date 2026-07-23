@@ -15,6 +15,7 @@ for path in (ROOT, SESSION):
 from deepagents.middleware.filesystem import _check_fs_permission  # noqa: E402
 from deepagents.middleware.skills import _list_skills  # noqa: E402
 
+from agent import SYSTEM_PROMPT as COPILOT_SYSTEM_PROMPT  # noqa: E402
 from agent_deepagents import SYSTEM_PROMPT, _EXCLUDED_BUILTINS, _model_visible_text  # noqa: E402
 from skill_runtime import (  # noqa: E402
     INTERNAL_SKILL_TOOLS,
@@ -77,6 +78,12 @@ class SkillRuntimeTests(unittest.TestCase):
             content = "exact tool output"
 
         self.assertEqual(_model_visible_text(Result()), "exact tool output")
+
+    def test_both_adapter_prompts_retain_issue_21_operating_rules(self):
+        for prompt in (SYSTEM_PROMPT, COPILOT_SYSTEM_PROMPT):
+            self.assertIn("read the\nfull record with `get_engagement` before answering", prompt)
+            self.assertIn("When asked to read or show\nsomething, present what you found", prompt)
+            self.assertIn("Navigate at most once\nper turn", prompt)
 
 
 if __name__ == "__main__":

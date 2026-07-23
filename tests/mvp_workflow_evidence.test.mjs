@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { evaluateCase, evaluateWorkflow } from "../scripts/mvp_evidence.mjs";
 import { MVP_EVAL_MANIFEST } from "../scripts/mvp_eval_manifest.mjs";
-import { buildMvpScorecard, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
+import { buildMvpScorecard, summarizeWaza, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
 
 const start = (run = "run-1") => ({ type: "RUN_STARTED", run_id: run, thread_id: "thread-1" });
 const finish = (run = "run-1") => ({ type: "RUN_FINISHED", run_id: run, thread_id: "thread-1" });
@@ -34,7 +34,7 @@ const wazaGate = (overrides = {}) => ({
   eval_id: "waza-run",
   skill: "engagement-meeting-prep",
   config: { model_id: "claude-sonnet-4.6", engine_type: "copilot-sdk" },
-  summary: { total_tests: 4, failed: 0, errors: 0, skipped: 0 },
+  summary: { total_tests: 4, succeeded: 4, failed: 0, errors: 0, skipped: 0 },
   tasks: WAZA_GATE_TASK_IDS.map((test_id) => ({ test_id, status: "passed" })),
   csaMvpProvenance: {
     runner: "scripts/waza_eval.sh",
@@ -55,6 +55,27 @@ function canonicalAtomicResults(fixture) {
 function canonicalWorkflowResults(fixture, reviewStatus = "REVIEW_REQUIRED") {
   return MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: reviewStatus } }));
 }
+
+test("Waza accepts internally consistent declared and observed task counts", () => {
+  const summary = summarizeWaza(wazaGate());
+  assert.equal(summary.countsConsistent, true);
+  assert.equal(summary.status, "RECORDED");
+  assert.equal(summary.gatePass, true);
+});
+
+test("Waza rejects inconsistent declared counts and result collections", () => {
+  for (const [label, report] of [
+    ["total", wazaGate({ summary: { total_tests: 3, succeeded: 4, failed: 0, errors: 0, skipped: 0 } })],
+    ["passed", wazaGate({ summary: { total_tests: 4, succeeded: 3, failed: 0, errors: 0, skipped: 0 } })],
+    ["failed", wazaGate({ summary: { total_tests: 4, succeeded: 4, failed: 1, errors: 0, skipped: 0 } })],
+    ["results", wazaGate({ tasks: WAZA_GATE_TASK_IDS.slice(0, -1).map((test_id) => ({ test_id, status: "passed" })) })],
+  ]) {
+    const summary = summarizeWaza(report);
+    assert.equal(summary.countsConsistent, false, label);
+    assert.equal(summary.status, "FAILED", label);
+    assert.equal(summary.gatePass, false, label);
+  }
+});
 
 test("atomic case definitions name forbidden tools and bind rejection attempts to the intended target", () => {
   const suite = JSON.parse(readFileSync(new URL("./evals/mvp-cases.json", import.meta.url)));

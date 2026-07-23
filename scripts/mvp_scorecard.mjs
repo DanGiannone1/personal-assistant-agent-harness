@@ -11,6 +11,26 @@ export const WAZA_GATE_TASK_IDS = Object.freeze([
   "WAZA-MP-4-update-does-not-trigger",
 ]);
 
+function wazaTrialOutcome(trial) {
+  if (trial?.status === "passed") return "passed";
+  if (trial?.status === "failed") return "failed";
+  if (trial?.status === "error") return "error";
+  if (trial?.status === "skipped") return "skipped";
+  if (trial?.passed === true || trial?.pass === true) return "passed";
+  if (trial?.passed === false || trial?.pass === false) return "failed";
+  return "unknown";
+}
+
+function isCount(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function declaredPassedCount(summary) {
+  const values = [summary?.succeeded, summary?.passed].filter((value) => value !== undefined);
+  if (!values.length || !values.every(isCount) || !values.every((value) => value === values[0])) return null;
+  return values[0];
+}
+
 export function summarizeWaza(wazaReport) {
   if (!wazaReport) {
     return {
@@ -19,15 +39,30 @@ export function summarizeWaza(wazaReport) {
       note: "Supply a Waza results JSON file to the scorecard merger; Waza evidence is not Deep Agents product-runtime evidence.",
     };
   }
-  const trials = wazaReport.trials ?? wazaReport.results ?? wazaReport.outcomes ?? wazaReport.tasks ?? [];
-  const passed = trials.filter((trial) => trial.passed === true || trial.pass === true || trial.status === "passed").length;
+  const trialCollection = wazaReport.trials ?? wazaReport.results ?? wazaReport.outcomes ?? wazaReport.tasks;
+  const trials = Array.isArray(trialCollection) ? trialCollection : [];
+  const outcomes = trials.map(wazaTrialOutcome);
+  const passed = outcomes.filter((outcome) => outcome === "passed").length;
   const failed = trials
-    .filter((trial) => trial.passed === false || trial.pass === false || trial.status === "failed" || trial.status === "error")
+    .filter((trial, index) => ["failed", "error"].includes(outcomes[index]))
     .map((trial) => trial.task_id ?? trial.taskId ?? trial.test_id ?? trial.id ?? "unknown");
-  const total = wazaReport.summary?.total_tests ?? trials.length;
-  const errors = wazaReport.summary?.errors ?? trials.filter((trial) => trial.status === "error").length;
-  const skipped = wazaReport.summary?.skipped ?? trials.filter((trial) => trial.status === "skipped").length;
-  const completePass = total > 0 && passed === total && failed.length === 0 && errors === 0 && skipped === 0;
+  const observedFailed = outcomes.filter((outcome) => outcome === "failed").length;
+  const observedErrors = outcomes.filter((outcome) => outcome === "error").length;
+  const observedSkipped = outcomes.filter((outcome) => outcome === "skipped").length;
+  const summary = wazaReport.summary ?? {};
+  const total = summary.total_tests ?? trials.length;
+  const errors = summary.errors ?? observedErrors;
+  const skipped = summary.skipped ?? observedSkipped;
+  const declaredPassed = declaredPassedCount(summary);
+  const countsConsistent = Array.isArray(trialCollection)
+    && isCount(summary.total_tests) && isCount(declaredPassed) && isCount(summary.failed)
+    && isCount(summary.errors) && isCount(summary.skipped)
+    && summary.total_tests === trials.length
+    && summary.total_tests === declaredPassed + summary.failed + summary.errors + summary.skipped
+    && declaredPassed === passed && summary.failed === observedFailed
+    && summary.errors === observedErrors && summary.skipped === observedSkipped
+    && !outcomes.includes("unknown");
+  const completePass = countsConsistent && total > 0 && passed === total && failed.length === 0 && errors === 0 && skipped === 0;
   const taskStatus = new Map(trials.map((trial) => [
     trial.task_id ?? trial.taskId ?? trial.test_id ?? trial.id,
     trial.status ?? (trial.passed === true || trial.pass === true ? "passed" : "failed"),
@@ -35,7 +70,8 @@ export function summarizeWaza(wazaReport) {
   const provenance = wazaReport.csaMvpProvenance ?? null;
   const engine = wazaReport.config?.engine_type ?? null;
   const schemaVersion = wazaReport.schemaVersion ?? wazaReport.schema_version ?? null;
-  const gatePass = schemaVersion === "1.2"
+  const gatePass = countsConsistent
+    && schemaVersion === "1.2"
     && engine === "copilot-sdk"
     && provenance?.runner === "scripts/waza_eval.sh"
     && provenance?.wazaVersion === "0.38.3"
@@ -53,6 +89,7 @@ export function summarizeWaza(wazaReport) {
     failed,
     errors,
     skipped,
+    countsConsistent,
     aggregateScore: wazaReport.summary?.aggregate_score ?? null,
     durationMs: wazaReport.summary?.duration_ms ?? null,
     usage: wazaReport.summary?.usage ?? null,

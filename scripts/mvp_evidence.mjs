@@ -82,6 +82,18 @@ function containsExpected(actual, expected) {
     && Object.entries(expected).every(([key, value]) => containsExpected(actual[key], value));
 }
 
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [key, canonicalValue(item)]));
+}
+
+function hasCanonicalExactValue(actual, expected) {
+  return JSON.stringify(canonicalValue(actual)) === JSON.stringify(canonicalValue(expected));
+}
+
 function productEvidenceFor(call, rawRecords) {
   return rawRecords.find((record) => record?.kind === "product_tool_execution"
     && record.tool_call_id === call.id
@@ -500,7 +512,9 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
     forbiddenToolCalls: !expectation.forbiddenToolNames
       || expectation.forbiddenToolNames.every((name) => !toolCalls.some((call) => call.name === name)),
     expectedToolCall: !expectation.toolCall || toolCalls.some((call) => call.name === expectation.toolCall.name
-      && call.args !== null && containsExpected(call.args, expectation.toolCall.args ?? {})),
+      && call.args !== null
+      && (!Object.hasOwn(expectation.toolCall, "args")
+        || hasCanonicalExactValue(call.args, expectation.toolCall.args))),
     completeModelVisibleToolEvidence: !expectation.completeToolEvidence || toolCalls.every((call) => {
       const evidence = productEvidenceFor(call, rawRecords);
       return !!evidence
