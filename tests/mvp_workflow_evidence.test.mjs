@@ -43,6 +43,8 @@ const wazaGate = (overrides = {}) => ({
   csaMvpProvenance: {
     runner: "scripts/waza_eval.sh",
     wazaVersion: "0.38.3",
+    tag: "gate",
+    eval: "tests/evals/waza/engagement-meeting-prep/eval.yaml",
     sourceRevision: "abc",
     sourceRevisionAfter: "abc",
     sourceDirtyBefore: false,
@@ -112,6 +114,15 @@ test("Waza rejects inconsistent declared counts and result collections", () => {
     assert.equal(summary.status, "FAILED", label);
     assert.equal(summary.gatePass, false, label);
   }
+});
+
+test("Waza gate rejects advisory or duplicate five-task counterexamples", () => {
+  const duplicate = wazaGate({
+    summary: { total_tests: 5, succeeded: 5, failed: 0, errors: 0, skipped: 0 },
+    tasks: [...WAZA_GATE_TASK_IDS, WAZA_GATE_TASK_IDS[0]].map((test_id) => ({ test_id, status: "passed" })),
+    csaMvpProvenance: { ...wazaGate().csaMvpProvenance, tag: "advisory" },
+  });
+  assert.equal(summarizeWaza(duplicate).gatePass, false);
 });
 
 test("atomic case definitions name forbidden tools and bind rejection attempts to the intended target", () => {
@@ -445,6 +456,12 @@ test("only the exact all-scope canonical suite can pass the product hard gate", 
   assert.equal(full.lanes.productRuntime.canonicalWorkflowSuite, true);
   assert.equal(full.lanes.productRuntime.hardGatePass, true);
   assert.equal(full.acceptance.status, "INCOMPLETE");
+
+  const truthy = structuredClone(product);
+  truthy.results[0].pass = "true";
+  const truthyScorecard = buildMvpScorecard(truthy);
+  assert.equal(truthyScorecard.lanes.productRuntime.atomic.passed, MVP_EVAL_MANIFEST.atomicCaseIds.length - 1);
+  assert.equal(truthyScorecard.lanes.productRuntime.hardGatePass, false);
 
   const review = {
     productRunId: "product-run", sourceRevision: "abc", fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash",

@@ -2,7 +2,7 @@ import { MVP_EVAL_MANIFEST, hasExactCanonicalIds } from "./mvp_eval_manifest.mjs
 import { summarizeMvpJudge } from "./mvp_judge.mjs";
 
 function countPassed(items = []) {
-  return items.filter((item) => item.pass).length;
+  return items.filter((item) => item.pass === true).length;
 }
 
 export const WAZA_GATE_TASK_IDS = Object.freeze([
@@ -71,12 +71,17 @@ export function summarizeWaza(wazaReport) {
   const provenance = wazaReport.csaMvpProvenance ?? null;
   const engine = wazaReport.config?.engine_type ?? null;
   const schemaVersion = wazaReport.schemaVersion ?? wazaReport.schema_version ?? null;
+  const exactGateTasks = trials.length === WAZA_GATE_TASK_IDS.length
+    && new Set(trials.map((trial) => trial.task_id ?? trial.taskId ?? trial.test_id ?? trial.id)).size === WAZA_GATE_TASK_IDS.length
+    && WAZA_GATE_TASK_IDS.every((id) => taskStatus.get(id) === "passed");
   const gatePass = countsConsistent
     && schemaVersion === "1.2"
     && engine === "copilot-sdk"
     && provenance?.runner === "scripts/waza_eval.sh"
     && provenance?.wazaVersion === "0.38.3"
-    && WAZA_GATE_TASK_IDS.every((id) => taskStatus.get(id) === "passed");
+    && provenance?.tag === "gate"
+    && provenance?.eval === "tests/evals/waza/engagement-meeting-prep/eval.yaml"
+    && exactGateTasks;
   return {
     status: completePass ? "RECORDED" : "FAILED",
     provenance: `waza/${engine ?? "unknown-engine"}`,
@@ -115,18 +120,23 @@ function bindGroundingReviews(productReport, reviewRecord) {
       reviews: workflows.map((workflow) => ({ id: workflow.id, ...workflow.groundingReview })),
     };
   }
+  const reviews = reviewRecord.reviews;
+  const uniqueKnownReviews = Array.isArray(reviews)
+    && new Set(reviews.map((review) => review?.workflowId)).size === reviews.length
+    && reviews.every((review) => MVP_EVAL_MANIFEST.workflowIds.includes(review?.workflowId));
   const bindingMatches = reviewRecord.productRunId === expected.productRunId
     && reviewRecord.sourceRevision === expected.sourceRevision
     && reviewRecord.fixtureVersion === expected.fixtureVersion
     && reviewRecord.fixtureHash === expected.fixtureHash
-    && reviewRecord.skillSha256 === expected.skillSha256;
+    && reviewRecord.skillSha256 === expected.skillSha256
+    && uniqueKnownReviews;
   if (!bindingMatches) {
     return {
       binding: { status: "MISMATCHED", expected },
       reviews: workflows.map((workflow) => ({ id: workflow.id, ...workflow.groundingReview })),
     };
   }
-  const supplied = new Map((reviewRecord.reviews ?? []).map((review) => [review.workflowId, review]));
+  const supplied = new Map(reviews.map((review) => [review.workflowId, review]));
   return {
     binding: {
       status: "MATCHED",
@@ -163,7 +173,7 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
   const canonicalWorkflowSuite = hasExactCanonicalIds(workflows, MVP_EVAL_MANIFEST.workflowIds);
   const productHardGatePass = productReport.scope === "all"
     && fixtureConsistent && canonicalAtomicSuite && canonicalWorkflowSuite
-    && atomic.every((item) => item.pass) && workflows.every((item) => item.pass);
+    && atomic.every((item) => item.pass === true) && workflows.every((item) => item.pass === true);
   const grounding = bindGroundingReviews(productReport, groundingReviewRecord);
   const groundingReviews = grounding.reviews;
   const waza = summarizeWaza(wazaReport);
