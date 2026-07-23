@@ -374,7 +374,11 @@ def _ensure_personal_workspace_seeded(user_id: str, *, demo: bool) -> None:
 def _personal_state(doc: dict) -> dict:
     """Return only the public personal-state fields, with null-safe collections."""
     state = {key: doc.get(key) for key in _PERSONAL_STATE_KEYS}
-    state["currentRoute"] = state["currentRoute"] or "/home"
+    # Workspaces created before Home became the default persisted /engagements.
+    # Normalize that one legacy seed value at the read boundary so an upgrade
+    # lands existing users on Home without deleting or rewriting their records.
+    if not state["currentRoute"] or state["currentRoute"] == "/engagements":
+        state["currentRoute"] = "/home"
     for key in ("personalTasks", "calendarEvents", "reminders"):
         if state[key] is None:
             state[key] = []

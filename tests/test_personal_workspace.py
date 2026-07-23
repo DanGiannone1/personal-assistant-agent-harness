@@ -16,6 +16,21 @@ def _state() -> dict:
     return {"currentRoute": "/home", "personalTasks": [], "calendarEvents": [], "reminders": []}
 
 
+def test_legacy_engagements_landing_is_normalized_to_home() -> None:
+    legacy = {
+        "currentRoute": "/engagements",
+        "personalTasks": [],
+        "calendarEvents": [],
+        "reminders": [],
+    }
+    state = appdb._personal_state(legacy)
+
+    assert state["currentRoute"] == "/home"
+    assert legacy["currentRoute"] == "/engagements"
+    assert appdb._personal_state({**legacy, "currentRoute": ""})["currentRoute"] == "/home"
+    assert appdb._personal_state({**legacy, "currentRoute": "/calendar"})["currentRoute"] == "/calendar"
+
+
 class MemoryPersonalRepository:
     def __init__(self) -> None:
         self.states = {"dan": _state(), "ava": _state()}
