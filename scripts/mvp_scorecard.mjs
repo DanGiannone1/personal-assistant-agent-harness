@@ -1,8 +1,119 @@
-import { MVP_EVAL_MANIFEST, hasExactCanonicalIds } from "./mvp_eval_manifest.mjs";
+import { MVP_EVAL_MANIFEST, atomicScoringMode, expectedAtomicScoredCheckNames, expectedAtomicScoringPath, expectedWorkflowCheckContract, expectedWorkflowScoredCheckNames, hasExactCanonicalIds } from "./mvp_eval_manifest.mjs";
 import { summarizeMvpJudge } from "./mvp_judge.mjs";
 
 function countPassed(items = []) {
   return items.filter((item) => item.pass === true).length;
+}
+
+function hasExactKeys(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const keys = [...expected].sort();
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+function sameBooleanMap(left, right) {
+  if (!left || !right || typeof left !== "object" || typeof right !== "object" || Array.isArray(left) || Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return JSON.stringify(leftKeys) === JSON.stringify(rightKeys)
+    && leftKeys.every((key) => typeof left[key] === "boolean" && left[key] === right[key]);
+}
+
+function workflowEvidenceMatches(item) {
+  let contract;
+  try { contract = expectedWorkflowCheckContract(item.id); } catch { return false; }
+  if (!Array.isArray(item.turnResults) || item.turnResults.length !== contract.turns.length) return false;
+  const reconstructed = {};
+  for (const name of contract.workflowNames) {
+    if (typeof item.checks?.[name] !== "boolean") return false;
+    reconstructed[name] = item.checks[name];
+  }
+  for (const [index, turn] of contract.turns.entries()) {
+    const result = item.turnResults[index];
+    const expectedNames = turn.names;
+    const turnFailed = expectedNames.filter((name) => result?.scoredChecks?.[name] !== true);
+    const turnScore = result?.checkScore;
+    if (!result || result.checkScore?.mode !== "partial" || result.checkScore?.path !== "primary"
+      || !sameBooleanMap(result.scoredChecks, Object.fromEntries(expectedNames.map((name) => [name, result.checks?.[name]])))
+      || !hasExactKeys(turnScore, ["mode", "path", "observed", "credit"])
+      || !hasExactKeys(turnScore.observed, ["passed", "total", "failed"])
+      || !hasExactKeys(turnScore.credit, ["passed", "total"])
+      || !Array.isArray(turnScore.observed.failed)
+      || turnScore.observed.passed !== expectedNames.length - turnFailed.length
+      || turnScore.observed.total !== expectedNames.length
+      || JSON.stringify([...turnScore.observed.failed].sort()) !== JSON.stringify([...turnFailed].sort())
+      || turnScore.credit.passed !== turnScore.observed.passed || turnScore.credit.total !== turnScore.observed.total
+      || result.pass !== Object.values(result.checks ?? {}).every((value) => value === true)
+      || result.pass !== Object.values(result.scoredChecks ?? {}).every((value) => value === true)) return false;
+    for (const name of expectedNames) reconstructed[`${turn.id}.${name}`] = result.scoredChecks[name];
+  }
+  if (item.checks?.allTurnsPass !== item.turnResults.every((result) => result.pass === true)) return false;
+  return sameBooleanMap(item.scoredChecks, reconstructed);
+}
+
+function completeCheckScore(item, kind) {
+  const score = item?.checkScore;
+  if (!hasExactKeys(score, ["mode", "path", "observed", "credit"])
+    || !["partial", "all-or-nothing"].includes(score.mode)
+    || !["primary", "safeNonExecution", "workflow"].includes(score.path)) return null;
+  const observed = score.observed;
+  const credit = score.credit;
+  const scoredChecks = item?.scoredChecks;
+  const scoredNames = scoredChecks && typeof scoredChecks === "object" && !Array.isArray(scoredChecks)
+    ? Object.keys(scoredChecks)
+    : [];
+  const failedNames = scoredNames.filter((name) => scoredChecks[name] !== true);
+  const sourceChecks = score.path === "safeNonExecution" ? item?.safeNonExecution?.checks : item?.checks;
+  let expectedNames;
+  try {
+    expectedNames = kind === "atomic"
+      ? expectedAtomicScoredCheckNames(item.id, score.path)
+      : expectedWorkflowScoredCheckNames(item.id);
+  } catch { return null; }
+  if (!hasExactKeys(observed, ["passed", "total", "failed"])
+    || !hasExactKeys(credit, ["passed", "total"])
+    || !scoredChecks || scoredNames.length === 0 || !scoredNames.every((name) => typeof scoredChecks[name] === "boolean")
+    || !sourceChecks || typeof sourceChecks !== "object" || Array.isArray(sourceChecks)
+    || typeof item.pass !== "boolean"
+    || !Number.isInteger(observed.passed) || !Number.isInteger(observed.total)
+    || !Array.isArray(observed.failed) || !Number.isInteger(credit.passed) || !Number.isInteger(credit.total)
+    || observed.passed < 0 || observed.total <= 0 || observed.passed > observed.total
+    || credit.total !== observed.total || observed.passed + observed.failed.length !== observed.total
+    || credit.passed < 0 || credit.passed > credit.total
+    || new Set(observed.failed).size !== observed.failed.length
+    || !observed.failed.every((name) => typeof name === "string" && !!name.trim())
+    || observed.total !== scoredNames.length
+    || JSON.stringify([...scoredNames].sort()) !== JSON.stringify([...expectedNames].sort())
+    || JSON.stringify([...observed.failed].sort()) !== JSON.stringify([...failedNames].sort())
+    || observed.passed !== scoredNames.length - failedNames.length
+    || scoredNames.some((name) => score.path !== "workflow" && sourceChecks[name] !== scoredChecks[name])
+    || Object.values(sourceChecks).some((value) => typeof value !== "boolean")
+    || item.pass !== Object.values(sourceChecks).every((value) => value === true)
+    || item.pass !== (observed.passed === observed.total)
+    || score.mode === "partial" && credit.passed !== observed.passed
+    || score.mode === "all-or-nothing" && credit.passed !== (item.pass ? credit.total : 0)) return null;
+  if (kind === "atomic") {
+    let expectedPath;
+    try { expectedPath = expectedAtomicScoringPath(item.id, item.checks, item.safeNonExecution?.checks ?? null); } catch { return null; }
+    if (score.path !== expectedPath) return null;
+  } else if (!workflowEvidenceMatches(item)) return null;
+  return score;
+}
+
+export function hasCompleteCheckScore(item, kind) {
+  return completeCheckScore(item, kind) !== null;
+}
+
+function checkMetrics(items, kind) {
+  const scores = items.map((item) => completeCheckScore(item, kind));
+  return {
+    checks: {
+      passed: scores.reduce((total, score) => total + (score?.credit.passed ?? 0), 0),
+      total: scores.reduce((total, score) => total + (score?.credit.total ?? 0), 0),
+    },
+    complete: scores.every(Boolean),
+  };
 }
 
 export const WAZA_GATE_TASK_IDS = Object.freeze([
@@ -171,8 +282,21 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
       item.fixture?.fixtureVersion === fixtureVersion && item.fixture?.fixtureHash === fixtureHash);
   const canonicalAtomicSuite = hasExactCanonicalIds(atomic, MVP_EVAL_MANIFEST.atomicCaseIds);
   const canonicalWorkflowSuite = hasExactCanonicalIds(workflows, MVP_EVAL_MANIFEST.workflowIds);
+  const atomicCheckEvidence = checkMetrics(atomic, "atomic");
+  const workflowCheckEvidence = checkMetrics(workflows, "workflow");
+  const checkEvidence = {
+    checks: {
+      passed: atomicCheckEvidence.checks.passed + workflowCheckEvidence.checks.passed,
+      total: atomicCheckEvidence.checks.total + workflowCheckEvidence.checks.total,
+    },
+    complete: atomicCheckEvidence.complete && workflowCheckEvidence.complete,
+  };
+  const canonicalScoringModes = atomic.every((item) => item.checkScore?.mode === atomicScoringMode(item.id)
+    && ["primary", "safeNonExecution"].includes(item.checkScore?.path))
+    && workflows.every((item) => item.checkScore?.mode === "partial" && item.checkScore?.path === "workflow");
   const productHardGatePass = productReport.scope === "all"
-    && fixtureConsistent && canonicalAtomicSuite && canonicalWorkflowSuite
+    && fixtureConsistent && canonicalAtomicSuite && canonicalWorkflowSuite && canonicalScoringModes
+    && checkEvidence.complete
     && atomic.every((item) => item.pass === true) && workflows.every((item) => item.pass === true);
   const grounding = bindGroundingReviews(productReport, groundingReviewRecord);
   const groundingReviews = grounding.reviews;
@@ -188,7 +312,7 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
     && waza.runnerProvenance?.sourceRevision === productReport.sourceRevision
     && waza.runnerProvenance?.sourceRevisionAfter === productReport.sourceRevision;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "mvp-eval-scorecard",
     runId: productReport.runId,
     generatedAt: productReport.completedAt ?? new Date().toISOString(),
@@ -202,9 +326,12 @@ export function buildMvpScorecard(productReport, wazaReport = null, groundingRev
         scope: productReport.scope ?? "UNSPECIFIED",
         atomic: { passed: countPassed(atomic), total: atomic.length, failed: atomic.filter((item) => !item.pass).map((item) => item.id) },
         workflows: { passed: countPassed(workflows), total: workflows.length, failed: workflows.filter((item) => !item.pass).map((item) => item.id) },
+        checks: checkEvidence.checks,
+        checkEvidenceComplete: checkEvidence.complete,
         fixtureConsistent,
         canonicalAtomicSuite,
         canonicalWorkflowSuite,
+        canonicalScoringModes,
         hardGatePass: productHardGatePass,
         groundingReviewBinding: grounding.binding,
         groundingReviews,
@@ -262,8 +389,9 @@ export function renderMvpScorecard(scorecard) {
 | Product environment | ${product.environment} |
 | Product scope | ${product.scope} |
 | Skill | ${scorecard.skill?.name ?? "UNSPECIFIED"} @ ${scorecard.skill?.sha256 ?? "UNSPECIFIED"} |
-| Atomic checks | ${product.atomic.passed}/${product.atomic.total} |
-| Workflow checks | ${product.workflows.passed}/${product.workflows.total} |
+| Atomic tasks | ${product.atomic.passed}/${product.atomic.total} |
+| Workflow tasks | ${product.workflows.passed}/${product.workflows.total} |
+| Credited check pass rate | ${product.checks.passed}/${product.checks.total}${product.checkEvidenceComplete ? "" : " (incomplete evidence)"} |
 | Fixture consistency | ${product.fixtureConsistent ? "PASS" : "FAIL"} |
 | Canonical atomic suite | ${product.canonicalAtomicSuite ? "PASS" : "FAIL"} |
 | Canonical workflow suite | ${product.canonicalWorkflowSuite ? "PASS" : "FAIL"} |

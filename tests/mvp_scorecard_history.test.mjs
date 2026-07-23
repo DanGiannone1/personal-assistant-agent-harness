@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { MVP_EVAL_MANIFEST } from "../scripts/mvp_eval_manifest.mjs";
+import { MVP_EVAL_MANIFEST, expectedAtomicScoredCheckNames, expectedWorkflowCheckContract, expectedWorkflowScoredCheckNames } from "../scripts/mvp_eval_manifest.mjs";
 import { buildMvpScorecard } from "../scripts/mvp_scorecard.mjs";
 import {
   buildBaselineAcceptance,
@@ -24,6 +24,42 @@ import {
 } from "../scripts/mvp_scorecard_history.mjs";
 
 const skillHash = "a".repeat(64);
+
+function checkEvidence(names, { mode, path, failed = [], sourceChecks } = {}) {
+  const failedNames = new Set(failed);
+  const scoredChecks = Object.fromEntries(names.map((name) => [name, !failedNames.has(name)]));
+  const passed = names.length - failed.length;
+  return {
+    checks: sourceChecks ?? { ...scoredChecks },
+    scoredChecks,
+    checkScore: {
+      mode,
+      path,
+      observed: { passed, total: names.length, failed },
+      credit: { passed: mode === "all-or-nothing" && failed.length ? 0 : passed, total: names.length },
+    },
+  };
+}
+
+function atomicCheckEvidence(id, failed = []) {
+  return checkEvidence(expectedAtomicScoredCheckNames(id, "primary"), {
+    mode: MVP_EVAL_MANIFEST.safetyAtomicCaseIds.includes(id) ? "all-or-nothing" : "partial",
+    path: "primary",
+    failed,
+  });
+}
+
+function workflowCheckEvidence(id) {
+  const contract = expectedWorkflowCheckContract(id);
+  const evidence = checkEvidence(expectedWorkflowScoredCheckNames(id), {
+    mode: "partial",
+    path: "workflow",
+    sourceChecks: { ...Object.fromEntries(contract.workflowNames.map((name) => [name, true])), allTurnsPass: true },
+  });
+  evidence.turnResults = contract.turns.map((turn) => checkEvidence(turn.names, { mode: "partial", path: "primary" }));
+  for (const result of evidence.turnResults) result.pass = true;
+  return evidence;
+}
 
 function withoutHash(value, key) {
   const copy = structuredClone(value);
@@ -68,14 +104,15 @@ function reorder(value) {
 function inputs(overrides = {}) {
   const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "b".repeat(64), fixturePath: "/absolute/fixture.json" };
   const product = {
-    schemaVersion: 3, kind: "mvp-agent-eval", runId: "product-run", startedAt: "2026-07-22T11:59:00Z", completedAt: "2026-07-22T12:00:00Z", sourceRevision: "c".repeat(40), scope: "all",
+    schemaVersion: 4, kind: "mvp-agent-eval", runId: "product-run", startedAt: "2026-07-22T11:59:00Z", completedAt: "2026-07-22T12:00:00Z", sourceRevision: "c".repeat(40), scope: "all",
     fixture, environment: "local-synthetic", harness: "deepagents", model: "product-model",
     skill: { name: "engagement-meeting-prep", version: "1.0.0", path: "session-container/product-skills/engagement-meeting-prep/SKILL.md", sha256: skillHash },
     api: "http://127.0.0.1:18000",
-    results: MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => ({ id, pass: true, fixture })),
-    workflows: MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: "REVIEW_REQUIRED" } })),
-    summary: { atomic: { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length, failed: [] }, workflows: { passed: MVP_EVAL_MANIFEST.workflowIds.length, failed: [] } },
+    results: MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => ({ id, pass: true, fixture, ...atomicCheckEvidence(id) })),
+    workflows: MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: "REVIEW_REQUIRED" }, ...workflowCheckEvidence(id) })),
+    summary: { atomic: { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length, failed: [] }, workflows: { passed: MVP_EVAL_MANIFEST.workflowIds.length, failed: [] }, checks: { passed: 0, total: 0 } },
   };
+  product.summary.checks = [...product.results, ...product.workflows].reduce((counts, item) => ({ passed: counts.passed + item.checkScore.credit.passed, total: counts.total + item.checkScore.credit.total }), { passed: 0, total: 0 });
   const waza = {
     schemaVersion: "1.2", eval_id: "waza-run", skill: "engagement-meeting-prep", eval_name: "engagement-meeting-prep-eval", timestamp: "2026-07-22T12:00:00Z",
     config: { runs_per_test: 1, model_id: "copilot-model", engine_type: "copilot-sdk", timeout_sec: 300 },
@@ -147,6 +184,8 @@ test("record rebuilds source binding, hashes it, and stores only a sanitized pro
   assert.ok(!stored.includes("DO NOT STORE THIS TRANSCRIPT"));
   assert.equal(record.evidence.productSha256, sha256Canonical(values.product));
   assert.equal(record.gates.scorecardAcceptance, "READY_FOR_BASELINE");
+  assert.equal(record.schemaVersion, 2);
+  assert.deepEqual(record.metrics.productRuntime.checks, values.product.summary.checks);
 });
 
 test("optional advisory judge evidence is bound and hashed rather than trusted from a supplied digest", () => {
@@ -183,6 +222,49 @@ test("strict source envelopes reject truthy product passes and malformed duplica
   const malformedWaza = structuredClone(values.waza);
   malformedWaza.csaMvpProvenance.sourceDirtyBefore = "false";
   assert.throws(() => buildScorecardHistoryRecord(values.scorecard, values.product, malformedWaza, values.grounding), /dirty-source/);
+});
+
+test("strict product validation rejects check-score and summary-credit tampering", () => {
+  const values = inputs();
+  const summaryTamper = structuredClone(values.product);
+  summaryTamper.summary.checks.passed -= 1;
+  assert.throws(() => buildScorecardHistoryRecord(values.scorecard, summaryTamper, values.waza, values.grounding), /summary.checks/);
+  const scoreTamper = structuredClone(values.product);
+  scoreTamper.results[0].checkScore.credit.passed = 0;
+  assert.throws(() => buildScorecardHistoryRecord(values.scorecard, scoreTamper, values.waza, values.grounding), /partial credit/);
+  const semanticTamper = structuredClone(values.product);
+  semanticTamper.results[0].pass = false;
+  assert.throws(() => buildScorecardHistoryRecord(values.scorecard, semanticTamper, values.waza, values.grounding), /source diagnostics|pass does not match observed/);
+  const rawDiagnosticTamper = structuredClone(values.product);
+  rawDiagnosticTamper.results[0].checks.only = false;
+  assert.throws(() => buildScorecardHistoryRecord(values.scorecard, rawDiagnosticTamper, values.waza, values.grounding), /source diagnostics/);
+  const impossibleSafePath = structuredClone(values.product);
+  impossibleSafePath.results.find((item) => item.id === "MVP-E7-marker-prose-is-inert").checkScore.path = "safeNonExecution";
+  assert.throws(() => buildScorecardHistoryRecord(values.scorecard, impossibleSafePath, values.waza, values.grounding), /source diagnostics|invalid canonical atomic scoring path/);
+
+  const missingApplicable = structuredClone(values.product);
+  const missingE7 = missingApplicable.results.find((item) => item.id === "MVP-E7-marker-prose-is-inert");
+  delete missingE7.checks.noNavigation;
+  delete missingE7.scoredChecks.noNavigation;
+  missingE7.checkScore.observed.passed -= 1;
+  missingE7.checkScore.observed.total -= 1;
+  missingE7.checkScore.credit.passed -= 1;
+  missingE7.checkScore.credit.total -= 1;
+  missingApplicable.summary.checks.passed -= 1;
+  missingApplicable.summary.checks.total -= 1;
+  assert.throws(() => buildScorecardHistoryRecord(buildMvpScorecard(missingApplicable, values.waza, values.grounding), missingApplicable, values.waza, values.grounding), /canonical scored checks/);
+
+  const irrelevantApplicable = structuredClone(values.product);
+  const extraE7 = irrelevantApplicable.results.find((item) => item.id === "MVP-E7-marker-prose-is-inert");
+  extraE7.checks.authorizedEngagementIdsGrounded = true;
+  extraE7.scoredChecks.authorizedEngagementIdsGrounded = true;
+  extraE7.checkScore.observed.passed += 1;
+  extraE7.checkScore.observed.total += 1;
+  extraE7.checkScore.credit.passed += 1;
+  extraE7.checkScore.credit.total += 1;
+  irrelevantApplicable.summary.checks.passed += 1;
+  irrelevantApplicable.summary.checks.total += 1;
+  assert.throws(() => buildScorecardHistoryRecord(buildMvpScorecard(irrelevantApplicable, values.waza, values.grounding), irrelevantApplicable, values.waza, values.grounding), /canonical scored checks/);
 });
 
 test("history validation rejects extra keys, altered hashes, and incomplete evidence digests", () => {
@@ -256,9 +338,10 @@ test("human acceptance requires a separately bound exact decision and ready hist
 });
 
 test("acceptance rejects incomplete records and validates copied audit bindings", () => {
-  const values = inputs({ product: { results: MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: undefined })) } });
-  values.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: values.product.fixture }));
+  const values = inputs();
+  values.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: values.product.fixture, ...atomicCheckEvidence(id, index === 0 ? ["matchedStructuredResult"] : []) }));
   values.product.summary.atomic = { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length - 1, failed: [MVP_EVAL_MANIFEST.atomicCaseIds[0]] };
+  values.product.summary.checks.passed -= 1;
   values.scorecard = buildMvpScorecard(values.product, values.waza, values.grounding, null);
   const record = buildScorecardHistoryRecord(values.scorecard, values.product, values.waza, values.grounding);
   assert.equal(record.gates.scorecardAcceptance, "INCOMPLETE");
@@ -285,6 +368,11 @@ test("rehashed readiness, Waza provenance, review, and judge-binding tampering c
   rehash(forgedProduct, "recordHash");
   assert.throws(() => validateScorecardHistoryRecord(forgedProduct), /product hard gate/);
 
+  const forgedChecks = structuredClone(record);
+  forgedChecks.metrics.productRuntime.checks.passed -= 1;
+  rehash(forgedChecks, "recordHash");
+  assert.throws(() => validateScorecardHistoryRecord(forgedChecks), /hard-gated check metrics/);
+
   const arbitraryReview = structuredClone(record);
   arbitraryReview.gates.groundingReviews[0].id = "MVP-W999-arbitrary";
   rehash(arbitraryReview, "recordHash");
@@ -307,14 +395,17 @@ test("comparison reports deterministic product and Waza regressions while keepin
   const base = history();
   const acceptance = accept(base);
   const candidateValues = inputs({ product: { runId: "candidate-run" } });
-  candidateValues.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: candidateValues.product.fixture }));
+  candidateValues.product.results = MVP_EVAL_MANIFEST.atomicCaseIds.map((id, index) => ({ id, pass: index !== 0, fixture: candidateValues.product.fixture, ...atomicCheckEvidence(id, index === 0 ? ["matchedStructuredResult"] : []) }));
   candidateValues.product.summary.atomic = { passed: MVP_EVAL_MANIFEST.atomicCaseIds.length - 1, failed: [MVP_EVAL_MANIFEST.atomicCaseIds[0]] };
+  candidateValues.product.summary.checks.passed -= 1;
   candidateValues.waza.summary = { ...candidateValues.waza.summary, succeeded: 3, failed: 1 };
   candidateValues.waza.tasks[0].status = "failed";
   candidateValues.scorecard = buildMvpScorecard(candidateValues.product, candidateValues.waza, candidateValues.grounding, null);
   const candidate = buildScorecardHistoryRecord(candidateValues.scorecard, candidateValues.product, candidateValues.waza, candidateValues.grounding);
   const comparison = buildScorecardComparison(base.record, acceptance, candidate);
   assert.equal(comparison.deltas.atomic.passed.delta, -1);
+  assert.equal(comparison.deltas.checks.passed.delta, -1);
+  assert.equal(comparison.regressions.checks.passedDecreased, true);
   assert.equal(comparison.deltas.waza.passed.delta, -1);
   assert.equal(comparison.regressions.atomic.passedDecreased, true);
   assert.equal(comparison.regressions.waza.gateRegressed, true);

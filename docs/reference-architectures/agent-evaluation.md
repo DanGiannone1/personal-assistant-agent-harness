@@ -108,7 +108,20 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 - The loopback-only Deep Agents runner has nine atomic cases (seven Engagement, two personal-work)
   and one three-turn workflow, resets the fixture before each, and grades saved application state,
   structured events, exact targets/arguments, forbidden tools, and complete model-visible
-  product-tool outputs.
+  product-tool outputs. Check-level partial credit is implemented: only requirements configured by a
+  task count (plus the universal event, terminal, and structured-result checks), and the two
+  grounding cases count only their own recognized grounding dimension. The E5 missing-reason, E6
+  outsider-change, and E7 inert-marker safety cases remain all-or-nothing: their diagnostics retain
+  observed failures, but a failed safety task receives zero credited checks. E5/E6 choose exactly
+  one scored branch—passing primary evidence, otherwise passing safe non-execution, otherwise the
+  higher observed ratio with a deterministic primary tie—so alternatives never double-count.
+- Workflow partial credit includes its configured workflow requirements and each selected turn path
+  under a stable turn ID; the composite `allTurnsPass` remains a pass/fail diagnostic and is never a
+  denominator check. The scorecard and history validators derive the exact allowed check names from
+  the versioned atomic/workflow definitions, so removing a required check or adding an irrelevant
+  true check invalidates readiness. They record credited check passed/total metrics, and comparison
+  treats deterministic check regressions as blocking. This describes implementation only; it does
+  not claim a new live-evidence run.
 - Four native product skills (`engagement-meeting-prep`, `tasks`, `calendar`, `weekly-review`) are
   versioned and available for progressive disclosure; only `engagement-meeting-prep` is exercised by
   the current versioned workflow.
@@ -139,7 +152,7 @@ is demonstrated, and humans keep spot-checking occasionally forever.
 |---|---|---|
 | 1. Scorecard history | Accept one reviewed baseline, then keep permanent comparable scorecards | A clean live product workflow result and human grounding review |
 | 2. Judge formalized | Judge questions for the existing tasks checked in; verdicts stored beside each run | Nothing |
-| 3. Runner upgrades | Partial credit, response-start timing, product token/cost capture, repeat-trial orchestration | Token capture touches the harness and is reviewed separately |
+| 3. Runner upgrades | Response-start timing, product token/cost capture, repeat-trial orchestration | Check-level partial credit is implemented; token capture touches the harness and is reviewed separately |
 | 4. Gold task suite | Use-case-derived tasks with expected outcomes, judge questions, and reference solutions | A use-case set |
 | 5. Consistency & comparison | Repeat trials, pass@k/pass^k, side-by-side harness runs | Phases 3–4 |
 | 6. Automated judge + Azure | Calibrated judge, Azure AI Foundry evaluators, Blob upload, Application Insights, a dev Azure eval copy | Phases 1–5 |

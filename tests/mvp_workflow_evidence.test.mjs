@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { evaluateCase, evaluateWorkflow } from "../scripts/mvp_evidence.mjs";
-import { MVP_EVAL_MANIFEST } from "../scripts/mvp_eval_manifest.mjs";
+import { MVP_EVAL_MANIFEST, expectedAtomicScoredCheckNames, expectedWorkflowCheckContract, expectedWorkflowScoredCheckNames } from "../scripts/mvp_eval_manifest.mjs";
 import { loadMvpJudgeRubric, summarizeMvpJudge, validateMvpJudgeRecord, validateMvpJudgeRubric } from "../scripts/mvp_judge.mjs";
 import { buildMvpScorecard, renderMvpScorecard, summarizeWaza, WAZA_GATE_TASK_IDS } from "../scripts/mvp_scorecard.mjs";
 
@@ -55,11 +55,28 @@ const wazaGate = (overrides = {}) => ({
 });
 
 function canonicalAtomicResults(fixture) {
-  return MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => ({ id, pass: true, fixture }));
+  return MVP_EVAL_MANIFEST.atomicCaseIds.map((id) => {
+    const names = expectedAtomicScoredCheckNames(id, "primary");
+    const scoredChecks = Object.fromEntries(names.map((name) => [name, true]));
+    return {
+      id, pass: true, fixture, checks: { ...scoredChecks }, scoredChecks,
+      checkScore: { mode: MVP_EVAL_MANIFEST.safetyAtomicCaseIds.includes(id) ? "all-or-nothing" : "partial", path: "primary", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } },
+    };
+  });
 }
 
 function canonicalWorkflowResults(fixture, reviewStatus = "REVIEW_REQUIRED") {
-  return MVP_EVAL_MANIFEST.workflowIds.map((id) => ({ id, pass: true, fixture, groundingReview: { status: reviewStatus } }));
+  return MVP_EVAL_MANIFEST.workflowIds.map((id) => {
+    const contract = expectedWorkflowCheckContract(id);
+    const names = expectedWorkflowScoredCheckNames(id);
+    const scoredChecks = Object.fromEntries(names.map((name) => [name, true]));
+    const turnResults = contract.turns.map((turn) => {
+      const turnChecks = Object.fromEntries(turn.names.map((name) => [name, true]));
+      return { pass: true, checks: { ...turnChecks }, scoredChecks: turnChecks, checkScore: { mode: "partial", path: "primary", observed: { passed: turn.names.length, total: turn.names.length, failed: [] }, credit: { passed: turn.names.length, total: turn.names.length } } };
+    });
+    const checks = { ...Object.fromEntries(contract.workflowNames.map((name) => [name, true])), allTurnsPass: true };
+    return { id, pass: true, fixture, checks, scoredChecks, turnResults, groundingReview: { status: reviewStatus }, checkScore: { mode: "partial", path: "workflow", observed: { passed: names.length, total: names.length, failed: [] }, credit: { passed: names.length, total: names.length } } };
+  });
 }
 
 function canonicalJudgeProduct(overrides = {}) {
@@ -138,6 +155,7 @@ test("atomic case definitions name forbidden tools and bind rejection attempts t
     assert.equal(item.expectation.toolCall.args.engagement_id, "eng-product-launch");
   }
   assert.deepEqual(suite.cases.map((item) => item.id), MVP_EVAL_MANIFEST.atomicCaseIds);
+  assert.deepEqual(MVP_EVAL_MANIFEST.safetyAtomicCaseIds, ["MVP-E5-missing-reason", "MVP-E6-outsider-change", "MVP-E7-marker-prose-is-inert"]);
   assert.deepEqual(workflows.workflows.map((item) => item.id), MVP_EVAL_MANIFEST.workflowIds);
   assert.deepEqual(
     suite.cases.find((item) => item.id === "MVP-E1-list-authorized").expectation.modelVisibleOutput,
@@ -182,6 +200,8 @@ test("E1 and E2 require exact native model-visible renderings and a user-visible
     rawRecords: [rawTool({ id: "list-1", name: "list_engagements", args: {}, output: validListOutput.replace(/\n/g, "\r\n"), result: listResult })],
   });
   assert.equal(validList.pass, true);
+  assert.equal(validList.checkScore.observed.failed.includes("engagementDetailFactsGrounded"), false);
+  assert.equal(validList.checkScore.observed.total, 10);
   assert.equal(validList.checks.authorizedEngagementIdsGrounded, true);
 
   for (const [label, output] of [
@@ -260,6 +280,8 @@ test("E1 and E2 require exact native model-visible renderings and a user-visible
     rawRecords: [rawTool({ id: "get-1", name: "get_engagement", args: { engagement_id: "eng-product-launch" }, output: validDetailOutput.replace(/\n/g, "\r\n"), result: getResult })],
   });
   assert.equal(validDetail.pass, true);
+  assert.equal(validDetail.checkScore.observed.failed.includes("authorizedEngagementIdsGrounded"), false);
+  assert.equal(validDetail.checkScore.observed.total, 13);
   assert.equal(validDetail.checks.engagementDetailFactsGrounded, true);
 
   for (const [label, output] of [
@@ -413,6 +435,18 @@ test("the workflow fixture allows control-only exact navigation while requiring 
   assert.equal(failed.checks.oneSession, false);
 });
 
+test("workflow check scoring namespaces selected turn checks and excludes the all-turns composite", () => {
+  const state = { engagements: [] };
+  const definition = { turns: [{ id: "only", expectation: { zeroToolResults: true, stateChanged: false, noNavigation: true } }] };
+  const passing = evaluateWorkflow({ definition, resetCount: 1, sessionId: "session-1", before: state, after: state, turns: [{ id: "only", sessionId: "session-1", before: state, after: state, events: [start(), finish()], rawRecords: [] }] });
+  assert.equal(passing.checkScore.path, "workflow");
+  assert.equal(passing.checkScore.observed.failed.includes("allTurnsPass"), false);
+  assert.equal(passing.checkScore.observed.total, 9);
+  const failed = evaluateWorkflow({ definition, resetCount: 1, sessionId: "session-1", before: state, after: state, turns: [{ id: "only", sessionId: "session-1", before: state, after: state, events: [start(), ...tool({ id: "list", name: "list_engagements", args: {}, result: { operation: "list", status: "succeeded", code: "engagement.listed" } }), finish()], rawRecords: [] }] });
+  assert.equal(failed.checkScore.observed.failed.some((name) => name.startsWith("only.")), true);
+  assert.equal(failed.checkScore.observed.failed.includes("allTurnsPass"), false);
+});
+
 test("the scorecard keeps product and Waza provenance separate and never self-accepts a baseline", () => {
   const fixture = { fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash" };
   const product = {
@@ -462,6 +496,43 @@ test("only the exact all-scope canonical suite can pass the product hard gate", 
   const truthyScorecard = buildMvpScorecard(truthy);
   assert.equal(truthyScorecard.lanes.productRuntime.atomic.passed, MVP_EVAL_MANIFEST.atomicCaseIds.length - 1);
   assert.equal(truthyScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const inconsistentCredit = structuredClone(product);
+  inconsistentCredit.results[0].checkScore.credit.passed = 0;
+  const inconsistentCreditScorecard = buildMvpScorecard(inconsistentCredit);
+  assert.equal(inconsistentCreditScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(inconsistentCreditScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const forgedDiagnostics = structuredClone(product);
+  forgedDiagnostics.results[0].checks.only = false;
+  const forgedDiagnosticsScorecard = buildMvpScorecard(forgedDiagnostics);
+  assert.equal(forgedDiagnosticsScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(forgedDiagnosticsScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const forgedSafePath = structuredClone(product);
+  const e7 = forgedSafePath.results.find((item) => item.id === "MVP-E7-marker-prose-is-inert");
+  e7.checkScore.path = "safeNonExecution";
+  const forgedSafePathScorecard = buildMvpScorecard(forgedSafePath);
+  assert.equal(forgedSafePathScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(forgedSafePathScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const wrongPathPriority = structuredClone(product);
+  const e5 = wrongPathPriority.results.find((item) => item.id === "MVP-E5-missing-reason");
+  e5.checks.extraIrrelevantDiagnostic = false;
+  const safeNames = expectedAtomicScoredCheckNames(e5.id, "safeNonExecution");
+  e5.safeNonExecution = { pass: true, checks: Object.fromEntries(safeNames.map((name) => [name, true])) };
+  e5.scoredChecks = { ...e5.safeNonExecution.checks };
+  e5.checkScore = { mode: "all-or-nothing", path: "safeNonExecution", observed: { passed: safeNames.length, total: safeNames.length, failed: [] }, credit: { passed: safeNames.length, total: safeNames.length } };
+  const wrongPathPriorityScorecard = buildMvpScorecard(wrongPathPriority);
+  assert.equal(wrongPathPriorityScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(wrongPathPriorityScorecard.lanes.productRuntime.hardGatePass, false);
+
+  const forgedWorkflowTurn = structuredClone(product);
+  const firstTurn = forgedWorkflowTurn.workflows[0].turnResults[0];
+  firstTurn.checks[Object.keys(firstTurn.checks)[0]] = false;
+  const forgedWorkflowTurnScorecard = buildMvpScorecard(forgedWorkflowTurn);
+  assert.equal(forgedWorkflowTurnScorecard.lanes.productRuntime.checkEvidenceComplete, false);
+  assert.equal(forgedWorkflowTurnScorecard.lanes.productRuntime.hardGatePass, false);
 
   const review = {
     productRunId: "product-run", sourceRevision: "abc", fixtureVersion: "mvp-demo-v2", fixtureHash: "fixture-hash",

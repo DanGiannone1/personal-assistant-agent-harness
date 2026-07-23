@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
-import { buildMvpScorecard, WAZA_GATE_TASK_IDS } from "./mvp_scorecard.mjs";
-import { MVP_EVAL_MANIFEST } from "./mvp_eval_manifest.mjs";
+import { buildMvpScorecard, hasCompleteCheckScore, WAZA_GATE_TASK_IDS } from "./mvp_scorecard.mjs";
+import { MVP_EVAL_MANIFEST, atomicScoringMode, expectedAtomicScoredCheckNames, expectedWorkflowScoredCheckNames } from "./mvp_eval_manifest.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -249,9 +249,42 @@ function validateSummary(summary, items, label) {
   if (summary.passed !== items.filter((item) => item.pass === true).length || canonicalJson(summary.failed) !== canonicalJson(failed)) throw new Error(`${label} does not match evidence`);
 }
 
+function validateCheckScore(value, item, label, expectedMode, expectedPaths, expectedNamesForItem) {
+  exactKeys(value, ["mode", "path", "observed", "credit"], `${label}.checkScore`);
+  if (value.mode !== expectedMode || !expectedPaths.includes(value.path)) throw new Error(`${label}.checkScore mode or path is invalid`);
+  exactKeys(value.observed, ["passed", "total", "failed"], `${label}.checkScore.observed`);
+  exactKeys(value.credit, ["passed", "total"], `${label}.checkScore.credit`);
+  if (!item.scoredChecks || typeof item.scoredChecks !== "object" || Array.isArray(item.scoredChecks)
+    || Object.keys(item.scoredChecks).length === 0
+    || !Object.values(item.scoredChecks).every((result) => typeof result === "boolean")) throw new Error(`${label}.scoredChecks is invalid`);
+  const scoredNames = Object.keys(item.scoredChecks);
+  const scoredFailed = scoredNames.filter((name) => item.scoredChecks[name] !== true);
+  const expectedNames = expectedNamesForItem(item, value.path);
+  const sourceChecks = value.path === "safeNonExecution" ? item.safeNonExecution?.checks : item.checks;
+  if (!sourceChecks || typeof sourceChecks !== "object" || Array.isArray(sourceChecks)
+    || !Object.values(sourceChecks).every((result) => typeof result === "boolean")
+    || scoredNames.some((name) => value.path !== "workflow" && sourceChecks[name] !== item.scoredChecks[name])
+    || item.pass !== Object.values(sourceChecks).every((result) => result === true)) throw new Error(`${label}.scoredChecks does not match source diagnostics`);
+  for (const [name, count] of Object.entries({
+    observedPassed: value.observed.passed, observedTotal: value.observed.total,
+    creditPassed: value.credit.passed, creditTotal: value.credit.total,
+  })) if (!Number.isInteger(count) || count < 0) throw new Error(`${label}.checkScore ${name} is invalid`);
+  if (value.observed.total <= 0 || value.credit.total !== value.observed.total
+    || !Array.isArray(value.observed.failed) || value.observed.passed + value.observed.failed.length !== value.observed.total
+    || value.credit.passed > value.credit.total
+    || !value.observed.failed.every((name) => typeof name === "string" && name && name === name.trim() && !/[\u0000-\u001f\u007f]/.test(name))
+    || new Set(value.observed.failed).size !== value.observed.failed.length) throw new Error(`${label}.checkScore counts are inconsistent`);
+  if (value.observed.total !== scoredNames.length || value.observed.passed !== scoredNames.length - scoredFailed.length
+    || canonicalJson([...value.observed.failed].sort()) !== canonicalJson([...scoredFailed].sort())
+    || canonicalJson([...scoredNames].sort()) !== canonicalJson([...expectedNames].sort())) throw new Error(`${label}.checkScore does not match canonical scored checks`);
+  if (value.mode === "partial" && (value.credit.passed !== value.observed.passed || value.credit.total !== value.observed.total)) throw new Error(`${label}.checkScore partial credit is inconsistent`);
+  if (value.mode === "all-or-nothing" && value.credit.passed !== (item.pass ? value.credit.total : 0)) throw new Error(`${label}.checkScore safety credit is inconsistent`);
+  if (item.pass !== (value.observed.passed === value.observed.total)) throw new Error(`${label}.pass does not match observed checks`);
+}
+
 export function validateProductEvidence(product) {
   exactKeys(product, PRODUCT_KEYS, "Product evidence");
-  if (product.schemaVersion !== 3 || product.kind !== "mvp-agent-eval") throw new Error("Product evidence has an unsupported schema");
+  if (product.schemaVersion !== 4 || product.kind !== "mvp-agent-eval") throw new Error("Product evidence has an unsupported schema");
   requireRunId(product.runId, "Product evidence.runId");
   if (typeof product.sourceRevision !== "string" || !/^[a-f0-9]{7,64}$/.test(product.sourceRevision)) throw new Error("Product evidence.sourceRevision must be a lowercase Git revision");
   isOneOf(product.scope, ["all", "atomic", "workflow"], "Product evidence.scope");
@@ -267,23 +300,34 @@ export function validateProductEvidence(product) {
   requireRfc3339(product.completedAt, "Product evidence.completedAt");
   if (Date.parse(product.completedAt) < Date.parse(product.startedAt)) throw new Error("Product evidence timestamps are invalid");
   if (!Array.isArray(product.results) || !Array.isArray(product.workflows)) throw new Error("Product evidence suites are invalid");
-  const validateItems = (items, canonicalIds, label) => {
+  const validateItems = (items, canonicalIds, label, modeForItem, paths, expectedNamesForItem, kind) => {
     if (!items.every((item) => item && typeof item === "object" && typeof item.id === "string" && typeof item.pass === "boolean")) throw new Error(`${label} items are invalid`);
     if (!items.every((item) => canonicalIds.includes(item.id))) throw new Error(`${label} IDs are invalid`);
     if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error(`${label} IDs are duplicated`);
-    for (const item of items) requireFixtureBinding(item.fixture, `${label}.${item.id}.fixture`);
+    for (const item of items) {
+      requireFixtureBinding(item.fixture, `${label}.${item.id}.fixture`);
+      validateCheckScore(item.checkScore, item, `${label}.${item.id}`, modeForItem(item), paths, expectedNamesForItem);
+      if (!hasCompleteCheckScore(item, kind)) throw new Error(`${label}.${item.id}.checkScore does not match canonical source evidence`);
+    }
   };
-  validateItems(product.results, MVP_EVAL_MANIFEST.atomicCaseIds, "Product evidence atomic");
-  validateItems(product.workflows, MVP_EVAL_MANIFEST.workflowIds, "Product evidence workflow");
+  validateItems(product.results, MVP_EVAL_MANIFEST.atomicCaseIds, "Product evidence atomic", (item) => atomicScoringMode(item.id), ["primary", "safeNonExecution"], (item, path) => expectedAtomicScoredCheckNames(item.id, path), "atomic");
+  validateItems(product.workflows, MVP_EVAL_MANIFEST.workflowIds, "Product evidence workflow", () => "partial", ["workflow"], (item) => expectedWorkflowScoredCheckNames(item.id), "workflow");
   const expectedAtomic = product.scope === "workflow" ? [] : MVP_EVAL_MANIFEST.atomicCaseIds;
   const expectedWorkflows = product.scope === "atomic" ? [] : MVP_EVAL_MANIFEST.workflowIds;
   if (product.results.length !== expectedAtomic.length || product.workflows.length !== expectedWorkflows.length
     || !expectedAtomic.every((id) => product.results.some((item) => item.id === id))
     || !expectedWorkflows.every((id) => product.workflows.some((item) => item.id === id))) throw new Error("Product evidence scope suite is incomplete");
   if (![...product.results, ...product.workflows].every((item) => item.fixture.fixtureVersion === product.fixture.fixtureVersion && item.fixture.fixtureHash === product.fixture.fixtureHash)) throw new Error("Product evidence fixture binding is inconsistent");
-  exactKeys(product.summary, ["atomic", "workflows"], "Product evidence.summary");
+  exactKeys(product.summary, ["atomic", "workflows", "checks"], "Product evidence.summary");
   validateSummary(product.summary.atomic, product.results, "Product evidence.summary.atomic");
   validateSummary(product.summary.workflows, product.workflows, "Product evidence.summary.workflows");
+  exactKeys(product.summary.checks, ["passed", "total"], "Product evidence.summary.checks");
+  const credits = [...product.results, ...product.workflows].reduce((total, item) => ({
+    passed: total.passed + item.checkScore.credit.passed,
+    total: total.total + item.checkScore.credit.total,
+  }), { passed: 0, total: 0 });
+  if (!Number.isInteger(product.summary.checks.passed) || !Number.isInteger(product.summary.checks.total)
+    || product.summary.checks.passed !== credits.passed || product.summary.checks.total !== credits.total) throw new Error("Product evidence.summary.checks does not match item credits");
   return structuredClone(product);
 }
 
@@ -347,7 +391,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
 
   const rebuilt = buildMvpScorecard(product, waza, groundingReview, judgeRecord);
   requireExactValue(scorecard, rebuilt, "Scorecard");
-  if (scorecard.kind !== "mvp-eval-scorecard" || scorecard.schemaVersion !== 1) throw new Error("Scorecard has an unsupported schema");
+  if (scorecard.kind !== "mvp-eval-scorecard" || scorecard.schemaVersion !== 2) throw new Error("Scorecard has an unsupported schema");
 
   const productLane = scorecard.lanes?.productRuntime;
   const wazaLane = scorecard.lanes?.skillLaboratory;
@@ -362,7 +406,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
   if (!productLane || !wazaLane || !judgeLane) throw new Error("Scorecard lanes are required");
 
   const record = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "mvp-scorecard-history-record",
     runId: scorecard.runId,
     sourceRevision: scorecard.sourceRevision,
@@ -392,6 +436,8 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
       fixtureConsistent: productLane.fixtureConsistent,
       canonicalAtomicSuite: productLane.canonicalAtomicSuite,
       canonicalWorkflowSuite: productLane.canonicalWorkflowSuite,
+      canonicalScoringModes: productLane.canonicalScoringModes,
+      checkEvidenceComplete: productLane.checkEvidenceComplete,
       productHardGate: productLane.hardGatePass,
       groundingReviewBinding: productLane.groundingReviewBinding?.status,
       groundingReviews: productLane.groundingReviews.map((review) => ({ id: review.id, status: review.status })),
@@ -406,6 +452,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
       productRuntime: {
         atomic: countMetrics(productLane.atomic, "productRuntime.atomic"),
         workflows: countMetrics(productLane.workflows, "productRuntime.workflows"),
+        checks: { passed: productLane.checks?.passed, total: productLane.checks?.total },
       },
       skillLaboratory: {
         passed: wazaLane.passed,
@@ -431,7 +478,7 @@ export function buildScorecardHistoryRecord(scorecard, product, waza, groundingR
 
 export function validateScorecardHistoryRecord(record) {
   exactKeys(record, HISTORY_KEYS, "History record");
-  if (record.schemaVersion !== 1 || record.kind !== "mvp-scorecard-history-record") throw new Error("History record has an unsupported schema");
+  if (record.schemaVersion !== 2 || record.kind !== "mvp-scorecard-history-record") throw new Error("History record has an unsupported schema");
   requireRunId(record.runId);
   requireSafeIdentifier(record.sourceRevision, "History record.sourceRevision");
   if (!record.fixture || typeof record.fixture.fixtureVersion !== "string" || typeof record.fixture.fixtureHash !== "string") throw new Error("History record fixture is invalid");
@@ -459,13 +506,13 @@ export function validateScorecardHistoryRecord(record) {
     return true;
   })) throw new Error("History record Waza gate task IDs are invalid");
   isOneOf(record.provenance.advisoryJudge, ["NOT_SUPPLIED", "RECORDED", "INVALID"], "History record advisory provenance");
-  exactKeys(record.gates, ["scorecardAcceptance", "scope", "fixtureConsistent", "canonicalAtomicSuite", "canonicalWorkflowSuite", "productHardGate", "groundingReviewBinding", "groundingReviews", "wazaStatus", "wazaGate", "wazaSkillMatchesProduct", "wazaSourceMatchesProduct", "advisoryJudgeStatus", "advisoryJudgeAdvisory"], "History record.gates");
+  exactKeys(record.gates, ["scorecardAcceptance", "scope", "fixtureConsistent", "canonicalAtomicSuite", "canonicalWorkflowSuite", "canonicalScoringModes", "checkEvidenceComplete", "productHardGate", "groundingReviewBinding", "groundingReviews", "wazaStatus", "wazaGate", "wazaSkillMatchesProduct", "wazaSourceMatchesProduct", "advisoryJudgeStatus", "advisoryJudgeAdvisory"], "History record.gates");
   isOneOf(record.gates.scorecardAcceptance, ["READY_FOR_BASELINE", "INCOMPLETE"], "History record scorecard acceptance");
   isOneOf(record.gates.scope, ["all", "atomic", "workflow", "UNSPECIFIED"], "History record product scope");
   isOneOf(record.gates.groundingReviewBinding, ["MATCHED", "MISMATCHED", "NOT_SUPPLIED"], "History record grounding binding");
   isOneOf(record.gates.wazaStatus, ["RECORDED", "FAILED", "NOT_RUN"], "History record Waza status");
   isOneOf(record.gates.advisoryJudgeStatus, ["NOT_SUPPLIED", "RECORDED", "INVALID"], "History record advisory status");
-  for (const key of ["fixtureConsistent", "canonicalAtomicSuite", "canonicalWorkflowSuite", "productHardGate", "wazaGate", "wazaSkillMatchesProduct", "wazaSourceMatchesProduct", "advisoryJudgeAdvisory"]) {
+  for (const key of ["fixtureConsistent", "canonicalAtomicSuite", "canonicalWorkflowSuite", "canonicalScoringModes", "checkEvidenceComplete", "productHardGate", "wazaGate", "wazaSkillMatchesProduct", "wazaSourceMatchesProduct", "advisoryJudgeAdvisory"]) {
     if (typeof record.gates[key] !== "boolean") throw new Error(`History record.gates.${key} must be boolean`);
   }
   if (!Array.isArray(record.gates.groundingReviews) || !record.gates.groundingReviews.every((review) => {
@@ -478,9 +525,12 @@ export function validateScorecardHistoryRecord(record) {
     throw new Error("History record grounding-review IDs are invalid");
   }
   exactKeys(record.metrics, ["productRuntime", "skillLaboratory", "advisoryJudge"], "History record.metrics");
-  exactKeys(record.metrics?.productRuntime, ["atomic", "workflows"], "History record product metrics");
+  exactKeys(record.metrics?.productRuntime, ["atomic", "workflows", "checks"], "History record product metrics");
   countMetrics(record.metrics.productRuntime.atomic, "History record atomic metrics");
   countMetrics(record.metrics.productRuntime.workflows, "History record workflow metrics");
+  exactKeys(record.metrics.productRuntime.checks, ["passed", "total"], "History record check metrics");
+  if (![record.metrics.productRuntime.checks.passed, record.metrics.productRuntime.checks.total].every((value) => Number.isInteger(value) && value >= 0)
+    || record.metrics.productRuntime.checks.total <= 0 || record.metrics.productRuntime.checks.passed > record.metrics.productRuntime.checks.total) throw new Error("History record check metrics are invalid");
   const product = record.metrics.productRuntime;
   if (record.gates.scope === "all" && record.gates.canonicalAtomicSuite) {
     if (product.atomic.total !== MVP_EVAL_MANIFEST.atomicCaseIds.length || new Set(product.atomic.failed).size !== product.atomic.failed.length || !product.atomic.failed.every((id) => MVP_EVAL_MANIFEST.atomicCaseIds.includes(id))) throw new Error("History record canonical atomic metrics are invalid");
@@ -488,9 +538,10 @@ export function validateScorecardHistoryRecord(record) {
   if (record.gates.scope === "all" && record.gates.canonicalWorkflowSuite) {
     if (product.workflows.total !== MVP_EVAL_MANIFEST.workflowIds.length || new Set(product.workflows.failed).size !== product.workflows.failed.length || !product.workflows.failed.every((id) => MVP_EVAL_MANIFEST.workflowIds.includes(id))) throw new Error("History record canonical workflow metrics are invalid");
   }
-  const derivedProductHardGate = record.gates.scope === "all" && record.gates.fixtureConsistent && record.gates.canonicalAtomicSuite && record.gates.canonicalWorkflowSuite
+  const derivedProductHardGate = record.gates.scope === "all" && record.gates.fixtureConsistent && record.gates.canonicalAtomicSuite && record.gates.canonicalWorkflowSuite && record.gates.canonicalScoringModes && record.gates.checkEvidenceComplete
     && product.atomic.passed === product.atomic.total && product.workflows.passed === product.workflows.total;
   if (record.gates.productHardGate !== derivedProductHardGate) throw new Error("History record product hard gate is inconsistent");
+  if (record.gates.productHardGate && product.checks.passed !== product.checks.total) throw new Error("History record hard-gated check metrics are inconsistent");
   const waza = record.metrics?.skillLaboratory;
   exactKeys(waza, ["passed", "total", "failed", "errors", "skipped", "countsConsistent", "aggregateScore", "durationMs"], "History record Waza metrics");
   if (!waza || !Number.isInteger(waza.passed) || !Number.isInteger(waza.total) || !Number.isInteger(waza.errors) || !Number.isInteger(waza.skipped)
@@ -534,7 +585,7 @@ export function renderScorecardHistoryRecord(record) {
   const validated = validateScorecardHistoryRecord(record);
   const { productRuntime: product, skillLaboratory: waza, advisoryJudge: judge } = validated.metrics;
   const cell = (value) => String(value).replace(/[\r\n]+/g, " ").replaceAll("\\", "\\\\").replaceAll("|", "\\|");
-  return `# CSA Workbench scorecard history\n\n| Field | Value |\n|---|---|\n| Run | ${cell(validated.runId)} |\n| Record SHA-256 | ${cell(validated.recordHash)} |\n| Source revision | ${cell(validated.sourceRevision)} |\n| Fixture | ${cell(validated.fixture.fixtureVersion)} / ${cell(validated.fixture.fixtureHash)} |\n| Skill | ${cell(validated.skill.name)} @ ${cell(validated.skill.sha256)} |\n| Product runtime | ${cell(validated.provenance.productRuntime.provenance)}; ${cell(validated.provenance.productRuntime.environment)} |\n| Waza runtime | ${cell(validated.provenance.skillLaboratory.provenance)}; ${cell(validated.provenance.skillLaboratory.engine ?? "NOT_RECORDED")} / ${cell(validated.provenance.skillLaboratory.model ?? "NOT_RECORDED")} |\n| Scorecard acceptance | ${cell(validated.gates.scorecardAcceptance)} |\n| Product hard gate | ${validated.gates.productHardGate ? "PASS" : "FAIL"} |\n| Atomic | ${product.atomic.passed}/${product.atomic.total} |\n| Workflow | ${product.workflows.passed}/${product.workflows.total} |\n| Waza | ${waza.passed}/${waza.total}; gate ${validated.gates.wazaGate ? "PASS" : "FAIL"} |\n| Advisory judge | ${cell(judge.status)}; ${judge.atomic.passed}/${judge.atomic.total} atomic, ${judge.workflows.passed}/${judge.workflows.total} workflow |\n\nThis sanitized history contains evidence digests, not transcripts, fixture paths, or product data.\n`;
+  return `# CSA Workbench scorecard history\n\n| Field | Value |\n|---|---|\n| Run | ${cell(validated.runId)} |\n| Record SHA-256 | ${cell(validated.recordHash)} |\n| Source revision | ${cell(validated.sourceRevision)} |\n| Fixture | ${cell(validated.fixture.fixtureVersion)} / ${cell(validated.fixture.fixtureHash)} |\n| Skill | ${cell(validated.skill.name)} @ ${cell(validated.skill.sha256)} |\n| Product runtime | ${cell(validated.provenance.productRuntime.provenance)}; ${cell(validated.provenance.productRuntime.environment)} |\n| Waza runtime | ${cell(validated.provenance.skillLaboratory.provenance)}; ${cell(validated.provenance.skillLaboratory.engine ?? "NOT_RECORDED")} / ${cell(validated.provenance.skillLaboratory.model ?? "NOT_RECORDED")} |\n| Scorecard acceptance | ${cell(validated.gates.scorecardAcceptance)} |\n| Product hard gate | ${validated.gates.productHardGate ? "PASS" : "FAIL"} |\n| Atomic tasks | ${product.atomic.passed}/${product.atomic.total} |\n| Workflow tasks | ${product.workflows.passed}/${product.workflows.total} |\n| Credited checks | ${product.checks.passed}/${product.checks.total} |\n| Waza | ${waza.passed}/${waza.total}; gate ${validated.gates.wazaGate ? "PASS" : "FAIL"} |\n| Advisory judge | ${cell(judge.status)}; ${judge.atomic.passed}/${judge.atomic.total} atomic, ${judge.workflows.passed}/${judge.workflows.total} workflow |\n\nThis sanitized history contains evidence digests, not transcripts, fixture paths, or product data.\n`;
 }
 
 function validateDecision(decision) {
@@ -631,19 +682,25 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
   const candidateWaza = candidate.metrics.skillLaboratory;
   const atomicRegression = regression(baseProduct.atomic, candidateProduct.atomic, baseline.gates.productHardGate, candidate.gates.productHardGate);
   const workflowRegression = regression(baseProduct.workflows, candidateProduct.workflows, baseline.gates.productHardGate, candidate.gates.productHardGate);
+  const checkRegression = {
+    passedDecreased: candidateProduct.checks.passed < baseProduct.checks.passed,
+    totalChanged: candidateProduct.checks.total !== baseProduct.checks.total,
+    gateRegressed: baseline.gates.productHardGate && !candidate.gates.productHardGate,
+  };
   const wazaRegression = regression(baseWaza, candidateWaza, baseline.gates.wazaGate, candidate.gates.wazaGate);
   const judgeAtomic = regression(baseline.metrics.advisoryJudge.atomic, candidate.metrics.advisoryJudge.atomic);
   const judgeWorkflow = regression(baseline.metrics.advisoryJudge.workflows, candidate.metrics.advisoryJudge.workflows);
   const readinessRegressed = baseline.gates.scorecardAcceptance === "READY_FOR_BASELINE" && candidate.gates.scorecardAcceptance !== "READY_FOR_BASELINE";
-  const blockingRegression = readinessRegressed || Object.values(atomicRegression).some(Boolean) || Object.values(workflowRegression).some(Boolean) || Object.values(wazaRegression).some(Boolean);
+  const blockingRegression = readinessRegressed || Object.values(atomicRegression).some(Boolean) || Object.values(workflowRegression).some(Boolean) || Object.values(checkRegression).some(Boolean) || Object.values(wazaRegression).some(Boolean);
   const comparison = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "mvp-scorecard-comparison",
     baseline: { runId: baseline.runId, recordHash: baseline.recordHash, acceptanceHash: acceptance.acceptanceHash, productHardGate: baseline.gates.productHardGate, wazaGate: baseline.gates.wazaGate },
     candidate: { runId: candidate.runId, recordHash: candidate.recordHash, readyForBaseline: candidate.gates.scorecardAcceptance === "READY_FOR_BASELINE", productHardGate: candidate.gates.productHardGate, wazaGate: candidate.gates.wazaGate },
     deltas: {
       atomic: { passed: delta(baseProduct.atomic.passed, candidateProduct.atomic.passed), total: delta(baseProduct.atomic.total, candidateProduct.atomic.total), failed: delta(baseProduct.atomic.failed.length, candidateProduct.atomic.failed.length) },
       workflows: { passed: delta(baseProduct.workflows.passed, candidateProduct.workflows.passed), total: delta(baseProduct.workflows.total, candidateProduct.workflows.total), failed: delta(baseProduct.workflows.failed.length, candidateProduct.workflows.failed.length) },
+      checks: { passed: delta(baseProduct.checks.passed, candidateProduct.checks.passed), total: delta(baseProduct.checks.total, candidateProduct.checks.total) },
       waza: { passed: delta(baseWaza.passed, candidateWaza.passed), total: delta(baseWaza.total, candidateWaza.total), failed: delta(baseWaza.failed.length, candidateWaza.failed.length), errors: delta(baseWaza.errors, candidateWaza.errors), skipped: delta(baseWaza.skipped, candidateWaza.skipped), aggregateScore: baseWaza.aggregateScore === null || candidateWaza.aggregateScore === null ? null : delta(baseWaza.aggregateScore, candidateWaza.aggregateScore), durationMs: baseWaza.durationMs === null || candidateWaza.durationMs === null ? null : delta(baseWaza.durationMs, candidateWaza.durationMs) },
       advisoryJudge: {
         advisory: true,
@@ -654,6 +711,7 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
     regressions: {
       atomic: atomicRegression,
       workflows: workflowRegression,
+      checks: checkRegression,
       waza: wazaRegression,
       advisoryJudge: { advisory: true, atomic: judgeAtomic, workflows: judgeWorkflow },
       readinessRegressed,
@@ -667,7 +725,7 @@ export function buildScorecardComparison(baselineRecord, baselineAcceptance, can
 
 export function validateScorecardComparison(comparison) {
   exactKeys(comparison, COMPARISON_KEYS, "Scorecard comparison");
-  if (comparison.schemaVersion !== 1 || comparison.kind !== "mvp-scorecard-comparison") throw new Error("Scorecard comparison has an unsupported schema");
+  if (comparison.schemaVersion !== 2 || comparison.kind !== "mvp-scorecard-comparison") throw new Error("Scorecard comparison has an unsupported schema");
   exactKeys(comparison.baseline, ["runId", "recordHash", "acceptanceHash", "productHardGate", "wazaGate"], "Scorecard comparison.baseline");
   exactKeys(comparison.candidate, ["runId", "recordHash", "readyForBaseline", "productHardGate", "wazaGate"], "Scorecard comparison.candidate");
   requireRunId(comparison.baseline.runId, "Baseline runId");
@@ -678,7 +736,7 @@ export function validateScorecardComparison(comparison) {
   if (![comparison.baseline.productHardGate, comparison.baseline.wazaGate, comparison.candidate.readyForBaseline, comparison.candidate.productHardGate, comparison.candidate.wazaGate].every((value) => typeof value === "boolean")) throw new Error("Scorecard comparison candidate readiness is invalid");
   if (!comparison.baseline.productHardGate || !comparison.baseline.wazaGate) throw new Error("Scorecard comparison baseline must be ready");
   if (comparison.candidate.readyForBaseline && (!comparison.candidate.productHardGate || !comparison.candidate.wazaGate)) throw new Error("Scorecard comparison candidate readiness is inconsistent");
-  exactKeys(comparison.deltas, ["atomic", "workflows", "waza", "advisoryJudge"], "Scorecard comparison.deltas");
+  exactKeys(comparison.deltas, ["atomic", "workflows", "checks", "waza", "advisoryJudge"], "Scorecard comparison.deltas");
   const validateDelta = (value, label) => {
     exactKeys(value, ["baseline", "candidate", "delta"], label);
     if (![value.baseline, value.candidate, value.delta].every((item) => typeof item === "number" && Number.isFinite(item)) || value.delta !== value.candidate - value.baseline) throw new Error(`${label} is invalid`);
@@ -687,6 +745,8 @@ export function validateScorecardComparison(comparison) {
     exactKeys(comparison.deltas[name], keys, `Scorecard comparison.deltas.${name}`);
     for (const key of keys) validateDelta(comparison.deltas[name][key], `Scorecard comparison.deltas.${name}.${key}`);
   }
+  exactKeys(comparison.deltas.checks, ["passed", "total"], "Scorecard comparison.deltas.checks");
+  for (const key of ["passed", "total"]) validateDelta(comparison.deltas.checks[key], `Scorecard comparison.deltas.checks.${key}`);
   exactKeys(comparison.deltas.waza, ["passed", "total", "failed", "errors", "skipped", "aggregateScore", "durationMs"], "Scorecard comparison.deltas.waza");
   for (const key of ["passed", "total", "failed", "errors", "skipped"]) validateDelta(comparison.deltas.waza[key], `Scorecard comparison.deltas.waza.${key}`);
   for (const key of ["aggregateScore", "durationMs"]) {
@@ -698,7 +758,7 @@ export function validateScorecardComparison(comparison) {
     exactKeys(comparison.deltas.advisoryJudge[name], ["passed", "failed", "unknown"], `Scorecard comparison advisory ${name} deltas`);
     for (const key of ["passed", "failed", "unknown"]) validateDelta(comparison.deltas.advisoryJudge[name][key], `Scorecard comparison advisory ${name}.${key}`);
   }
-  exactKeys(comparison.regressions, ["atomic", "workflows", "waza", "advisoryJudge", "readinessRegressed", "blockingRegression", "note"], "Scorecard comparison.regressions");
+  exactKeys(comparison.regressions, ["atomic", "workflows", "checks", "waza", "advisoryJudge", "readinessRegressed", "blockingRegression", "note"], "Scorecard comparison.regressions");
   const validateRegression = (value, deltaGroup, label, advisory = false) => {
     exactKeys(value, ["passedDecreased", "totalChanged", "failedIncreased", "gateRegressed"], label);
     if (!Object.values(value).every((item) => typeof item === "boolean")) throw new Error(`${label} is invalid`);
@@ -707,6 +767,11 @@ export function validateScorecardComparison(comparison) {
     }
   };
   for (const key of ["atomic", "workflows", "waza"]) validateRegression(comparison.regressions[key], comparison.deltas[key], `Scorecard comparison.regressions.${key}`);
+  exactKeys(comparison.regressions.checks, ["passedDecreased", "totalChanged", "gateRegressed"], "Scorecard comparison.regressions.checks");
+  if (!Object.values(comparison.regressions.checks).every((value) => typeof value === "boolean")
+    || comparison.regressions.checks.passedDecreased !== (comparison.deltas.checks.passed.delta < 0)
+    || comparison.regressions.checks.totalChanged !== (comparison.deltas.checks.total.delta !== 0)
+    || comparison.regressions.checks.gateRegressed !== (comparison.baseline.productHardGate && !comparison.candidate.productHardGate)) throw new Error("Scorecard comparison.regressions.checks is invalid");
   for (const key of ["atomic", "workflows"]) {
     if (comparison.regressions[key].gateRegressed !== (comparison.baseline.productHardGate && !comparison.candidate.productHardGate)) throw new Error(`Scorecard comparison.regressions.${key} gate is invalid`);
   }
@@ -716,7 +781,7 @@ export function validateScorecardComparison(comparison) {
   for (const key of ["atomic", "workflows"]) validateRegression(comparison.regressions.advisoryJudge[key], comparison.deltas.advisoryJudge[key], `Scorecard comparison advisory ${key} regressions`, true);
   if (typeof comparison.regressions.readinessRegressed !== "boolean" || typeof comparison.regressions.blockingRegression !== "boolean" || typeof comparison.regressions.note !== "string") throw new Error("Scorecard comparison status is invalid");
   if (comparison.regressions.readinessRegressed !== !comparison.candidate.readyForBaseline) throw new Error("Scorecard comparison readiness regression is invalid");
-  const expectedBlocking = comparison.regressions.readinessRegressed || ["atomic", "workflows", "waza"].some((key) => Object.values(comparison.regressions[key]).some(Boolean));
+  const expectedBlocking = comparison.regressions.readinessRegressed || ["atomic", "workflows", "checks", "waza"].some((key) => Object.values(comparison.regressions[key]).some(Boolean));
   if (comparison.regressions.blockingRegression !== expectedBlocking) throw new Error("Scorecard comparison blocking regression is invalid");
   requireHash(comparison.comparisonHash, "Scorecard comparison.comparisonHash");
   if (sha256Canonical(comparisonWithoutHash(comparison)) !== comparison.comparisonHash) throw new Error("Scorecard comparison hash does not match its contents");
@@ -726,7 +791,7 @@ export function validateScorecardComparison(comparison) {
 export function renderScorecardComparison(comparison) {
   const validated = validateScorecardComparison(comparison);
   const line = (name, value) => `| ${name} | ${value.baseline} | ${value.candidate} | ${value.delta >= 0 ? "+" : ""}${value.delta} |`;
-  return `# CSA Workbench scorecard comparison\n\n| Metric | Baseline | Candidate | Delta |\n|---|---:|---:|---:|\n${line("Atomic passed", validated.deltas.atomic.passed)}\n${line("Workflow passed", validated.deltas.workflows.passed)}\n${line("Waza passed", validated.deltas.waza.passed)}\n\n- Blocking regression: ${validated.regressions.blockingRegression ? "YES" : "NO"}
+  return `# CSA Workbench scorecard comparison\n\n| Metric | Baseline | Candidate | Delta |\n|---|---:|---:|---:|\n${line("Atomic passed", validated.deltas.atomic.passed)}\n${line("Workflow passed", validated.deltas.workflows.passed)}\n${line("Credited checks passed", validated.deltas.checks.passed)}\n${line("Credited checks total", validated.deltas.checks.total)}\n${line("Waza passed", validated.deltas.waza.passed)}\n\n- Blocking regression: ${validated.regressions.blockingRegression ? "YES" : "NO"}
 - Advisory judge deltas are non-gating and cannot alter baseline acceptance.\n`;
 }
 

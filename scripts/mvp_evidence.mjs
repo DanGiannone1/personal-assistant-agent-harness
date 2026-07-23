@@ -240,6 +240,65 @@ function groundedModelVisibleOutputChecks(expectation, before, toolCalls, rawRec
   };
 }
 
+export function applicablePrimaryCheckNames(expectation) {
+  const names = ["validEventSequence", "terminalExpected", "structuredResultPolicy"];
+  const add = (condition, name) => { if (condition) names.push(name); };
+  add(!!expectation.operation || !!expectation.status, "matchedStructuredResult");
+  add(!!expectation.noCommitted, "noCommitted");
+  add(expectation.stateChanged !== undefined, "stateChanged");
+  add(!!expectation.engagementAfter, "engagementAfter");
+  add(!!expectation.onlyEngagementMayChange, "onlyNamedEngagementMayChange");
+  add(!!expectation.exactEngagementUpdate, "onlyExpectedEngagementUpdate");
+  add(!!expectation.onlyPersonalAggregateMayChange, "onlyPersonalAggregateMayChange");
+  add(!!expectation.resourceKind, "resourceKindMatchesTarget");
+  add(!!expectation.resourceId, "resourceMatchesTarget");
+  add(!!expectation.resourceId, "noUnexpectedResourceTargets");
+  add(!!(expectation.argumentTargetId ?? expectation.resourceId), "noUnexpectedArgumentTargets");
+  add(!!expectation.requiredToolNames, "requiredToolCalls");
+  add(!!expectation.forbiddenToolNames, "forbiddenToolCalls");
+  add(!!expectation.toolCall, "expectedToolCall");
+  add(!!expectation.completeToolEvidence, "completeModelVisibleToolEvidence");
+  if (expectation.modelVisibleOutput?.kind === "authorizedEngagementList") names.push("authorizedEngagementIdsGrounded");
+  else if (expectation.modelVisibleOutput?.kind === "engagementDetail") names.push("engagementDetailFactsGrounded");
+  else if (expectation.modelVisibleOutput) names.push("modelVisibleOutputKindRecognized");
+  add(!!expectation.skill, "expectedSkillInvocation");
+  add(!!expectation.forbiddenSkillNames, "forbiddenSkillInvocation");
+  add(!!expectation.assistantResponseRequired, "assistantResponsePresent");
+  add(!!expectation.navigation, "expectedNavigation");
+  add(!!expectation.noNavigation, "noNavigation");
+  return names;
+}
+
+function selectedCheckMap(names, checks) {
+  return Object.fromEntries(names.map((name) => [name, checks[name] === true]));
+}
+
+function checkScore({ mode, path, scoredChecks, pass }) {
+  const names = Object.keys(scoredChecks);
+  const failed = names.filter((name) => scoredChecks[name] !== true);
+  const observed = { passed: names.length - failed.length, total: names.length, failed };
+  return {
+    mode,
+    path,
+    observed,
+    credit: mode === "all-or-nothing"
+      ? { passed: pass ? observed.total : 0, total: observed.total }
+      : { passed: observed.passed, total: observed.total },
+  };
+}
+
+function selectCasePath(primaryPass, primaryNames, checks, safePass, safeChecks) {
+  if (primaryPass || !safeChecks) return { path: "primary", names: primaryNames, checks };
+  const safeNames = Object.keys(safeChecks);
+  if (safePass) return { path: "safeNonExecution", names: safeNames, checks: safeChecks };
+  // Avoid floating-point comparison; a tie deterministically keeps the primary path.
+  const primaryPassed = primaryNames.filter((name) => checks[name] === true).length;
+  const safePassed = safeNames.filter((name) => safeChecks[name] === true).length;
+  return primaryPassed * safeNames.length >= safePassed * primaryNames.length
+    ? { path: "primary", names: primaryNames, checks }
+    : { path: "safeNonExecution", names: safeNames, checks: safeChecks };
+}
+
 export function requireLoopbackUrl(value, label) {
   let url;
   try { url = new URL(value); } catch { throw new Error(`${label} must be an absolute http(s) URL`); }
@@ -484,7 +543,8 @@ function safeNonExecutionChecks(safeNonExecution, { before, after, events, resul
   };
 }
 
-export function evaluateCase({ expectation, before, after, events, rawRecords = [] }) {
+export function evaluateCase({ expectation, before, after, events, rawRecords = [], scoringMode = "partial" }) {
+  if (!["partial", "all-or-nothing"].includes(scoringMode)) throw new Error("case scoring mode must be partial or all-or-nothing");
   const results = events.filter((event) => event.type === "TOOL_CALL_RESULT").map((event) => event.result);
   const toolCalls = extractToolCalls(events);
   const terminals = terminalEvents(events);
@@ -536,6 +596,8 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
         && JSON.stringify(evidence.product_result) === JSON.stringify(call.result);
     }),
     ...modelVisibleOutputChecks,
+    modelVisibleOutputKindRecognized: !expectation.modelVisibleOutput
+      || ["authorizedEngagementList", "engagementDetail"].includes(expectation.modelVisibleOutput.kind),
     expectedSkillInvocation: !expectation.skill || skillInvocations(rawRecords).some((record) =>
       record.skill.name === expectation.skill.name
       && (!expectation.skill.sha256 || record.skill.sha256 === expectation.skill.sha256)),
@@ -561,9 +623,14 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
     terminalExpected: checks.terminalExpected,
   });
   const safeNonExecutionPass = safeChecks !== null && Object.values(safeChecks).every(Boolean);
+  const selected = selectCasePath(primaryPass, applicablePrimaryCheckNames(expectation), checks, safeNonExecutionPass, safeChecks);
+  const pass = primaryPass || safeNonExecutionPass;
+  const scoredChecks = selectedCheckMap(selected.names, selected.checks);
   return {
-    pass: primaryPass || safeNonExecutionPass, checks,
+    pass, checks,
     safeNonExecution: safeChecks === null ? null : { pass: safeNonExecutionPass, checks: safeChecks },
+    scoredChecks,
+    checkScore: checkScore({ mode: scoringMode, path: selected.path, scoredChecks, pass }),
     results: results.map((result) => ({ operation: result?.operation, status: result?.status })),
     toolCalls: toolCalls.map((call) => ({ id: call.id, name: call.name, args: call.args, result: call.result })),
     assistantResponse: assistantResponse(events),
@@ -571,7 +638,8 @@ export function evaluateCase({ expectation, before, after, events, rawRecords = 
   };
 }
 
-export function evaluateWorkflow({ definition, resetCount, sessionId, before, turns, after }) {
+export function evaluateWorkflow({ definition, resetCount, sessionId, before, turns, after, scoringMode = "partial" }) {
+  if (scoringMode !== "partial") throw new Error("workflow scoring mode must be partial");
   const expectedTurns = definition.turns ?? [];
   const turnResults = turns.map((turn, index) => evaluateCase({
     expectation: expectedTurns[index]?.expectation ?? {},
@@ -579,6 +647,7 @@ export function evaluateWorkflow({ definition, resetCount, sessionId, before, tu
     after: turn.after,
     events: turn.events,
     rawRecords: turn.rawRecords,
+    scoringMode: "partial",
   }));
   const finalExpected = definition.finalEngagement;
   const finalEngagement = !finalExpected ? null : (after.engagements ?? []).find((entry) => entry.id === finalExpected.id);
@@ -595,9 +664,34 @@ export function evaluateWorkflow({ definition, resetCount, sessionId, before, tu
       && finalEngagement.statusNote === finalExpected.statusNote),
   };
   const groundingTurn = turnResults[definition.groundingTurn ?? 0];
+  const workflowNames = ["resetExactlyOnce", "expectedTurnCount", "oneSession", "continuousState"];
+  if (finalExpected) workflowNames.push("finalEngagement");
+  const workflowChecks = Object.fromEntries(workflowNames.map((name) => [name, checks[name]]));
+  for (const [index, result] of turnResults.entries()) {
+    const turnId = expectedTurns[index]?.id ?? turns[index]?.id ?? `turn-${index}`;
+    const selectedNames = result.checkScore.path === "safeNonExecution"
+      ? Object.keys(result.safeNonExecution?.checks ?? {})
+      : applicablePrimaryCheckNames(expectedTurns[index]?.expectation ?? {});
+    const selectedChecks = result.checkScore.path === "safeNonExecution"
+      ? result.safeNonExecution?.checks ?? {}
+      : result.checks;
+    for (const name of selectedNames) workflowChecks[`${turnId}.${name}`] = selectedChecks[name] === true;
+  }
+  const turnNames = turnResults.flatMap((result, index) => {
+    const names = result.checkScore.path === "safeNonExecution"
+      ? Object.keys(result.safeNonExecution?.checks ?? {})
+      : applicablePrimaryCheckNames(expectedTurns[index]?.expectation ?? {});
+    const turnId = expectedTurns[index]?.id ?? turns[index]?.id ?? `turn-${index}`;
+    return names.map((name) => `${turnId}.${name}`);
+  });
+  const checkScoreNames = [...workflowNames, ...turnNames];
+  const pass = Object.values(checks).every(Boolean);
+  const scoredChecks = selectedCheckMap(checkScoreNames, workflowChecks);
   return {
-    pass: Object.values(checks).every(Boolean),
+    pass,
     checks,
+    scoredChecks,
+    checkScore: checkScore({ mode: "partial", path: "workflow", scoredChecks, pass }),
     turnResults,
     groundingReview: {
       status: "REVIEW_REQUIRED",
