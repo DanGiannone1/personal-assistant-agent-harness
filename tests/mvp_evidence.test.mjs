@@ -272,6 +272,41 @@ test("event lifecycle rejects orphan or mismatched text, args, reasoning, unknow
   ]), true);
 });
 
+test("event lifecycle accepts every personal-workspace tool with its emitted operation", () => {
+  const state = { engagements: [] };
+  const personalTools = [
+    ["list_tasks", "list_tasks"],
+    ["create_task", "create_task"],
+    ["update_task", "update_task"],
+    ["delete_task", "delete_task"],
+    ["add_subtask", "add_subtask"],
+    ["list_events", "list_events"],
+    ["create_event", "create_event"],
+    ["update_event", "update_event"],
+    ["delete_event", "delete_event"],
+    ["list_reminders", "list_reminders"],
+    ["create_reminder", "create_reminder"],
+    ["update_reminder", "update_reminder"],
+    ["delete_reminder", "delete_reminder"],
+  ];
+  const valid = (toolName, operation) => evaluateCase({
+    expectation: { stateChanged: false }, before: state, after: state,
+    events: [
+      start,
+      { type: "TOOL_CALL_START", tool_call_id: "call-1", tool_call_name: toolName },
+      { type: "TOOL_CALL_RESULT", tool_call_id: "call-1", result: { operation, status: "succeeded", code: "personal.test" } },
+      { type: "TOOL_CALL_END", tool_call_id: "call-1" },
+      finish,
+    ],
+  }).checks.validEventSequence;
+
+  for (const [toolName, operation] of personalTools) {
+    assert.equal(valid(toolName, operation), true, toolName);
+    assert.equal(valid(toolName, `${operation}_mismatch`), false, `${toolName} rejects a mismatched operation`);
+  }
+  assert.equal(valid("unknown_personal_tool", "unknown_personal_tool"), false);
+});
+
 test("tool and navigation lifecycle events must bind to one call and result", () => {
   const state = { engagements: [] };
   const missingStart = evaluateCase({ expectation: { operation: "list", status: "succeeded" }, before: state, after: state, events: [start, { type: "TOOL_CALL_RESULT", tool_call_id: "missing", result: { operation: "list", status: "succeeded", code: "engagement.listed" } }, finish] });

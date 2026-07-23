@@ -363,8 +363,20 @@ function validEventSequence(events) {
     share_engagement: "share",
     navigate: "navigate",
     // Personal-workspace tools report their own literal tool name as the result operation
-    // (see _personal_mutation), unlike the canonical Engagement verbs above.
+    // (see the personal tool handlers), unlike the canonical Engagement verbs above.
+    list_tasks: "list_tasks",
     create_task: "create_task",
+    update_task: "update_task",
+    delete_task: "delete_task",
+    add_subtask: "add_subtask",
+    list_events: "list_events",
+    create_event: "create_event",
+    update_event: "update_event",
+    delete_event: "delete_event",
+    list_reminders: "list_reminders",
+    create_reminder: "create_reminder",
+    update_reminder: "update_reminder",
+    delete_reminder: "delete_reminder",
   };
   const knownTypes = new Set([
     "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
