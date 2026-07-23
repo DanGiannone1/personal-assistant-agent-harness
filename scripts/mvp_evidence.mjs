@@ -335,6 +335,15 @@ export function requireCleanWorktree(status) {
   if (sourceChanges.length) throw new Error("live evidence requires a clean Git worktree");
 }
 
+export function requireStableSourceRevision(expectedRevision, observedRevision, status) {
+  if (typeof expectedRevision !== "string" || !expectedRevision
+    || typeof observedRevision !== "string" || !observedRevision) {
+    throw new Error("live evidence requires valid starting and ending source revisions");
+  }
+  if (observedRevision !== expectedRevision) throw new Error("source revision changed during the live evidence run");
+  requireCleanWorktree(status);
+}
+
 export function normalizedState(value) {
   const volatile = new Set(["_etag", "_rid", "_self", "_attachments", "_ts", "createdAt", "createdAt", "uploadedAt", "savedAt", "ts"]);
   if (Array.isArray(value)) return value.map(normalizedState).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));

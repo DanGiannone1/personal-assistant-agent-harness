@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { chromium } from "@playwright/test";
-import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireTargetUrl, terminalEvents } from "./mvp_evidence.mjs";
+import { evaluateCase, evidencePath, parseSse, requireCleanWorktree, requireStableSourceRevision, requireTargetUrl, terminalEvents } from "./mvp_evidence.mjs";
 
 const startedAt = new Date().toISOString();
 const REMOTE = process.env.MVP_ALLOW_REMOTE === "1";
@@ -510,6 +510,16 @@ try {
   check("MVP-P-FATAL", false, report.fatalError);
 } finally {
   if (browser) await browser.close();
+  try {
+    const endingSourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const endingStatus = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" });
+    requireStableSourceRevision(report.sourceRevision, endingSourceRevision, endingStatus);
+    check("MVP-P-SOURCE-STABLE", true);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    report.fatalError ??= detail;
+    check("MVP-P-SOURCE-STABLE", false, detail);
+  }
   report.checks = checks;
   report.summary = { passed: checks.filter((item) => item.pass).length, failed: checks.filter((item) => !item.pass).map((item) => item.id) };
   writeFileSync(`${out}/results.json`, JSON.stringify(report, null, 2));

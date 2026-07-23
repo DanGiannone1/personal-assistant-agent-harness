@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
-import { evidencePath, evaluateCase, evaluateWorkflow, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, selectMvpEvalScope } from "./mvp_evidence.mjs";
+import { evidencePath, evaluateCase, evaluateWorkflow, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireStableSourceRevision, selectMvpEvalScope } from "./mvp_evidence.mjs";
 import { buildMvpScorecard, renderMvpScorecard } from "./mvp_scorecard.mjs";
 import { atomicScoringMode } from "./mvp_eval_manifest.mjs";
 
@@ -156,8 +156,7 @@ for (const sourceDefinition of selectedSuites.workflowDefinitions) {
   });
 }
 const endingSourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-if (endingSourceRevision !== sourceRevision) throw new Error("source revision changed during the live eval run");
-requireCleanWorktree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
+requireStableSourceRevision(sourceRevision, endingSourceRevision, execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }));
 const completedAt = new Date().toISOString();
 const report = {
   schemaVersion: 5, kind: "mvp-agent-eval", runId, sourceRevision, scope,

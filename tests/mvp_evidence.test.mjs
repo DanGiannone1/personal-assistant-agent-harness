@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
+import { evidencePath, evaluateCase, onlyExpectedEngagementUpdate, onlyNamedEngagementMayChange, parseMvpEvalScope, parseSse, requireCleanWorktree, requireLoopbackUrl, requireStableSourceRevision, requireTargetUrl, selectMvpEvalScope, stateFingerprint } from "../scripts/mvp_evidence.mjs";
 
 const start = { type: "RUN_STARTED", run_id: "run-1", thread_id: "thread-1" };
 const finish = { type: "RUN_FINISHED", run_id: "run-1", thread_id: "thread-1" };
@@ -420,6 +420,11 @@ test("loopback and clean-worktree guards refuse crafted DNS, remote hosts, and s
   assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/local-synthetic/playwright/run/results.json\n"));
   assert.doesNotThrow(() => requireCleanWorktree("?? evidence/mvp/azure-demo/playwright/run/results.json\n"));
   assert.doesNotThrow(() => requireCleanWorktree(""));
+  assert.doesNotThrow(() => requireStableSourceRevision("abc123", "abc123", ""));
+  assert.doesNotThrow(() => requireStableSourceRevision("abc123", "abc123", "?? evidence/mvp/local-synthetic/playwright/run/results.json\n"));
+  assert.throws(() => requireStableSourceRevision("abc123", "def456", ""), /source revision changed/);
+  assert.throws(() => requireStableSourceRevision("abc123", "abc123", " M scripts\/mvp_playwright.mjs\n"), /clean Git/);
+  assert.throws(() => requireStableSourceRevision("", "abc123", ""), /valid starting and ending/);
 });
 
 test("requireTargetUrl stays loopback-only unless MVP_ALLOW_REMOTE=1 opts into an ACA https host", () => {
@@ -446,5 +451,7 @@ test("remote browser evidence is labeled and stored separately from local eviden
   const source = readFileSync(new URL("../scripts/mvp_playwright.mjs", import.meta.url), "utf8");
   assert.match(source, /environment: EVIDENCE_ENVIRONMENT/);
   assert.match(source, /expectedFixtureVersion, observedFixtureVersion: "UNVERIFIED"/);
+  assert.match(source, /requireStableSourceRevision\(report\.sourceRevision, endingSourceRevision, endingStatus\)/);
+  assert.match(source, /check\("MVP-P-SOURCE-STABLE", false, detail\)/);
   assert.doesNotMatch(source, /fixtureVersion: expectedFixtureVersion/);
 });
